@@ -1,0 +1,1306 @@
+/* Flat and square: solid colours, 1px rules, no shadows, glows, gradients or rounded corners. Dark earth and hide with
+   an ochre, firelight accent. Every colour is here, so the look changes in one place. */
+:root {
+  --bg: #19140f;
+  --bg-grid: #231c15;
+  --panel: #282018;
+  --panel-raised: #33291f;
+  --slot: #1c1610;
+  --line: #4a3c2d;
+  --line-strong: #6b5741;
+  --text: #f0e6d2;
+  --muted: #a8977c;
+  --accent: #d98a3a;
+  --accent-dark: #a5602a;
+  --accent-ink: #1f1308;
+  --danger: #c9452f;
+  --info: #6fa3a8;
+  --font: 'Trebuchet MS', 'Bahnschrift', 'Segoe UI', system-ui, sans-serif;
+  --mono: 'Cascadia Mono', 'Consolas', ui-monospace, monospace;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.4;
+}
+
+#app {
+  height: 100%;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+button,
+input {
+  font: inherit;
+  color: inherit;
+  border-radius: 0;
+}
+
+.pixel {
+  image-rendering: pixelated;
+}
+
+/* A zigzag, like a mark painted on a cave wall: the one decoration, under titles. */
+.stripe {
+  height: 8px;
+  background:
+    linear-gradient(135deg, var(--accent) 25%, transparent 25%) -4px 0 / 8px 8px,
+    linear-gradient(225deg, var(--accent) 25%, transparent 25%) -4px 0 / 8px 8px;
+}
+
+/* ---- buttons and fields */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  min-height: 2.4rem;
+  padding: 0 1rem;
+  border: 1px solid var(--line-strong);
+  background: var(--panel-raised);
+  color: var(--text);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.btn:focus-visible,
+.field-input:focus-visible,
+.slot:focus-visible,
+.hotbar-slot:focus-visible,
+.topbar-code:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #eba25a;
+}
+
+.btn-danger:hover:not(:disabled) {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.btn-small {
+  min-height: 2rem;
+  padding: 0 0.75rem;
+  font-size: 0.8rem;
+}
+
+.field-label {
+  display: block;
+  margin-bottom: 0.3rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.field-input {
+  width: 100%;
+  height: 2.4rem;
+  padding: 0 0.7rem;
+  border: 1px solid var(--line-strong);
+  background: var(--slot);
+}
+
+.field-input::placeholder {
+  color: #6c6b5c;
+}
+
+.field-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.field-row .field-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.code-input {
+  font-family: var(--mono);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0 0 0.7rem;
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.section-title::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+/* ---- the main menu */
+
+.menu-screen {
+  min-height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 2rem 1rem;
+  background-color: var(--bg);
+  background-image:
+    linear-gradient(var(--bg-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--bg-grid) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.menu-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 26rem);
+  justify-content: center;
+  gap: 1.5rem;
+  align-items: start;
+  width: 100%;
+  max-width: 50rem;
+}
+
+.menu-card {
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.menu-card {
+  border-top: 4px solid var(--accent);
+  padding: 1.5rem 1.5rem 1rem;
+}
+
+.menu-header {
+  margin-bottom: 0.9rem;
+}
+
+.menu-title {
+  margin: 0 0 0.6rem;
+  font-size: 2.6rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.menu-lede {
+  margin: 0 0 1.4rem;
+  color: var(--muted);
+}
+
+.menu-section {
+  margin-bottom: 1.3rem;
+}
+
+.menu-status {
+  min-height: 1.4em;
+  margin: 0;
+  color: var(--muted);
+}
+
+.menu-status.is-error {
+  color: var(--danger);
+}
+
+/* ---- the game */
+
+.game {
+  position: relative;
+  height: 100%;
+  overflow: hidden;
+  user-select: none;
+}
+
+.game-stage {
+  position: absolute;
+  inset: 0;
+}
+
+.game-stage canvas {
+  display: block;
+}
+
+/* The page's elements over the canvas. The layer lets the mouse through to the canvas; what is on it does not. */
+.game-hud {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.game-hud > * {
+  pointer-events: auto;
+}
+
+.topbar {
+  position: absolute;
+  top: 0.75rem;
+  left: 0.75rem;
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.topbar-label {
+  display: flex;
+  align-items: center;
+  padding: 0 0.6rem;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.topbar-code {
+  padding: 0.35rem 0.7rem;
+  border: 0;
+  border-right: 1px solid var(--line);
+  background: transparent;
+  font-family: var(--mono);
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  cursor: pointer;
+}
+
+.topbar-code:hover {
+  color: var(--accent);
+}
+
+.topbar-item {
+  display: flex;
+  align-items: center;
+  padding: 0 0.7rem;
+  border-right: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.topbar-item:last-child {
+  border-right: 0;
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+.keys {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.35rem 0.8rem;
+  max-width: 50%;
+  padding: 0.35rem 0.6rem;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 0.8rem;
+  pointer-events: none;
+}
+
+.key-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+kbd {
+  padding: 0.05rem 0.35rem;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  background: var(--panel);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+}
+
+.connecting {
+  position: absolute;
+  top: 45%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  padding: 0.8rem 1.4rem;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--accent);
+  background: var(--panel);
+  font-size: 1.05rem;
+  letter-spacing: 0.04em;
+}
+
+/* The build bar. */
+.hotbar-wrap {
+  position: absolute;
+  bottom: 0.9rem;
+  left: 50%;
+  transform: translateX(-50%);
+  display: grid;
+  justify-items: center;
+  gap: 0.45rem;
+  pointer-events: none;
+}
+
+.hotbar-caption {
+  padding: 0.2rem 0.7rem;
+  background: rgba(23, 25, 21, 0.85);
+  color: var(--muted);
+  font-size: 0.85rem;
+  letter-spacing: 0.03em;
+}
+
+.hotbar-caption.is-active {
+  color: var(--text);
+}
+
+.hotbar {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  pointer-events: auto;
+}
+
+.hotbar-slot {
+  position: relative;
+  width: 60px;
+  height: 60px;
+  padding: 0;
+  border: 1px solid var(--line);
+  background: var(--slot);
+  cursor: pointer;
+}
+
+.hotbar-slot:hover {
+  border-color: var(--line-strong);
+}
+
+.hotbar-slot.is-active {
+  border: 2px solid var(--accent);
+}
+
+.hotbar-icon {
+  width: 44px;
+  height: 44px;
+  margin-top: 4px;
+}
+
+/* Over the icon: a turned icon is drawn in a layer of its own, which would otherwise cover the number. */
+.slot-key {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  left: 0;
+  padding: 0 0.3rem;
+  background: var(--line);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  line-height: 1.3;
+}
+
+.hotbar-slot.is-active .slot-key {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.toast {
+  position: absolute;
+  bottom: 7.4rem;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: min(32rem, 90%);
+  padding: 0.45rem 0.9rem;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--info);
+  background: var(--panel);
+  pointer-events: none;
+}
+
+.toast.is-error {
+  border-left-color: var(--danger);
+}
+
+/* The inventory and the open building. */
+.panels {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -55%);
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  max-width: calc(100% - 2rem);
+}
+
+.panel {
+  width: max-content;
+  border: 1px solid var(--line);
+  border-top: 3px solid var(--accent);
+  background: var(--panel);
+  padding: 0 0.75rem 0.75rem;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-height: 2.8rem;
+  margin: 0 -0.75rem 0.7rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.panel-title {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.panel-close {
+  width: 1.8rem;
+  height: 1.8rem;
+  padding: 0;
+  border: 1px solid var(--line);
+  background: transparent;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.panel-close:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.panel-note {
+  margin: 0 0 0.45rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.panel-note.is-warning {
+  color: var(--danger);
+}
+
+.panel-hint {
+  max-width: 21rem;
+  margin: 0.6rem 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.panel-actions {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.6rem;
+}
+
+.progress {
+  height: 6px;
+  margin-bottom: 0.7rem;
+  background: var(--slot);
+  border: 1px solid var(--line);
+}
+
+/* Filled by scaling rather than by width, so it moves by fractions of a pixel and never makes the page lay out again. */
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transform: scaleX(0);
+  transform-origin: left;
+  will-change: transform;
+}
+
+.slot-grid {
+  display: grid;
+  grid-template-columns: repeat(9, 48px);
+  gap: 3px;
+}
+
+.slot {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  border: 1px solid var(--line);
+  background: var(--slot);
+}
+
+.slot.is-empty {
+  cursor: default;
+}
+
+.slot.is-draggable {
+  cursor: grab;
+}
+
+.slot.is-movable {
+  cursor: pointer;
+}
+
+.slot.is-movable:hover {
+  border-color: var(--accent);
+}
+
+.slot-icon {
+  width: 32px;
+  height: 32px;
+}
+
+.slot.is-drag-source .slot-icon,
+.slot.is-drag-source .slot-count {
+  opacity: 0.3;
+}
+
+.slot.is-drop-target {
+  border-color: var(--accent);
+  background: var(--panel-raised);
+}
+
+/* The stack being dragged, following the mouse. */
+.drag-ghost {
+  position: fixed;
+  top: -24px;
+  left: -24px;
+  z-index: 10;
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  pointer-events: none;
+}
+
+.slot-count {
+  position: absolute;
+  z-index: 1;
+  right: 3px;
+  bottom: 1px;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+/* The Escape menu. */
+.pause {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(16, 17, 14, 0.6);
+}
+
+.pause-card {
+  display: grid;
+  gap: 0.5rem;
+  width: 18rem;
+  padding: 1.25rem;
+  border: 1px solid var(--line);
+  border-top: 4px solid var(--accent);
+  background: var(--panel);
+}
+
+.pause-title {
+  margin: 0;
+  font-size: 1.4rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.pause-card .stripe {
+  margin-bottom: 0.6rem;
+}
+
+.debug-overlay {
+  position: absolute;
+  top: 3.4rem;
+  left: 0.75rem;
+  margin: 0;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--line);
+  background: rgba(23, 25, 21, 0.9);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  pointer-events: none;
+}
+
+/* The settings, opened from the Escape menu. */
+.settings-card {
+  width: min(30rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+}
+
+.tabs {
+  display: flex;
+  border-bottom: 1px solid var(--line);
+}
+
+.tab {
+  padding: 0.45rem 0.9rem;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--text);
+}
+
+.tab.is-active {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+}
+
+.settings-body {
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
+}
+
+.settings-panel {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto auto;
+  gap: 0.5rem;
+  min-height: 0;
+  padding-top: 0.6rem;
+}
+
+.controls-scroll {
+  min-height: 0;
+  max-height: 22rem;
+  overflow-y: auto;
+  padding-right: 0.3rem;
+}
+
+.controls-group {
+  margin: 0.7rem 0 0.3rem;
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.controls-group:first-child {
+  margin-top: 0;
+}
+
+.controls-row,
+.settings-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 6.5rem 6.5rem;
+  gap: 0.35rem;
+  align-items: center;
+  padding: 0.15rem 0;
+}
+
+.controls-row.is-fixed {
+  grid-template-columns: minmax(0, 1fr) 13.35rem;
+}
+
+.settings-row {
+  grid-template-columns: 6rem minmax(0, 1fr) 3rem;
+}
+
+.controls-label {
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.key-bind,
+.key-fixed {
+  height: 1.9rem;
+  padding: 0 0.4rem;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  background: var(--slot);
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.key-bind {
+  cursor: pointer;
+}
+
+.key-bind:hover {
+  border-color: var(--accent);
+}
+
+.key-bind.is-unbound {
+  color: var(--muted);
+}
+
+.key-bind.is-listening {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.key-fixed {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+}
+
+.settings-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.range {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.select {
+  height: 1.9rem;
+  padding: 0 0.4rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: var(--slot);
+  color: var(--text);
+  font: inherit;
+  grid-column: span 2;
+}
+
+.settings-note {
+  margin: 0.5rem 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.range-value {
+  color: var(--muted);
+  font-size: 0.85rem;
+  text-align: right;
+}
+
+/* The hotbar row of the inventory, under the rest of it, and the slot that is picked. */
+.grid-label {
+  margin: 0.7rem 0 0.35rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.slot-grid.is-hotbar {
+  padding-top: 0.35rem;
+  border-top: 1px dashed var(--line);
+}
+
+.slot.is-selected {
+  border: 2px solid var(--accent);
+}
+
+.hotbar-slot .slot-count {
+  right: 4px;
+  bottom: 2px;
+}
+
+/* What the player has just picked up, over the hotbar on the right. */
+.pickup-feed {
+  position: absolute;
+  right: 0.9rem;
+  bottom: 1rem;
+  display: grid;
+  justify-items: end;
+  gap: 0.25rem;
+  pointer-events: none;
+}
+
+.pickup-line {
+  padding: 0.2rem 0.6rem;
+  border-left: 3px solid var(--accent);
+  background: rgba(23, 25, 21, 0.85);
+  font-size: 0.9rem;
+  transition: opacity 0.4s;
+}
+
+.pickup-line.is-fading {
+  opacity: 0;
+}
+
+/* A book of recipes: a list that scrolls, grouped by category, and the one picked under it. */
+.recipe-book {
+  width: 17rem;
+}
+
+.recipe-list {
+  max-height: 13.5rem;
+  overflow-y: auto;
+  margin: 0 -0.75rem;
+  padding: 0 0.75rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.recipe-category {
+  margin: 0.5rem 0 0.25rem;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.recipe-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  margin-bottom: 2px;
+  padding: 0.2rem 0.4rem;
+  border: 1px solid transparent;
+  background: var(--slot);
+  text-align: left;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.recipe-row .slot-icon {
+  width: 24px;
+  height: 24px;
+}
+
+.recipe-row:hover {
+  border-color: var(--line-strong);
+}
+
+.recipe-row.is-selected {
+  border-color: var(--accent);
+  background: var(--panel-raised);
+}
+
+.recipe-row.is-locked {
+  opacity: 0.4;
+}
+
+.recipe-detail {
+  padding-top: 0.6rem;
+}
+
+.recipe-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.recipe-detail-img {
+  width: 36px;
+  height: 36px;
+}
+
+.recipe-detail-name {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.recipe-needs {
+  margin: 0.5rem 0;
+  padding: 0;
+  list-style: none;
+}
+
+.recipe-need {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.1rem 0;
+  font-size: 0.85rem;
+}
+
+.recipe-need .slot-icon {
+  width: 20px;
+  height: 20px;
+}
+
+.recipe-need-name {
+  flex: 1;
+}
+
+.recipe-need-count {
+  font-family: var(--mono);
+  font-weight: 700;
+}
+
+.recipe-need.is-enough .recipe-need-count,
+.recipe-need.is-enough .recipe-need-name:only-child {
+  color: #7cc35a;
+}
+
+.recipe-need.is-short .recipe-need-count,
+.recipe-need.is-short .recipe-need-name:only-child {
+  color: var(--danger);
+}
+
+.recipe-action {
+  width: 100%;
+}
+
+/* A work station above the inventory. */
+.panel-column {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.panel-column > .panel {
+  width: 100%;
+}
+
+.station-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1.25rem;
+  padding: 0.5rem 0;
+}
+
+.station-inputs {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.5rem;
+  border: 1px dashed var(--line);
+}
+
+.station-slot {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.station-slot .slot-grid {
+  grid-template-columns: 48px;
+}
+
+.station-label {
+  width: 3.4rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.station-slot-output {
+  padding: 0.5rem;
+  border: 1px solid var(--accent);
+}
+
+.station-arrow {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 4.5rem;
+  gap: 0.2rem;
+}
+
+.station-arrow-head {
+  color: var(--muted);
+  font-size: 1.6rem;
+  line-height: 1;
+}
+
+.station-arrow .progress {
+  width: 100%;
+  margin: 0;
+}
+
+/* The name of what is under the mouse. */
+.tooltip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 20;
+  padding: 0.2rem 0.45rem;
+  border: 1px solid var(--line-strong);
+  background: var(--panel-raised);
+  color: var(--text);
+  font-size: 0.8rem;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.station-outputs {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+/* A machine's gauges: heat, and what liquid is in it. */
+.gauges {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin: 0.2rem 0 0.4rem;
+}
+
+.gauge {
+  display: grid;
+  grid-template-columns: 4.5rem 1fr 6.5rem;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+}
+
+.gauge-label {
+  color: var(--muted);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.gauge-bar {
+  height: 8px;
+  background: var(--slot);
+  border: 1px solid var(--line);
+}
+
+.gauge-fill {
+  height: 100%;
+  transform: scaleX(0);
+  transform-origin: left;
+}
+
+.gauge-fill.is-heat {
+  background: #e5733d;
+}
+
+.gauge-fill.is-water {
+  background: #4d8fd1;
+}
+
+.gauge-fill.is-milk {
+  background: #ece6d6;
+}
+
+.gauge-fill.is-tannin {
+  background: #8a5a2a;
+}
+
+.gauge-fill.is-plain {
+  background: var(--accent);
+}
+
+.gauge-text {
+  font-family: var(--mono);
+  text-align: right;
+}
+
+.repeat-label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+/* Health, over the hotbar. */
+.health-bar {
+  position: relative;
+  width: 100%;
+  height: 12px;
+  margin-bottom: 0.35rem;
+  background: var(--slot);
+  border: 1px solid var(--line-strong);
+}
+
+.health-fill {
+  height: 100%;
+  background: #d9483b;
+  transform-origin: left;
+}
+
+.health-text {
+  position: absolute;
+  inset: 0;
+  font-size: 0.65rem;
+  font-weight: 700;
+  line-height: 10px;
+  text-align: center;
+}
+
+/* Armour and the ammunition slot, side by side over the inventory. */
+.gear-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.slot-grid.is-ammo {
+  grid-template-columns: 48px;
+}
+
+/* Where armour will go. */
+.armour-row {
+  display: flex;
+  gap: 3px;
+  margin-bottom: 0.6rem;
+}
+
+.armour-slot {
+  display: grid;
+  place-items: center;
+  opacity: 0.45;
+  cursor: default;
+}
+
+.armour-label {
+  color: var(--muted);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.menu-note {
+  margin: 0 0 0.6rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+/* The menu's tabs, and the lists of worlds to load and join. */
+.menu-tabs {
+  display: flex;
+  gap: 0;
+  margin: 1rem 0 0.75rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.menu-tab {
+  flex: 1;
+  padding: 0.55rem 0.5rem;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.menu-tab:hover {
+  color: var(--text);
+}
+
+.menu-tab.is-active {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+}
+
+.menu-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.menu-subtitle {
+  margin: 0.9rem 0 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.world-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 16rem;
+  overflow-y: auto;
+  margin-bottom: 0.5rem;
+}
+
+.world-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--line);
+  background: var(--slot);
+}
+
+.world-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.world-name {
+  font-weight: 700;
+}
+
+.world-details {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.world-empty {
+  padding: 0.5rem 0;
+}

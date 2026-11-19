@@ -1,0 +1,36 @@
+{
+  "stump": [
+    { "category": "With an axe", "tool": "axe", "inputs": { "log": 1 }, "output": "plank", "count": 2, "seconds": 2 },
+    { "category": "No tool needed", "inputs": { "twine": 3 }, "output": "rope", "count": 1, "seconds": 2 }
+  ],
+  "workbench": [
+    { "category": "Tools", "inputs": { "log": 1 }, "output": "plank", "count": 2, "seconds": 1.5 },
+    { "category": "Tools", "inputs": { "twine": 3 }, "output": "rope", "count": 1, "seconds": 1.5 },
+    { "category": "Tools", "inputs": { "stick": 5, "twine": 3, "flint": 3 }, "output": "pickaxe", "count": 1, "seconds": 3 },
+    { "category": "Tools", "inputs": { "stick": 5, "twine": 3, "flint": 2 }, "output": "axe", "count": 1, "seconds": 3 },
+    { "category": "Tools", "inputs": { "stick": 1, "twine": 1, "flint": 1 }, "output": "knife", "count": 1, "seconds": 2 },
+    { "category": "Weapons", "tool": "knife", "inputs": { "log": 1 }, "output": "wood-spear", "count": 1, "seconds": 3 },
+    { "category": "Weapons", "tool": "knife", "inputs": { "log": 1, "twine": 2, "flint": 1 }, "output": "flint-spear", "count": 1, "seconds": 4 },
+    { "category": "Weapons", "tool": "knife", "inputs": { "log": 1, "rope": 1 }, "output": "bow", "count": 1, "seconds": 4 },
+    { "category": "Weapons", "inputs": { "flint": 1, "stick": 2, "feather": 1 }, "output": "arrow", "count": 4, "seconds": 2 },
+    { "category": "Weapons", "inputs": { "log": 2 }, "output": "club", "count": 1, "seconds": 3 },
+    { "category": "Weapons", "inputs": { "rope": 2 }, "output": "sling", "count": 1, "seconds": 3 },
+    { "category": "Weapons", "inputs": { "stone": 1 }, "output": "sling-stone", "count": 3, "seconds": 1 },
+    { "category": "Buildings", "inputs": { "plank": 2, "rope": 1 }, "output": "fence", "count": 4, "seconds": 2 },
+    { "category": "Buildings", "inputs": { "plank": 3, "rope": 1 }, "output": "gate", "count": 1, "seconds": 3 },
+    { "category": "Buildings", "inputs": { "plank": 8 }, "output": "chest", "count": 1, "seconds": 4 },
+    { "category": "Farming", "inputs": { "plank": 3, "compost": 1 }, "output": "garden-plot", "count": 1, "seconds": 3 },
+    { "category": "Farming", "inputs": { "plank": 4 }, "output": "feed-box", "count": 1, "seconds": 3 },
+    { "category": "Farming", "inputs": { "stick": 6, "rope": 2 }, "output": "drying-rack", "count": 1, "seconds": 4 },
+    { "category": "Liquids", "inputs": { "plank": 3, "rope": 1 }, "output": "bucket", "count": 1, "seconds": 3 },
+    { "category": "Liquids", "inputs": { "plank": 6, "rope": 2 }, "output": "barrel", "count": 1, "seconds": 5 }
+  ],
+  "barrel": [
+    { "category": "Sealed, a bucket a hide", "liquid": "tannin", "liquidPerSolid": 1, "solids": { "dried-hide": 1 }, "output": "leather", "count": 1, "seconds": 240 },
+    { "category": "Sealed, boiling beside a campfire", "liquid": "water", "perBucket": { "bark": 1 }, "heat": 250, "liquidInto": "tannin", "seconds": 90 },
+    { "category": "Open, and dry", "sealed": false, "dry": true, "solids": { "#organic": 8 }, "output": "compost", "count": 1, "seconds": 60 }
+  ],
+  "rack": [
+    { "input": "hide", "output": "dried-hide", "seconds": 120, "heatDouble": 100 }
+  ]
+}

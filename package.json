@@ -1,0 +1,31 @@
+{
+  "name": "factory-game",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n client,server -c cyan,green \"npm:dev:client\" \"npm:dev:server\"",
+    "dev:client": "npm run dev --workspace @factory/client",
+    "dev:server": "npm run dev --workspace @factory/server",
+    "start": "npm run build:client && concurrently -n client,server -c cyan,green \"npm:preview\" \"npm:start:server\"",
+    "start:server": "npm run start --workspace @factory/server",
+    "build:client": "npm run build --workspace @factory/client",
+    "build": "npm run build --workspace @factory/client && npm run typecheck --workspace @factory/server",
+    "preview": "npm run preview --workspace @factory/client",
+    "typecheck": "npm run typecheck --workspace @factory/client && npm run typecheck --workspace @factory/server",
+    "test": "tsx --test \"tests/*.test.ts\""
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "concurrently": "^9.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "~5.8.0"
+  },
+  "allowScripts": {
+    "node-datachannel": true
+  }
+}

@@ -1,0 +1,63 @@
+{
+  "cow": {
+    "id": 1,
+    "name": "Cow",
+    "hp": 10,
+    "speed": 1.2,
+    "size": 1.0,
+    "halfSize": 0.35,
+    "mass": 0.7,
+    "foods": ["wheat", "hay"],
+    "herd": [2, 4],
+    "spawnWeight": 1,
+    "drops": [
+      { "item": "steak", "stat": "meat" },
+      { "item": "hide", "min": 1, "max": 2 }
+    ],
+    "milk": "milk",
+    "life": {
+      "hungerMinutes": 10,
+      "hungryAt": 40,
+      "grassFills": 35,
+      "grassRadius": 12,
+      "wellFedMinutes": 5,
+      "breedCooldownMinutes": 10,
+      "milkMinutes": 3
+    },
+    "stats": {
+      "meat": { "label": "Meat", "base": 3, "spread": 1, "min": 1, "max": 8 },
+      "milk": { "label": "Milk", "base": 2, "spread": 1, "min": 1, "max": 6 },
+      "growth": { "label": "Growth time (s)", "base": 1200, "spread": 240, "min": 300, "max": 3600 }
+    }
+  },
+  "chicken": {
+    "id": 2,
+    "name": "Chicken",
+    "hp": 4,
+    "speed": 1.5,
+    "size": 0.55,
+    "halfSize": 0.18,
+    "mass": 0.15,
+    "foods": ["#seed"],
+    "herd": [3, 5],
+    "spawnWeight": 1,
+    "drops": [
+      { "item": "raw-chicken", "stat": "meat" },
+      { "item": "feather", "min": 1, "max": 3 }
+    ],
+    "lays": "egg",
+    "life": {
+      "hungerMinutes": 8,
+      "hungryAt": 40,
+      "grassFills": 40,
+      "grassRadius": 10,
+      "wellFedMinutes": 5,
+      "breedCooldownMinutes": 8
+    },
+    "stats": {
+      "meat": { "label": "Meat", "base": 1.5, "spread": 0.5, "min": 0.5, "max": 4 },
+      "eggTime": { "label": "Egg lay time (s)", "base": 300, "spread": 60, "min": 60, "max": 900 },
+      "growth": { "label": "Growth time (s)", "base": 600, "spread": 120, "min": 180, "max": 1800 }
+    }
+  }
+}

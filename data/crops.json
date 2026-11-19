@@ -1,0 +1,14 @@
+[
+  {
+    "id": 1,
+    "key": "wheat",
+    "name": "Wheat",
+    "seed": "wheat-seed",
+    "growTicks": 20,
+    "produce": "wheat",
+    "produceMin": 1,
+    "produceMax": 3,
+    "seedsMin": 1,
+    "seedsMax": 3
+  }
+]
