@@ -31,12 +31,19 @@ export const BELT_SIDE_ENTRY = BELT_LENGTH / 2
 export const STACK_SIZE = 50
 export const MINER_SLOTS = 1
 export const CHEST_SLOTS = 16
+// The longest name a chest can be given.
+export const CHEST_NAME_LENGTH = 24
 export const FEEDER_SLOTS = 6
 // The player's inventory: the hotbar (its first HOTBAR_SLOTS slots, picked with 1 to 9), the rest of the inventory,
-// and last the ammunition slot (AMMO_SLOT), which only takes ammunition (items tagged "ammo": arrows, sling stones).
+// the ammunition slot (AMMO_SLOT), which only takes ammunition (items tagged "ammo": arrows, sling stones), and last
+// the three armour slots (head, body, feet, from ARMOR_SLOT on), which each take only armour worn there, and last the
+// food slot (FOOD_SLOT), which takes only food, and is what F eats from (once every EAT_COOLDOWN_TICKS).
 export const HOTBAR_SLOTS = 9
 export const AMMO_SLOT = 36
-export const PLAYER_SLOTS = AMMO_SLOT + 1
+export const ARMOR_SLOT = AMMO_SLOT + 1
+export const FOOD_SLOT = ARMOR_SLOT + 3
+export const PLAYER_SLOTS = FOOD_SLOT + 1
+export const EAT_COOLDOWN_TICKS = 5 * TPS
 
 // Plants. Each tick, RANDOM_TICKS_PER_CHUNK tiles of every chunk are picked at random (from the seed, the tick and the
 // chunk, so every copy picks the same ones), and whatever stands on a picked tile gets a random tick: a sapling grows
@@ -63,7 +70,7 @@ export const PLAYER_MASS = 1
 export const GATE_OPEN_RADIUS = Math.round(1.4 * SUB)
 
 // A player's health, out of PLAYER_MAX_HEALTH.
-export const PLAYER_MAX_HEALTH = 100
+export const PLAYER_MAX_HEALTH = 20
 
 // The fewest ticks between two punches by the same player.
 export const PUNCH_COOLDOWN_TICKS = 8
@@ -116,3 +123,16 @@ export const MAX_COMMAND_LEAD = TPS * 5
 
 // The longest message (in characters of JSON) the server puts on the wire. Bigger batches are split.
 export const MAX_PACKET_CHARS = 12_000
+
+// ---- the camera's zoom (the page's camera.ts uses these)
+//
+// Zoom is how big things are drawn: 1 is normal, 2 twice as big (zoomed in), 0.5 half (zoomed out).
+export const ZOOM_MIN = 1.5
+export const ZOOM_MAX = 3
+export const DEFAULT_ZOOM = 2
+// How much one notch of the mouse wheel zooms: 1.15 is 15% in or out a notch. A touchpad's small scrolls zoom a
+// matching bit less.
+export const ZOOM_PER_NOTCH = 1.15
+// How long the zoom takes to catch up with the wheel, in milliseconds (roughly to two thirds of the way). 0 is instant;
+// bigger is floatier.
+export const ZOOM_SMOOTHING_MS = 90

@@ -31,6 +31,40 @@ export class AttackLayer {
       }
     }
 
+    // The swishes behind swinging weapons, tracing what each attack covers (see Swish).
+    for (const swish of attacks.swishes) {
+      const fade = Math.max(0, 1 - swish.progress)
+      const px = (x: number, y: number): number[] => [x * TILE_PX, y * TILE_PX]
+      if (swish.shape === 'arc') {
+        const sweep = Math.min(1, swish.progress / 0.75)
+        const eased = sweep * sweep * (3 - 2 * sweep)
+        const start = swish.angle + swish.arc / 2
+        const edge = start - swish.arc * eased
+        const points: number[] = []
+        for (let i = 0; i <= 12; i++) {
+          const a = start + (edge - start) * (i / 12)
+          points.push(...px(swish.x + Math.cos(a) * swish.outer, swish.y + Math.sin(a) * swish.outer))
+        }
+        for (let i = 12; i >= 0; i--) {
+          const a = start + (edge - start) * (i / 12)
+          points.push(...px(swish.x + Math.cos(a) * swish.inner, swish.y + Math.sin(a) * swish.inner))
+        }
+        g.poly(points).fill({ color: 0xffffff, alpha: 0.4 * fade })
+      } else if (swish.shape === 'band') {
+        const reach = swish.outer * Math.min(1, swish.progress / 0.5)
+        const side = swish.angle + Math.PI / 2
+        const half = Math.max(0.08, swish.width / 2)
+        const at = (along: number, across: number): number[] =>
+          px(swish.x + Math.cos(swish.angle) * along + Math.cos(side) * across, swish.y + Math.sin(swish.angle) * along + Math.sin(side) * across)
+        g.poly([...at(0, -half), ...at(reach, -half), ...at(reach, half), ...at(0, half)]).fill({ color: 0xffffff, alpha: 0.45 * fade })
+      } else {
+        const mx = swish.x + Math.cos(swish.angle) * swish.distance
+        const my = swish.y + Math.sin(swish.angle) * swish.distance
+        const r = swish.outer * (0.4 + 0.6 * Math.min(1, swish.progress / 0.6))
+        g.circle(mx * TILE_PX, my * TILE_PX, r * TILE_PX).stroke({ color: 0xffffff, alpha: 0.6 * fade, width: r * TILE_PX * 0.35 })
+      }
+    }
+
     const fx = this.effects.clear()
     for (const spark of attacks.sparks) {
       const radius = TILE_PX * (0.12 + 0.3 * spark.age)

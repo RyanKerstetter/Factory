@@ -23,6 +23,8 @@ import {
   stationRecipe,
   TPS,
   WORKBENCH_INPUT_SLOTS,
+  WORKBENCH_OUTPUT_SLOT,
+  WORKBENCH_TOOL_SLOT,
   type Entity,
   type Inventory,
   type ItemId,
@@ -49,8 +51,8 @@ export function machineView(entity: Entity, player: Inventory, inv: Inventory): 
     }
     case 'workbench': {
       return {
-        inputs: WORKBENCH_INPUT_SLOTS.map((index) => ({ index, label: 'Input' })),
-        outputs: [{ index: 3, label: 'Output' }],
+        inputs: [{ index: WORKBENCH_TOOL_SLOT, label: 'Tool' }, ...WORKBENCH_INPUT_SLOTS.map((index) => ({ index, label: 'Input' }))],
+        outputs: [{ index: WORKBENCH_OUTPUT_SLOT, label: 'Output' }],
         gauges: [],
         buttons: [],
         recipes: { title: 'Workbench recipes', action: 'Craft', entries: workbenchBook(player, inv) },

@@ -14,6 +14,8 @@ import {
   type LogMessage,
   type Refusal,
   type StreamEvent,
+  type Terrain,
+  terrainOf,
 } from '../../../packages/shared/src/index.ts'
 
 export type Welcome = Extract<StreamEvent, { k: 'welcome' }>
@@ -23,9 +25,16 @@ export type DesyncReport = { chunk: number; tick: number; hash: number }
 export type MirrorCallbacks = {
   onWelcome?: (welcome: Welcome) => void
   onRoster?: (players: ReadonlyArray<[number, string]>) => void
+  // Who the host is, and whether players can hurt each other.
+  onRoom?: (room: { host: string; pvp: boolean }) => void
+  // A player was hurt by another, and whether it knocked them out.
+  onHurt?: (hurt: { id: number; amount: number; died: boolean }) => void
   // What an animal near the player is, whenever it changes; and one that is gone.
   onAnimal?: (info: AnimalInfo) => void
-  onAnimalGone?: (id: number) => void
+  onAnimalGone?: (id: number, died?: number) => void
+  onGear?: (gear: { id: number; held: number; armor: number[] }) => void
+  onSwung?: (swing: { id: number; item: number; special: boolean; angle: number }) => void
+  onWave?: (wave: { x: number; y: number; delay: number }) => void
   // One of this page's commands has run (or been turned down), on the tick just simulated.
   onResult?: (result: CommandResult) => void
   // The player's inventory, as of the tick just simulated.
@@ -46,6 +55,8 @@ export type MirrorCallbacks = {
 export class FactoryMirror {
   readonly world = new FactoryWorld()
   seed = 0
+  // The land (biomes, sea, cold), worked out from the seed and the settings in the welcome.
+  terrain: Terrain | undefined
   playerId = 0
   // The last tick simulated. Before the welcome, nothing has been.
   simTick = -1
@@ -158,16 +169,27 @@ export class FactoryMirror {
   private applyNow(event: StreamEvent): void {
     if (event.k === 'welcome') {
       this.seed = event.seed
+      this.terrain = terrainOf(event.seed, event.terrain)
       this.playerId = event.playerId
       this.simTick = event.tick - 1
       this.started = true
       this.callbacks.onWelcome?.(event)
     } else if (event.k === 'roster') {
       this.callbacks.onRoster?.(event.players)
+    } else if (event.k === 'room') {
+      this.callbacks.onRoom?.({ host: event.host, pvp: event.pvp })
+    } else if (event.k === 'hurt') {
+      this.callbacks.onHurt?.(event)
     } else if (event.k === 'animal') {
       this.callbacks.onAnimal?.(event.a)
+    } else if (event.k === 'gear') {
+      this.callbacks.onGear?.(event)
+    } else if (event.k === 'swung') {
+      this.callbacks.onSwung?.(event)
+    } else if (event.k === 'wave') {
+      this.callbacks.onWave?.(event)
     } else if (event.k === 'animal-') {
-      this.callbacks.onAnimalGone?.(event.id)
+      this.callbacks.onAnimalGone?.(event.id, event.died)
     }
   }
 

@@ -8,8 +8,10 @@ import { getItem, itemByKey, stackLimit, type ItemId, type ToolKind } from './it
 //
 // - The stump: a slot for a tool, one for what it works on, and one for what comes out. It works out the recipe from
 //   what is in it (an axe and logs make planks; twine on its own makes rope), and keeps going while it can.
-// - The workbench: three slots for what it works on and one for what comes out. The player picks the recipe; it keeps
-//   making it while there is enough in it. Each press of Craft puts in enough for one more (or five, or all).
+// - The workbench: three slots for what it works on, one for what comes out, and one for a tool (a recipe that needs a
+//   tool, such as a knife for a spear, needs it there: not just in the player's inventory). The player picks the recipe;
+//   it keeps making it while there is enough in it. Each press of Craft puts in enough for one more (or five, or all),
+//   and the tool if it needs one and has none.
 export type StationKind = 'stump' | 'workbench'
 export type StationRecipe = {
   // Its place in its station's list (what a `work` command names).
@@ -29,10 +31,11 @@ export const STATION_TOOL_SLOT = 0
 export const STATION_INPUT_SLOT = 1
 export const STATION_OUTPUT_SLOT = 2
 export const STATION_SLOTS = 3
-// The workbench's: three to work from, one for what it makes.
+// The workbench's: three to work from, one for what it makes, and one for a tool.
 export const WORKBENCH_INPUT_SLOTS: readonly number[] = [0, 1, 2]
 export const WORKBENCH_OUTPUT_SLOT = 3
-export const WORKBENCH_SLOTS = 4
+export const WORKBENCH_TOOL_SLOT = 4
+export const WORKBENCH_SLOTS = 5
 
 const isWhole = (value: unknown, min: number): value is number => typeof value === 'number' && Number.isInteger(value) && value >= min
 
@@ -81,6 +84,11 @@ function parseStations(data: unknown): Record<StationKind, StationRecipe[]> {
 }
 
 // Whether there is room in a slot for what a recipe makes.
+// Whether a station's output slot has room for what a recipe makes (empty, or the same item with room in its stack).
+export function stationOutputFits(kind: StationKind, inv: Inventory, recipe: StationRecipe): boolean {
+  return outputFits(inv, kind === 'workbench' ? WORKBENCH_OUTPUT_SLOT : STATION_OUTPUT_SLOT, recipe)
+}
+
 function outputFits(inv: Inventory, slot: number, recipe: StationRecipe): boolean {
   const output = inv.slots[slot]
   if (!output) return false
@@ -109,9 +117,16 @@ export function workbenchHas(inv: Inventory, item: ItemId): number {
   return total
 }
 
-// Whether a workbench can make one of a recipe now: enough of each input, and room for what it makes.
+// Whether a workbench has the tool a recipe needs (if it needs one) in its tool slot.
+export function workbenchHasTool(inv: Inventory, recipe: StationRecipe): boolean {
+  if (!recipe.tool) return true
+  const slot = inv.slots[WORKBENCH_TOOL_SLOT]
+  return slot !== undefined && slot.count > 0 && getItem(slot.item).tool === recipe.tool
+}
+
+// Whether a workbench can make one of a recipe now: its tool, enough of each input, and room for what it makes.
 export function workbenchCan(inv: Inventory, recipe: StationRecipe): boolean {
-  return recipe.inputs.every(([item, need]) => workbenchHas(inv, item) >= need) && outputFits(inv, WORKBENCH_OUTPUT_SLOT, recipe)
+  return workbenchHasTool(inv, recipe) && recipe.inputs.every(([item, need]) => workbenchHas(inv, item) >= need) && outputFits(inv, WORKBENCH_OUTPUT_SLOT, recipe)
 }
 
 // Takes one recipe's inputs out of a workbench's input slots and puts what it makes in its output slot.

@@ -3,6 +3,8 @@
 // is played from `res/sounds/step-grass.ogg`, or from `step-grass-1.ogg`, `step-grass-2.ogg` and so on (.ogg, .mp3
 // or .wav). The dev server picks a new file up on reload; a hosted build needs `npm run build`.
 
+import type { Terrain } from '../../../../packages/shared/src/index.ts'
+
 // What the ground underfoot sounds like. Every tile is grass for now. A new surface needs a footstep recipe in
 // FOOTSTEPS (or only its files) and a place in `surfaceAt`.
 export type Surface = 'grass'
@@ -15,19 +17,36 @@ export type SoundId =
   | 'break/bush'
   | 'break/rock'
   | 'hit/animal'
+  | 'hurt'
+  | 'wave'
   | 'animal/cow'
   | 'animal/chicken'
+  | 'animal/deer'
+  | 'animal/wolf'
+  | 'animal/skeleton'
   | 'attack/jab'
   | 'attack/swing'
   | 'attack/thrust'
   | 'attack/heavy'
   | 'attack/shoot'
   | 'attack/throw'
-  | 'plant' | 'rustle' | 'pickup' | `step/${Surface}`
+  | 'plant' | 'rustle' | 'pickup' | 'eat' | 'sleep' | 'move'
+  | 'craft/one' | 'craft/some' | 'craft/all' | 'craft/fail'
+  | `step/${Surface}`
 
-// The surface a player standing on tile x, y walks on. Ore deposits are grass too, until they have their own sound.
-export function surfaceAt(_seed: number, _x: number, _y: number): Surface {
+// The surface a player standing on tile x, y walks on. Ore deposits and the mountains are grass too, until they have
+// their own sound.
+export function surfaceAt(_terrain: Terrain | undefined, _x: number, _y: number): Surface {
   return 'grass'
+}
+
+// The sound an animal of a kind makes when it is hurt.
+export function animalSound(kind: string): SoundId {
+  if (kind === 'chicken') return 'animal/chicken'
+  if (kind === 'deer') return 'animal/deer'
+  if (kind === 'wolf') return 'animal/wolf'
+  if (kind === 'skeleton' || kind === 'skeleton-archer' || kind === 'frost-lich') return 'animal/skeleton'
+  return 'animal/cow'
 }
 
 export function footstep(surface: Surface): SoundId {
@@ -132,6 +151,32 @@ const RECIPES: Record<SoundId, Recipe> = {
     tone(context, out, { at: at + 0.07, type: 'square', from: 1300 * vary(0.1), to: 700, length: 0.12, gain: 0.07 })
     burst(context, out, noise, { at, length: 0.15, gain: 0.08, filter: 'bandpass', frequency: 2400, q: 1.5, attack: 0.01 })
   },
+  // A hurt deer: a short, high bleat. A hurt wolf: a snarl and a yelp.
+  'animal/deer': (context, out, at) => {
+    tone(context, out, { at, type: 'triangle', from: 620 * vary(0.1), to: 420, length: 0.16, gain: 0.22 })
+    tone(context, out, { at: at + 0.02, type: 'sine', from: 900 * vary(0.1), to: 600, length: 0.12, gain: 0.1 })
+  },
+  'animal/wolf': (context, out, at, noise) => {
+    burst(context, out, noise, { at, length: 0.14, gain: 0.2, filter: 'lowpass', frequency: 420 })
+    tone(context, out, { at, type: 'sawtooth', from: 140 * vary(0.08), to: 110, length: 0.14, gain: 0.12 })
+    tone(context, out, { at: at + 0.12, type: 'triangle', from: 1100 * vary(0.1), to: 700, length: 0.12, gain: 0.16 })
+  },
+  // A skeleton: a dry rattle of bones.
+  'animal/skeleton': (context, out, at, noise) => {
+    for (let i = 0; i < 4; i++) burst(context, out, noise, { at: at + i * 0.045 * vary(0.3), length: 0.03, gain: 0.22, filter: 'bandpass', frequency: 2200 * vary(0.25) })
+  },
+  // You are hurt: a heavy thud in the chest and a short grunt.
+  hurt: (context, out, at, noise) => {
+    tone(context, out, { at, type: 'sine', from: 110 * vary(0.08), to: 55, length: 0.16, gain: 0.6 })
+    burst(context, out, noise, { at, length: 0.07, gain: 0.35, filter: 'lowpass', frequency: 520 })
+    tone(context, out, { at: at + 0.02, type: 'sawtooth', from: 210 * vary(0.1), to: 140, length: 0.13, gain: 0.1 })
+    burst(context, out, noise, { at: at + 0.02, length: 0.12, gain: 0.12, filter: 'bandpass', frequency: 900 * vary(0.1), q: 3 })
+  },
+  // A wave of cold air: a deep rushing gust.
+  wave: (context, out, at, noise) => {
+    burst(context, out, noise, { at, length: 0.8, gain: 0.35, filter: 'bandpass', frequency: 500, to: 1600, q: 0.8, attack: 0.25 })
+    tone(context, out, { at, type: 'sine', from: 90, to: 50, length: 0.7, gain: 0.35 })
+  },
   // A hit on an animal: a soft, dull thump.
   'hit/animal': (context, out, at, noise) => {
     tone(context, out, { at, type: 'sine', from: 160 * vary(0.1), to: 80, length: 0.09, gain: 0.5 })
@@ -187,6 +232,41 @@ const RECIPES: Record<SoundId, Recipe> = {
   pickup: (context, out, at) => {
     tone(context, out, { at, type: 'sine', from: 520 * vary(0.06), to: 880, length: 0.08, gain: 0.18 })
     tone(context, out, { at: at + 0.035, type: 'sine', from: 780 * vary(0.06), to: 1180, length: 0.07, gain: 0.1 })
+  },
+  // An item moved about an inventory: a soft, short tick.
+  move: (context, out, at, noise) => {
+    burst(context, out, noise, { at, length: 0.025, gain: 0.14, filter: 'bandpass', frequency: 1800 * vary(0.15), q: 2 })
+    tone(context, out, { at, type: 'triangle', from: 520 * vary(0.05), to: 480, length: 0.05, gain: 0.05 })
+  },
+  // Eating: a few soft, quick bites.
+  eat: (context, out, at, noise) => {
+    for (let i = 0; i < 3; i++) burst(context, out, noise, { at: at + i * 0.09, length: 0.05, gain: 0.2, filter: 'bandpass', frequency: 900 * vary(0.2), q: 1.5 })
+  },
+  // Lying down to sleep: a low, falling hum.
+  sleep: (context, out, at) => {
+    tone(context, out, { at, type: 'sine', from: 330, to: 196, length: 0.6, gain: 0.14 })
+    tone(context, out, { at: at + 0.2, type: 'sine', from: 247, to: 147, length: 0.6, gain: 0.1 })
+  },
+  // Crafting: a knock and a rising chime, one note for one, two for five (shift), three for all you can (ctrl).
+  'craft/one': (context, out, at, noise) => {
+    burst(context, out, noise, { at, length: 0.05, gain: 0.25, filter: 'bandpass', frequency: 700, q: 2 })
+    tone(context, out, { at: at + 0.03, type: 'triangle', from: 660, to: 660, length: 0.12, gain: 0.14 })
+  },
+  'craft/some': (context, out, at, noise) => {
+    burst(context, out, noise, { at, length: 0.05, gain: 0.25, filter: 'bandpass', frequency: 700, q: 2 })
+    tone(context, out, { at: at + 0.03, type: 'triangle', from: 660, to: 660, length: 0.1, gain: 0.13 })
+    tone(context, out, { at: at + 0.11, type: 'triangle', from: 880, to: 880, length: 0.12, gain: 0.13 })
+  },
+  'craft/all': (context, out, at, noise) => {
+    burst(context, out, noise, { at, length: 0.06, gain: 0.28, filter: 'bandpass', frequency: 600, q: 2 })
+    tone(context, out, { at: at + 0.03, type: 'triangle', from: 660, to: 660, length: 0.09, gain: 0.13 })
+    tone(context, out, { at: at + 0.1, type: 'triangle', from: 880, to: 880, length: 0.09, gain: 0.13 })
+    tone(context, out, { at: at + 0.17, type: 'triangle', from: 1100, to: 1100, length: 0.14, gain: 0.13 })
+  },
+  // A craft that cannot be done: a flat, buzzing double thud.
+  'craft/fail': (context, out, at) => {
+    tone(context, out, { at, type: 'square', from: 150, to: 120, length: 0.09, gain: 0.1 })
+    tone(context, out, { at: at + 0.12, type: 'square', from: 130, to: 100, length: 0.12, gain: 0.1 })
   },
   'step/grass': FOOTSTEPS.grass,
 }

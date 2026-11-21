@@ -19,7 +19,7 @@ export const CommandSchema = z.discriminatedUnion('k', [
   z.object({ k: z.literal('slot'), from: slotRef, to: slotRef, count: int.min(1).max(100_000) }),
   z.object({ k: z.literal('drop'), from: slotRef, count: int.min(1).max(100_000), x: int, y: int }),
   z.object({ k: z.literal('punch'), id: int.min(1), slot: int.min(-1).max(255) }),
-  z.object({ k: z.literal('attack'), special: z.boolean(), slot: int.min(-1).max(255), x: int, y: int, charge: int.min(0).max(10_000), seen: int.min(0).optional() }),
+  z.object({ k: z.literal('attack'), special: z.boolean(), slot: int.min(-1).max(255), x: int, y: int, charge: int.min(0).max(10_000), seen: int.min(0).optional(), input: int.min(0).optional(), dir: int.min(-7000).max(7000).optional() }),
   z.object({ k: z.literal('craft'), recipe: int.min(1).max(1_000) }),
   z.object({ k: z.literal('work'), id: int.min(1), recipe: int.min(0).max(1_000).optional(), repeat: z.boolean().optional() }),
   z.object({ k: z.literal('apply'), x: tile, y: tile, slot: int.min(0).max(255) }),
@@ -29,6 +29,12 @@ export const CommandSchema = z.discriminatedUnion('k', [
   z.object({ k: z.literal('strike'), animal: int.min(1), slot: int.min(-1).max(255) }),
   z.object({ k: z.literal('interact'), animal: int.min(1), slot: int.min(-1).max(255) }),
   z.object({ k: z.literal('place'), x: tile, y: tile, slot: int.min(0).max(255) }),
+  z.object({ k: z.literal('pvp'), on: z.boolean() }),
+  z.object({ k: z.literal('eat'), slot: int.min(0).max(255) }),
+  z.object({ k: z.literal('sleep'), id: int.min(1) }),
+  z.object({ k: z.literal('hold'), slot: int.min(-1).max(255) }),
+  z.object({ k: z.literal('chest'), id: int.min(1), action: z.enum(['sort', 'stash']) }),
+  z.object({ k: z.literal('rename'), id: int.min(1), name: z.string().max(64) }),
 ])
 
 export const RequestMessageSchema = z.object({
@@ -52,4 +58,9 @@ export type JoinMessage = z.infer<typeof JoinMessageSchema>
 export const AckMessageSchema = z.object({ s: int.min(0) })
 export const PingMessageSchema = z.object({ c: z.number().finite() })
 
-export const NewGameSchema = z.object({ name: z.string().max(40), seed: z.string().max(40).optional() })
+export const NewGameSchema = z.object({
+  name: z.string().max(40),
+  seed: z.string().max(40).optional(),
+  size: z.string().max(20).optional(),
+  bumpiness: z.number().finite().min(0).max(100).optional(),
+})

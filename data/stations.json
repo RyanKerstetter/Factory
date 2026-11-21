@@ -1,10 +1,11 @@
 {
   "stump": [
     { "category": "With an axe", "tool": "axe", "inputs": { "log": 1 }, "output": "plank", "count": 2, "seconds": 2 },
+    { "category": "With a knife", "tool": "knife", "inputs": { "log": 1 }, "output": "wood-spear", "count": 1, "seconds": 3 },
     { "category": "No tool needed", "inputs": { "twine": 3 }, "output": "rope", "count": 1, "seconds": 2 }
   ],
   "workbench": [
-    { "category": "Tools", "inputs": { "log": 1 }, "output": "plank", "count": 2, "seconds": 1.5 },
+    { "category": "Tools", "tool": "axe", "inputs": { "log": 1 }, "output": "plank", "count": 2, "seconds": 1.5 },
     { "category": "Tools", "inputs": { "twine": 3 }, "output": "rope", "count": 1, "seconds": 1.5 },
     { "category": "Tools", "inputs": { "stick": 5, "twine": 3, "flint": 3 }, "output": "pickaxe", "count": 1, "seconds": 3 },
     { "category": "Tools", "inputs": { "stick": 5, "twine": 3, "flint": 2 }, "output": "axe", "count": 1, "seconds": 3 },
@@ -23,7 +24,10 @@
     { "category": "Farming", "inputs": { "plank": 4 }, "output": "feed-box", "count": 1, "seconds": 3 },
     { "category": "Farming", "inputs": { "stick": 6, "rope": 2 }, "output": "drying-rack", "count": 1, "seconds": 4 },
     { "category": "Liquids", "inputs": { "plank": 3, "rope": 1 }, "output": "bucket", "count": 1, "seconds": 3 },
-    { "category": "Liquids", "inputs": { "plank": 6, "rope": 2 }, "output": "barrel", "count": 1, "seconds": 5 }
+    { "category": "Liquids", "inputs": { "plank": 6, "rope": 2 }, "output": "barrel", "count": 1, "seconds": 5 },
+    { "category": "Armour", "inputs": { "leather": 4, "twine": 2 }, "output": "leather-armor", "count": 1, "seconds": 6 },
+    { "category": "Armour", "inputs": { "leather": 2, "twine": 1 }, "output": "leather-boots", "count": 1, "seconds": 4 },
+    { "category": "Armour", "inputs": { "leather": 2, "twine": 2, "fang": 4 }, "output": "wolf-helmet", "count": 1, "seconds": 6 }
   ],
   "barrel": [
     { "category": "Sealed, a bucket a hide", "liquid": "tannin", "liquidPerSolid": 1, "solids": { "dried-hide": 1 }, "output": "leather", "count": 1, "seconds": 240 },

@@ -11,7 +11,18 @@ import { ITEMS, itemByKey, type ItemId } from './items.ts'
 //   `halfSize`: how far it reaches from its middle to each side, in tiles, for walking into things; `mass`: how hard
 //   it pulls on a rope, against a player's 1.
 // - `foods`: what it eats from a feed box, by item key, or "#tag" for every item with that tag.
-// - `herd`: how many come together when a herd is spawned; `spawnWeight`: how often this kind is picked.
+// - `herd`: how many come together when a herd is spawned; `spawnWeight`: how often this kind is picked; `biomes`: the
+//   biomes its wild herds turn up in (see terrain.ts; none: it is never spawned by itself).
+// - `temper`: "calm" (the default: it runs only from a hit), "skittish" (it runs from any player within `fleeRadius`
+//   tiles, and from a hit, at `fleePace` times its speed, and its herd runs with it) or "hostile" (see `hunt`).
+// - `hunt`, for a hostile one: it keeps to its ground, and goes for a player who comes within `aggroRadius` tiles or
+//   hurts it, and so does every one of its pack within `packRadius` tiles of it. It chases at `pace` times its speed,
+//   bites for `damage` when within `reach` tiles, every `cooldown` seconds, and gives up on a player more than `leash`
+//   tiles from where it lives. With `flank`, the pack spreads out round its prey and darts in from different sides,
+//   falling back between bites, rather than all running straight at it. With `packOnSight` false, one that sees a
+//   player goes for them alone; its pack is only called when it is hurt. It only notices a player it can see (dungeon
+//   walls hide them).
+// - `grazes`: whether it eats grass (true unless false).
 // - `drops`: what an adult drops when killed: a fixed `min` to `max`, or about as many as its `stat` (meat).
 // - `milk`: the item a cow is milked for (as many as its milk stat, built up over time); `lays`: the item a chicken
 //   lays (every eggTime seconds).
@@ -38,6 +49,26 @@ export type AnimalLife = {
   milkEvery: number
 }
 
+export type Temper = 'calm' | 'skittish' | 'hostile'
+// A hostile animal's hunting, in units and ticks.
+export type Hunt = {
+  aggroRadius: number
+  packRadius: number
+  leash: number
+  pace: number
+  damage: number
+  reach: number
+  cooldown: number
+  flank: boolean
+  packOnSight: boolean
+  // Units it keeps from its prey (a caster); 0 for one that closes in.
+  keepAway: number
+  // An archer: instead of biting, it comes within `range` (units) of its prey where it has a clear shot, aims for `aim`
+  // ticks (standing still, turning to follow), then looses an arrow (`item`) at `speed` units a tick for `damage`; then
+  // waits `cooldown` (the bite's) before it aims again.
+  shoot?: { range: number; aim: number; speed: number; damage: number; item: ItemId }
+}
+
 export type AnimalDef = {
   kind: string
   id: number
@@ -52,6 +83,15 @@ export type AnimalDef = {
   foods: ReadonlySet<ItemId>
   herd: readonly [number, number]
   spawnWeight: number
+  biomes: readonly string[]
+  temper: Temper
+  // Units; 0 for an animal that only runs from a hit.
+  fleeRadius: number
+  fleePace: number
+  hunt?: Hunt
+  grazes: boolean
+  // A boss: fought in its own hall (see dungeons.ts), with its health over the top of the screen.
+  boss: boolean
   drops: readonly AnimalDrop[]
   milk?: ItemId
   lays?: ItemId
@@ -108,6 +148,37 @@ function parseAnimals(data: unknown): AnimalDef[] {
     const minutes = (name: string, fallback: number): number => Math.max(1, Math.round(num(life[name] ?? fallback, `life.${name}`) * 60 * TPS))
     const percent = (name: string, fallback: number): number => Math.round((num(life[name] ?? fallback, `life.${name}`) * HUNGER_MAX) / 100)
     if (raw.milk !== undefined) statIndex('milk')
+    const temper = (raw.temper ?? 'calm') as Temper
+    if (temper !== 'calm' && temper !== 'skittish' && temper !== 'hostile') fail('"temper" must be calm, skittish or hostile')
+    const biomes = (raw.biomes ?? []) as unknown[]
+    if (!Array.isArray(biomes) || !biomes.every((biome) => typeof biome === 'string')) fail('"biomes" must be a list of biome keys')
+    const huntRaw = raw.hunt as Record<string, unknown> | undefined
+    if (temper === 'hostile' && !huntRaw) fail('a hostile animal needs "hunt"')
+    const tiles = (value: unknown, name: string): number => Math.round(num(value, name) * SUB)
+    const hunt = huntRaw
+      ? {
+          aggroRadius: tiles(huntRaw.aggroRadius, 'hunt.aggroRadius'),
+          packRadius: tiles(huntRaw.packRadius, 'hunt.packRadius'),
+          leash: tiles(huntRaw.leash, 'hunt.leash'),
+          pace: num(huntRaw.pace, 'hunt.pace'),
+          damage: num(huntRaw.damage, 'hunt.damage', 1),
+          reach: tiles(huntRaw.reach, 'hunt.reach'),
+          cooldown: Math.max(1, Math.round(num(huntRaw.cooldown, 'hunt.cooldown') * TPS)),
+          flank: huntRaw.flank === true,
+          packOnSight: huntRaw.packOnSight !== false,
+          keepAway: huntRaw.keepAway === undefined ? 0 : tiles(huntRaw.keepAway, 'hunt.keepAway'),
+          ...(huntRaw.shoot !== undefined ? { shoot: shootOf(huntRaw.shoot as Record<string, unknown>) } : {}),
+        }
+      : undefined
+    function shootOf(shoot: Record<string, unknown>): NonNullable<Hunt['shoot']> {
+      return {
+        range: tiles(shoot.range, 'hunt.shoot.range'),
+        aim: Math.max(1, Math.round(num(shoot.aim, 'hunt.shoot.aim') * TPS)),
+        speed: Math.max(1, Math.round((num(shoot.speed, 'hunt.shoot.speed') * SUB) / TPS)),
+        damage: num(shoot.damage, 'hunt.shoot.damage', 1),
+        item: item(shoot.item ?? 'arrow'),
+      }
+    }
     if (raw.lays !== undefined) statIndex('eggTime')
     return {
       kind,
@@ -121,6 +192,13 @@ function parseAnimals(data: unknown): AnimalDef[] {
       foods,
       herd: [herd[0], herd[1]] as const,
       spawnWeight: num(raw.spawnWeight ?? 1, 'spawnWeight'),
+      biomes: biomes as string[],
+      temper,
+      fleeRadius: tiles(raw.fleeRadius ?? 0, 'fleeRadius'),
+      fleePace: num(raw.fleePace ?? 1.8, 'fleePace'),
+      ...(hunt ? { hunt } : {}),
+      grazes: raw.grazes !== false,
+      boss: raw.boss === true,
       drops,
       ...(raw.milk !== undefined ? { milk: item(raw.milk) } : {}),
       ...(raw.lays !== undefined ? { lays: item(raw.lays) } : {}),
@@ -165,6 +243,10 @@ export type AnimalInfo = {
   milk: number
   // What it is doing, in a few words (for the debug view).
   doing: string
+  // A hostile one that is after a player.
+  angry?: boolean
+  // An archer drawing its bow: which way it aims (radians).
+  aim?: number
 }
 
 // Where an animal is, in units, as it is sent with the players' positions: [id, x, y].

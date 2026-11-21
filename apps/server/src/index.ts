@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomInt } from 'node:crypto'
 import geckos, { type ServerChannel } from '@geckos.io/server'
-import { cleanName, seedFromText, TICK_MS, type GameInfo, type RequestMessage, type SavedWorldInfo } from '../../../packages/shared/src/index.ts'
+import { cleanName, seedFromText, TICK_MS, type GameInfo, type RequestMessage, type SavedWorldInfo, type WorldSize } from '../../../packages/shared/src/index.ts'
 import {
   AckMessageSchema,
   InputMessageSchema,
@@ -157,7 +157,7 @@ const api = createServer(async (request, response) => {
     if (request.method === 'OPTIONS') {
       response.writeHead(204, {
         'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
         'Access-Control-Allow-Headers': 'Content-Type',
       })
       response.end()
@@ -176,7 +176,8 @@ const api = createServer(async (request, response) => {
       if (await nameTaken(name)) return sendJson(response, 409, { error: 'There is already a world of that name.' })
       const seedText = parsed.data.seed?.trim()
       const seed = seedText ? seedFromText(seedText) : randomInt(1, 1_000_000_000)
-      const room = new GameRoom(await freshCode(), seed, { keepDumps, name })
+      const terrain = { ...(parsed.data.size ? { size: parsed.data.size as WorldSize } : {}), ...(parsed.data.bumpiness !== undefined ? { bumpiness: parsed.data.bumpiness } : {}) }
+      const room = new GameRoom(await freshCode(), seed, { keepDumps, name, terrain })
       rooms.set(room.code, room)
       await saveRoom(room)
       log.info('game created', { game: room.code, name, seed, games: rooms.size })
@@ -197,6 +198,15 @@ const api = createServer(async (request, response) => {
     if (request.method === 'POST' && load) {
       const room = await loadWorld(load[1].toUpperCase())
       return room ? sendJson(response, 200, info(room)) : sendJson(response, 404, { error: 'There is no saved world with that code.' })
+    }
+    // Delete a saved world for good. Not one that is running: everyone would have to leave it first.
+    const deleted = /^\/api\/saves\/([A-Za-z0-9]{1,12})$/.exec(url.pathname)
+    if (request.method === 'DELETE' && deleted) {
+      const code = deleted[1].toUpperCase()
+      if (rooms.has(code)) return sendJson(response, 409, { error: 'That world is being played: it can only be deleted once everyone has left.' })
+      if (!(await saves.remove(code))) return sendJson(response, 404, { error: 'There is no saved world with that code.' })
+      log.info('world deleted', { game: code })
+      return sendJson(response, 200, { ok: true })
     }
     // A world as a file: as it is now if it is running, as last saved if not.
     const exported = /^\/api\/worlds\/([A-Za-z0-9]{1,12})\/export$/.exec(url.pathname)
@@ -256,8 +266,16 @@ io.onConnection((channel: ServerChannel) => {
   channel.on('req', (data) => {
     if (!joined) return
     const parsed = RequestMessageSchema.safeParse(data)
-    if (!parsed.success) return
-    const ack = joined.room.receiveRequest(joined.player, parsed.data as RequestMessage)
+    let request = parsed.success ? (parsed.data as RequestMessage) : undefined
+    if (!request) {
+      // One that cannot be read still has its place in the stream: it is answered as refused, so everything after it
+      // is not held up waiting for it forever (which leaves the player able to walk, but nothing they do taking effect).
+      const seq = (data as { s?: unknown } | null)?.s
+      if (typeof seq !== 'number' || !Number.isSafeInteger(seq) || seq < 1) return
+      log.warn('unreadable request', { game: joined.room.code, player: joined.player.id, data: JSON.stringify(data).slice(0, 400), problem: parsed.error?.issues[0]?.message })
+      request = { s: seq, r: { k: 'bad' } }
+    }
+    const ack = joined.room.receiveRequest(joined.player, request)
     channel.emit('req-ack', { s: ack })
   })
 

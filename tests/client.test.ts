@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { ART_CATALOG, buildingArt, itemArt, oreTileArt, animalArt, cropArt } from '../apps/client/src/render/art-catalog.ts'
+import { ART_CATALOG, buildingArt, itemArt, oreTileArt, animalArt, cropArt, cropPicture } from '../apps/client/src/render/art-catalog.ts'
 import { ORES } from '../packages/shared/src/index.ts'
 import { beltLocalPoint, beltPoint } from '../apps/client/src/render/belt-path.ts'
 import { diffChunkSnapshots } from '../apps/client/src/desync-diff.ts'
@@ -32,7 +32,7 @@ test('every building, item and ore has a picture in the art catalog', () => {
   }
   assert.ok(ART_CATALOG[buildingArt({ kind: 'belt', x: 0, y: 0, shape: 'left' })])
   assert.ok(ART_CATALOG[buildingArt({ kind: 'extractor', x: 0, y: 0, shape: 'right' })])
-  for (const crop of CROPS) for (let growth = 0; growth <= crop.growTicks; growth++) assert.ok(ART_CATALOG[cropArt(crop.id, growth)!], crop.key)
+  for (const crop of CROPS) for (let growth = 0; growth <= crop.growTicks; growth++) assert.ok(ART_CATALOG[cropPicture(cropArt(crop.id, growth)!)], crop.key)
   for (const animal of ANIMALS) assert.ok(ART_CATALOG[animalArt(animal.kind)], animal.kind)
   for (const item of ITEMS) assert.ok(ART_CATALOG[itemArt(item.id)], item.key)
   for (const item of ORES) assert.ok(ART_CATALOG[oreTileArt(item.id)], item.key)

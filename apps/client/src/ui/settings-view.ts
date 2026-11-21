@@ -18,17 +18,27 @@ const FIXED: ReadonlyArray<[string, string]> = [
   ['Menu', 'Esc'],
 ]
 
-type Tab = 'controls' | 'audio' | 'graphics'
+type Tab = 'controls' | 'audio' | 'graphics' | 'game'
+
+// The settings of the game being played, kept by the server: who the host is, and whether players can hurt each
+// other, which only the host can change.
+export type GameSettings = {
+  get: () => { host: string; pvp: boolean; isHost: boolean }
+  setPvp: (on: boolean) => void
+  // Calls `listener` whenever they change. Gives back a function that stops it.
+  subscribe: (listener: () => void) => () => void
+}
 
 // The settings, in tabs. Controls lists every action with its two keys: click one and press a key to bind it
 // (Escape cancels, Backspace or Delete leaves it unbound). A key already bound to something else moves here.
-export function createSettingsView(settings: Settings, onBack: () => void): SettingsView {
+export function createSettingsView(settings: Settings, onBack: () => void, game?: GameSettings): SettingsView {
   let tab: Tab = 'controls'
   let listening: { action: Action; which: 0 | 1; button: HTMLButtonElement } | undefined
 
   const tabButtons = new Map<Tab, HTMLButtonElement>()
   const tabBar = element('div', 'tabs')
-  for (const [id, label] of [['controls', 'Controls'], ['audio', 'Audio'], ['graphics', 'Graphics']] as Array<[Tab, string]>) {
+  const tabs: Array<[Tab, string]> = [['controls', 'Controls'], ['audio', 'Audio'], ['graphics', 'Graphics'], ...(game ? [['game', 'Game'] as [Tab, string]] : [])]
+  for (const [id, label] of tabs) {
     const tabButton = button('tab', label, () => show(id))
     tabButton.setAttribute('role', 'tab')
     tabButtons.set(id, tabButton)
@@ -105,6 +115,18 @@ export function createSettingsView(settings: Settings, onBack: () => void): Sett
     ),
   )
 
+  // ---- game (the server's, for everyone in it)
+
+  const pvpBox = element('input', 'checkbox')
+  pvpBox.type = 'checkbox'
+  pvpBox.addEventListener('change', () => game?.setPvp(pvpBox.checked))
+  const hostNote = element('p', 'settings-note')
+  const gamePanel = element(
+    'div',
+    'settings-panel',
+    element('div', 'audio-rows', element('label', 'settings-row', element('span', 'controls-label', 'PvP'), pvpBox), element('p', 'settings-note', 'With PvP on, players can hurt each other.'), hostNote),
+  )
+
   const body = element('div', 'settings-body')
   const root = element(
     'div',
@@ -137,6 +159,12 @@ export function createSettingsView(settings: Settings, onBack: () => void): Sett
     }
     mute.checked = settings.muted
     viewChoice.value = settings.view
+    if (game) {
+      const { host, pvp, isHost } = game.get()
+      pvpBox.checked = pvp
+      pvpBox.disabled = !isHost
+      hostNote.textContent = isHost ? 'You are the host: this is up to you, for everyone in the game.' : `Only the host${host ? ` (${host})` : ''} can change this.`
+    }
   }
 
   const show = (next: Tab): void => {
@@ -146,7 +174,7 @@ export function createSettingsView(settings: Settings, onBack: () => void): Sett
       tabButton.classList.toggle('is-active', id === tab)
       tabButton.setAttribute('aria-selected', String(id === tab))
     }
-    body.replaceChildren(tab === 'controls' ? controlsPanel : tab === 'audio' ? audioPanel : graphicsPanel)
+    body.replaceChildren(tab === 'controls' ? controlsPanel : tab === 'audio' ? audioPanel : tab === 'game' ? gamePanel : graphicsPanel)
   }
 
   const listen = (action: Action, which: 0 | 1, keyButton: HTMLButtonElement): void => {
@@ -186,6 +214,7 @@ export function createSettingsView(settings: Settings, onBack: () => void): Sett
   window.addEventListener('keydown', onKeyDown, true)
   window.addEventListener('pointerdown', onPointerDown, true)
   const unsubscribe = settings.subscribe(fill)
+  const unsubscribeGame = game?.subscribe(fill)
 
   fill()
   show('controls')
@@ -203,6 +232,7 @@ export function createSettingsView(settings: Settings, onBack: () => void): Sett
       window.removeEventListener('keydown', onKeyDown, true)
       window.removeEventListener('pointerdown', onPointerDown, true)
       unsubscribe()
+      unsubscribeGame?.()
     },
   }
 }

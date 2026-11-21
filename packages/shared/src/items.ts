@@ -38,9 +38,17 @@ export type ItemDef = {
   cooks?: { into: string; heat: number; ticks: number }
   // A bucket, and what is in it.
   bucket?: string
+  // Armour: the slot it is worn in, how many degrees warmer it keeps its wearer (see cold.ts), and how much less damage
+  // each hit does to them (see `damageAfterArmor`).
+  armor?: { slot: ArmorSlot; warmth: number; defense: number }
+  // Food: how much health eating one gives back.
+  heals?: number
 }
 
-const CATEGORIES = ['ore', 'plant', 'mineral', 'tool', 'weapon', 'food', 'material', 'animal', 'structure'] as const
+export const ARMOR_SLOTS = ['head', 'body', 'feet'] as const
+export type ArmorSlot = (typeof ARMOR_SLOTS)[number]
+
+const CATEGORIES = ['ore', 'plant', 'mineral', 'tool', 'weapon', 'food', 'material', 'animal', 'structure', 'armor'] as const
 export type ItemCategory = (typeof CATEGORIES)[number]
 const TOOL_KINDS = ['axe', 'pickaxe', 'knife'] as const
 export type ToolKind = (typeof TOOL_KINDS)[number]
@@ -63,7 +71,7 @@ function parseItems(data: unknown): ItemDef[] {
       throw new Error(`data/items.json, item ${index + 1}${label}: ${problem}`)
     }
     if (typeof raw !== 'object' || raw === null) fail('is not an object')
-    const { id, key, name, color, category, mineTicks = 0, weight = 0, places, tool, stack, tags = [], crop, icon, fuel, cooks, bucket } = raw
+    const { id, key, name, color, category, mineTicks = 0, weight = 0, places, tool, stack, tags = [], crop, icon, fuel, cooks, bucket, armor, heals } = raw
     const seconds = (value: unknown, what: string): number =>
       typeof value === 'number' && value > 0 ? Math.max(1, Math.round(value * TPS)) : fail(`"${what}" must be a number of seconds above 0`)
     const heat = (value: unknown, what: string): number => (isWhole(value, 0) ? value : fail(`"${what}" must be a whole number, 0 or more`))
@@ -71,6 +79,11 @@ function parseItems(data: unknown): ItemDef[] {
     const cooksDef = cooks as { into?: unknown; heat?: unknown; seconds?: unknown } | undefined
     if (cooksDef !== undefined && typeof cooksDef.into !== 'string') fail('"cooks.into" must be the key of an item')
     if (bucket !== undefined && typeof bucket !== 'string') fail('"bucket" must be "empty" or the name of the liquid it holds')
+    const armorDef = armor as { slot?: unknown; warmth?: unknown; defense?: unknown } | undefined
+    if (armorDef !== undefined && (!ARMOR_SLOTS.includes(armorDef.slot as ArmorSlot) || !isWhole(armorDef.warmth, 0) || !isWhole(armorDef.defense ?? 0, 0))) {
+      fail(`"armor" must be { "slot": one of ${ARMOR_SLOTS.join(', ')}, "warmth": a whole number, "defense": a whole number }`)
+    }
+    if (heals !== undefined && !isWhole(heals, 1)) fail('"heals" must be a whole number above 0')
     if (!isWhole(id, 1)) return fail('"id" must be a whole number above 0')
     if (seenIds.has(id)) fail(`"id" ${id} is used twice`)
     if (typeof key !== 'string' || !/^[a-z0-9-]+$/.test(key)) return fail('"key" must be lower-case letters, digits and dashes')
@@ -105,6 +118,8 @@ function parseItems(data: unknown): ItemDef[] {
       ...(fuelDef ? { fuel: { heat: heat(fuelDef.heat, 'fuel.heat'), ticks: seconds(fuelDef.seconds, 'fuel.seconds') } } : {}),
       ...(cooksDef ? { cooks: { into: cooksDef.into as string, heat: heat(cooksDef.heat, 'cooks.heat'), ticks: seconds(cooksDef.seconds, 'cooks.seconds') } } : {}),
       ...(bucket !== undefined ? { bucket: bucket as string } : {}),
+      ...(armorDef ? { armor: { slot: armorDef.slot as ArmorSlot, warmth: armorDef.warmth as number, defense: (armorDef.defense as number | undefined) ?? 0 } } : {}),
+      ...(heals !== undefined ? { heals: heals as number } : {}),
     }
   })
 }

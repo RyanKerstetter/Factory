@@ -1,20 +1,31 @@
-import { GAME_TITLE, type GameInfo, type SavedWorldInfo } from '../../../../packages/shared/src/index.ts'
+import {
+  DEFAULT_TERRAIN,
+  GAME_TITLE,
+  WORLD_SIZE_KEYS,
+  WORLD_SIZES,
+  type GameInfo,
+  type SavedWorldInfo,
+  type TerrainSettings,
+  type WorldSize,
+} from '../../../../packages/shared/src/index.ts'
 import { button, element } from './dom.ts'
 
 export type MenuTab = 'create' | 'load' | 'join'
 
 export type MenuHandlers = {
-  // A new world on the server, by name (and seed: empty for a random one).
-  onCreate: (name: string, worldName: string, seed: string) => void
+  // A new world on the server, by name (and seed: empty for a random one), of a size and coastline.
+  onCreate: (name: string, worldName: string, seed: string, terrain: TerrainSettings) => void
   // Start a saved world running, and play in it.
   onLoad: (name: string, code: string) => void
   // Join a running world.
   onJoin: (name: string, code: string) => void
   // Download a world as a file; add a world from a file to the saved worlds.
   onExport: (code: string) => void
+  // Delete a saved world for good (after asking).
+  onDelete: (code: string, name: string) => void
   onImport: (file: File) => void
   // Singleplayer: a world run in this browser (not saved yet).
-  onSingleplayer: (name: string, seed: string) => void
+  onSingleplayer: (name: string, seed: string, terrain: TerrainSettings) => void
   // The lists for the Load and Join tabs, fetched each time a tab is shown.
   listSaved: () => Promise<SavedWorldInfo[] | string>
   listRunning: () => Promise<GameInfo[] | string>
@@ -60,17 +71,41 @@ export function createMenuView(
   // ---- create
   const worldInput = input('menu-world', 'My world', 40)
   const seedInput = input('menu-seed', 'Random', 40)
-  const createButton = button('btn btn-primary', 'Create game', () => handlers.onCreate(playerName(), worldInput.value, seedInput.value))
+  // How the land is laid out (both for a hosted world and an offline one): the size preset and how ragged the coasts are.
+  const sizeSelect = element('select', 'field-input')
+  sizeSelect.id = 'menu-size'
+  for (const size of WORLD_SIZE_KEYS) {
+    const option = element('option', '', WORLD_SIZES[size].label)
+    option.value = size
+    sizeSelect.append(option)
+  }
+  sizeSelect.value = DEFAULT_TERRAIN.size
+  const bumpInput = element('input', 'field-range')
+  bumpInput.id = 'menu-bumpiness'
+  bumpInput.type = 'range'
+  bumpInput.min = '0'
+  bumpInput.max = '100'
+  bumpInput.step = '5'
+  bumpInput.value = `${DEFAULT_TERRAIN.bumpiness}`
+  const bumpValue = element('span', 'field-value', bumpInput.value)
+  bumpInput.addEventListener('input', () => (bumpValue.textContent = bumpInput.value))
+  const terrain = (): TerrainSettings => ({ size: sizeSelect.value as WorldSize, bumpiness: Number(bumpInput.value) })
+  const sizeLabel = element('label', 'field-label', 'World size')
+  sizeLabel.htmlFor = sizeSelect.id
+  const bumpLabel = element('label', 'field-label', 'Coastline bumpiness')
+  bumpLabel.htmlFor = bumpInput.id
+  const createButton = button('btn btn-primary', 'Create game', () => handlers.onCreate(playerName(), worldInput.value, seedInput.value, terrain()))
   onEnter(worldInput, createButton)
   onEnter(seedInput, createButton)
   const soloSeedInput = input('menu-solo-seed', 'Random', 40)
-  const soloButton = button('btn', 'Play offline', () => handlers.onSingleplayer(playerName(), soloSeedInput.value))
+  const soloButton = button('btn', 'Play offline', () => handlers.onSingleplayer(playerName(), soloSeedInput.value, terrain()))
   onEnter(soloSeedInput, soloButton)
   const createPane = element(
     'div',
     'menu-pane',
     label('World name', worldInput),
     worldInput,
+    element('div', 'field-row terrain-row', element('div', 'field-stack', sizeLabel, sizeSelect), element('div', 'field-stack', bumpLabel, element('div', 'field-row', bumpInput, bumpValue))),
     label('World seed', seedInput),
     element('div', 'field-row', seedInput, createButton),
     element('p', 'menu-note', 'The world is kept on the server, saved every minute: load it again any time from Load game.'),
@@ -140,6 +175,7 @@ export function createMenuView(
                 `Saved ${date(world.savedAt)}${world.players.length ? ` · ${world.players.join(', ')}` : ''}`,
                 button('btn btn-small btn-primary', 'Load', () => handlers.onLoad(playerName(), world.code)),
                 button('btn btn-small', 'Export', () => handlers.onExport(world.code)),
+                button('btn btn-small btn-danger', 'Delete', () => handlers.onDelete(world.code, world.name)),
               ),
             )),
       )

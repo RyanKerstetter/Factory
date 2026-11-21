@@ -1,5 +1,5 @@
 import './style.css'
-import { GAME_TITLE, seedFromText, type GameInfo, type SavedWorldInfo } from '../../../packages/shared/src/index.ts'
+import { GAME_TITLE, seedFromText, type GameInfo, type SavedWorldInfo, type TerrainSettings } from '../../../packages/shared/src/index.ts'
 import { startGame } from './game.ts'
 import { createMenuView } from './ui/menu-view.ts'
 
@@ -52,7 +52,7 @@ function showMenu(message?: string, isError = false): void {
     menu.setMessage(error, true)
   }
   const menu = createMenuView(app, { name: readName(), code, ...(message ? { message, isError } : {}) }, {
-    onCreate: async (name, worldName, seed) => {
+    onCreate: async (name, worldName, seed, terrain) => {
       saveName(name)
       if (!worldName.trim()) {
         menu.setMessage('Give the world a name.', true)
@@ -60,7 +60,7 @@ function showMenu(message?: string, isError = false): void {
       }
       menu.setBusy(true)
       menu.setMessage('Making a world…')
-      const body = { name: worldName.trim(), ...(seed.trim() ? { seed: seed.trim() } : {}) }
+      const body = { name: worldName.trim(), ...(seed.trim() ? { seed: seed.trim() } : {}), size: terrain.size, bumpiness: terrain.bumpiness }
       const result = await api<GameInfo>('/api/games', { method: 'POST', body: JSON.stringify(body) })
       if (!result.ok) return failed(result.error)
       void enter(result.data.code, name)
@@ -94,6 +94,15 @@ function showMenu(message?: string, isError = false): void {
       link.click()
       link.remove()
     },
+    onDelete: async (worldCode, worldName) => {
+      if (!window.confirm(`Delete “${worldName}” for good? This cannot be undone. (Export it first to keep a copy.)`)) return
+      menu.setBusy(true)
+      const result = await api<{ ok: boolean }>(`/api/saves/${encodeURIComponent(worldCode)}`, { method: 'DELETE' })
+      menu.setBusy(false)
+      if (!result.ok) return failed(result.error)
+      menu.setMessage(`Deleted “${worldName}”.`)
+      menu.show('load')
+    },
     onImport: async (file) => {
       menu.setBusy(true)
       menu.setMessage(`Importing ${file.name}…`)
@@ -112,17 +121,17 @@ function showMenu(message?: string, isError = false): void {
       const result = await api<GameInfo[]>('/api/games')
       return result.ok ? result.data : result.error
     },
-    onSingleplayer: (name, seed) => {
+    onSingleplayer: (name, seed, terrain) => {
       saveName(name)
       menu.setBusy(true)
       // A random seed, or the one typed (as a hosted game makes it).
       const typed = seed.trim()
-      void enter('SOLO', name, { seed: typed ? seedFromText(typed) : 1 + Math.floor(Math.random() * 999_999_999) })
+      void enter('SOLO', name, { seed: typed ? seedFromText(typed) : 1 + Math.floor(Math.random() * 999_999_999), terrain })
     },
   })
 }
 
-async function enter(code: string, name: string, local?: { seed: number }): Promise<void> {
+async function enter(code: string, name: string, local?: { seed: number; terrain: TerrainSettings }): Promise<void> {
   // A singleplayer world has no code to share, so the address does not get one.
   setGameInAddress(local ? undefined : code)
   let left = false

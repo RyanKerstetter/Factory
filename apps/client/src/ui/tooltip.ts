@@ -28,12 +28,15 @@ export function createTooltips(container: HTMLElement): () => void {
     over = undefined
   }
 
+  // Any key (E or Esc closing the panel under it) hides it too; it shows again when the mouse next moves over something.
   window.addEventListener('pointermove', onMove)
   window.addEventListener('pointerdown', hide)
+  window.addEventListener('keydown', hide)
   window.addEventListener('blur', hide)
   return () => {
     window.removeEventListener('pointermove', onMove)
     window.removeEventListener('pointerdown', hide)
+    window.removeEventListener('keydown', hide)
     window.removeEventListener('blur', hide)
     tip.remove()
   }

@@ -253,7 +253,7 @@ test('a knife kills an animal in half the hits; a grown one drops its meat and t
   assert.equal(countOf(client.player.inventory, itemId('feather')), before, 'a chick drops nothing')
 })
 
-test('a cow is milked with a right click holding a bucket, which is kept; a hen lays eggs on the ground', () => {
+test('a cow is milked with a right click holding a bucket, which it fills, one bucket a time; a hen lays eggs on the ground', () => {
   const { room, client } = farm('MILK')
   const cow = room.animals!.spawn(animalDef('cow'), center(2, 1).x, center(2, 1).y, { sex: 'f' })
   cow.milk = 2
@@ -261,9 +261,25 @@ test('a cow is milked with a right click holding a bucket, which is kept; a hen 
   client.command({ k: 'interact', animal: cow.id, slot: 0 })
   client.command({ k: 'interact', animal: cow.id, slot: 0 })
   run(room, [client], 5)
-  assert.equal(countOf(client.player.inventory, itemId('milk')), 2)
-  assert.equal(countOf(client.player.inventory, itemId('bucket')), 1, 'the bucket is kept')
-  assert.deepEqual(client.results.map((result) => result.why ?? 'ok'), ['ok', 'noMilk'])
+  assert.equal(countOf(client.player.inventory, itemId('milk')), 1, 'the bucket is filled')
+  assert.equal(countOf(client.player.inventory, itemId('bucket')), 0, 'no bucket comes from nowhere')
+  assert.equal(cow.milk, 1, 'she keeps the rest for another bucket')
+  assert.deepEqual(client.results.map((result) => result.why ?? 'ok'), ['ok', 'nothingToDo'], 'a full bucket cannot be filled')
+  // Poured into a barrel, the milk leaves the bucket empty; drawn out again, it fills it, with no bucket to spare;
+  // dumped on the ground, the bucket is left empty.
+  client.player.inventory.slots[1] = { item: itemId('barrel'), count: 1 }
+  client.command({ k: 'place', x: 1, y: -2, slot: 1 })
+  client.command({ k: 'apply', x: 1, y: -2, slot: 0 })
+  run(room, [client], 3)
+  assert.equal(client.player.inventory.slots[0].item, itemId('bucket'), 'poured out')
+  client.command({ k: 'apply', x: 1, y: -2, slot: 0 })
+  run(room, [client], 3)
+  assert.equal(client.player.inventory.slots[0].item, itemId('milk'), 'drawn out')
+  assert.equal(countOf(client.player.inventory, itemId('bucket')), 0)
+  client.command({ k: 'apply', x: -1, y: -2, slot: 0 })
+  run(room, [client], 3)
+  assert.equal(client.player.inventory.slots[0].item, itemId('bucket'), 'dumped')
+  assert.deepEqual(client.results.slice(2).map((result) => result.why ?? 'ok'), ['ok', 'ok', 'ok', 'ok'])
   const chickens = animalDef('chicken')
   const eggTime = chickens.stats.findIndex((stat) => stat.key === 'eggTime')
   const hen = room.animals!.spawn(chickens, center(-3, -3).x, center(-3, -3).y, { sex: 'f' })

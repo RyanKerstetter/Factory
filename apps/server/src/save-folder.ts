@@ -48,6 +48,13 @@ export class SaveFolder {
     return undefined
   }
 
+  // Deletes a save (both forms of its file). Gives whether there was one.
+  async remove(code: string): Promise<boolean> {
+    const had = (await this.read(code)) !== undefined
+    for (const file of [this.file(code), this.plainFile(code), `${this.file(code)}.tmp`]) await rm(file, { force: true })
+    return had
+  }
+
   // Every save in the folder, newest first.
   async list(): Promise<WorldSave[]> {
     let names: string[]

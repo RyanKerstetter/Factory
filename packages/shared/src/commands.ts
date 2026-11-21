@@ -1,12 +1,14 @@
-import { BUILDINGS, type BuildingKind } from './buildings.ts'
-import { PLAYER_REACH } from './constants.ts'
+import { BUILDING_BOUNDS, BUILDINGS, type BuildingKind } from './buildings.ts'
+import { PLAYER_REACH, SUB } from './constants.ts'
 import { distanceToTileSquared, isInsideWorld, type Direction } from './geometry.ts'
 import { getItem, NO_ITEM, type ItemId } from './items.ts'
 import type { Inventory } from './inventory.ts'
 import { fenceBoxes, fenceMask } from './fences.ts'
-import { playerOverlapsTile, type IsSlow, type IsSolid } from './movement.ts'
+import { playerOverlapsTile, type Box, type IsSlow, type IsSolid } from './movement.ts'
 import type { FactoryWorld } from './sim/factory-world.ts'
-import { oreAt, waterAt } from './world-gen.ts'
+import { groundBlocks, oreAt, waterAt } from './world-gen.ts'
+import { isInDungeons } from './dungeon.ts'
+import type { Terrain } from './terrain.ts'
 
 // What a player asks to happen to the factory. A client sends it stamped with the tick it should run on; the server
 // checks it on that tick and runs it, runs part of it ("take up to 50"), or turns it down, and logs what happened.
@@ -50,9 +52,22 @@ export type Command =
   // Attack with what is in slot `slot` (-1: bare-handed), towards the point x, y (in units): the basic attack, or the
   // special one; `charge` is how many ticks a shot, a throw or a windup was held for (see weapons.ts). `seen` is the
   // server tick the page was drawing the animals at, so the attack is judged against where the player saw them.
-  | { k: 'attack'; special: boolean; slot: number; x: number; y: number; charge: number; seen?: number }
+  | { k: 'attack'; special: boolean; slot: number; x: number; y: number; charge: number; seen?: number; input?: number; dir?: number }
   // Use whatever is in slot `slot` on an animal: put a rope on it (or take yours off), or milk a cow.
   | { k: 'interact'; animal: number; slot: number }
+  // The host turns players hurting each other on or off.
+  | { k: 'pvp'; on: boolean }
+  // Eat one of the food in slot `slot` (the food slot, with F), for the health it gives back (`heals` in items.json),
+  // at most once every EAT_COOLDOWN_TICKS.
+  | { k: 'eat'; slot: number }
+  // A chest: sort what is in it (stacks merged, in item order), or top up the stacks it has from the player's inventory
+  // (each to a full stack, no further: nothing new goes in), or name it (`name`, up to CHEST_NAME_LENGTH; empty for none).
+  | { k: 'chest'; id: number; action: 'sort' | 'stash' }
+  | { k: 'rename'; id: number; name: string }
+  // Which hotbar slot the player has picked (-1: bare hands), so others see what they hold.
+  | { k: 'hold'; slot: number }
+  // Sleep in a sleeping bag: the player wakes up beside it when they are next knocked out.
+  | { k: 'sleep'; id: number }
   // Put one of the item in slot `slot` of the player's inventory down on a tile, as what it places (an acorn is
   // planted as a sapling).
   | { k: 'place'; x: number; y: number; slot: number }
@@ -75,9 +90,12 @@ export const REFUSALS = {
   noAmmo: 'You have nothing to shoot.',
   needsTool: 'You need the right tool with you for that (see the recipe).',
   water: 'You cannot build on water.',
+  dungeon: 'Nothing can be built down here.',
+  guarded: 'The skeletons guard the chest: defeat them all first.',
   sealed: 'The barrel is sealed.',
   inventoryFull: 'Your inventory is full.',
   unripe: 'It is still growing: it takes a tool to dig it up.',
+  notHost: 'Only the host can change that.',
   cannotApply: 'There is nothing to use that on there.',
   noFuel: 'Put some fuel in first.',
   barrelFull: 'The barrel is full, or has something else in it.',
@@ -92,6 +110,12 @@ export const REFUSALS = {
   lacking: 'You do not have what that needs.',
   full: 'There is no room for it.',
   notPlaceable: 'That cannot be put down.',
+  notFood: 'That cannot be eaten.',
+  fullHealth: 'You are not hurt.',
+  notBed: 'That is not a sleeping bag.',
+  invalid: 'The server could not read that.',
+  busy: 'It is making something else.',
+  eatTooSoon: 'Not hungry yet.',
   tooSoon: 'Too quick.',
   natural: 'Punch it instead.',
   late: 'The command was too far ahead of the server.',
@@ -106,7 +130,7 @@ export function isWithinReach(player: { x: number; y: number }, x: number, y: nu
 // guess when it draws the preview (from the factory it has, which is a few ticks old).
 export function checkBuild(
   world: FactoryWorld,
-  seed: number,
+  terrain: Terrain,
   player: { x: number; y: number },
   x: number,
   y: number,
@@ -115,22 +139,36 @@ export function checkBuild(
   if (!isInsideWorld(x, y)) return 'outside'
   if (!isWithinReach(player, x, y)) return 'reach'
   if (world.entityAt(x, y)) return 'occupied'
-  if (waterAt(seed, x, y)) return 'water'
+  if (isInDungeons(x, y)) return 'dungeon'
+  if (waterAt(terrain, x, y)) return 'water'
   if (BUILDINGS[kind].solid && playerOverlapsTile(player, x, y)) return 'standing'
-  if (kind === 'miner' && oreAt(seed, x, y) === NO_ITEM) return 'noOre'
+  if (kind === 'miner' && oreAt(terrain.seed, x, y) === NO_ITEM) return 'noOre'
   return undefined
 }
 
-// What players cannot walk into, as a world has it: water (with the world's seed), the tiles with a solid building (a
-// tree, a miner, a chest), and a fence's post and rails.
-export function solidIn(world: FactoryWorld, seed: () => number = () => Number.NaN): IsSolid {
+// The boxes a solid building stands in the way with in its tile (see BUILDING_BOUNDS), in units; undefined: all of it.
+const boundsInUnits = new Map<BuildingKind, readonly Box[]>()
+export function boundsOf(kind: BuildingKind): readonly Box[] | undefined {
+  const fractions = BUILDING_BOUNDS[kind]
+  if (!fractions) return undefined
+  let boxes = boundsInUnits.get(kind)
+  if (!boxes) {
+    boxes = fractions.map((box) => box.map((edge) => Math.round(edge * SUB)) as unknown as Box)
+    boundsInUnits.set(kind, boxes)
+  }
+  return boxes
+}
+
+// What players cannot walk into, as a world has it: water and a dungeon's walls (once the world's terrain is known),
+// the tiles with a solid building (a tree, a miner, a chest), and a fence's post and rails.
+export function solidIn(world: FactoryWorld, terrain: () => Terrain | undefined = () => undefined): IsSolid {
   const kindAt = (x: number, y: number): BuildingKind | undefined => world.entityAt(x, y)?.kind
   return (x, y) => {
-    const worldSeed = seed()
-    if (!Number.isNaN(worldSeed) && waterAt(worldSeed, x, y)) return true
+    const land = terrain()
+    if (land && groundBlocks(land, x, y)) return true
     const entity = world.entityAt(x, y)
     if (!entity || !BUILDINGS[entity.kind].solid) return false
-    return entity.kind === 'fence' ? fenceBoxes(fenceMask(kindAt, x, y)) : true
+    return entity.kind === 'fence' ? fenceBoxes(fenceMask(kindAt, x, y)) : (boundsOf(entity.kind) ?? true)
   }
 }
 
@@ -152,7 +190,7 @@ export function checkPlace(
   slot: number,
   x: number,
   y: number,
-  seed?: number,
+  terrain?: Terrain,
 ): { ok: true; kind: BuildingKind } | { ok: true; sow: number } | { ok: false; why: Refusal } {
   const held = inventory.slots[slot]
   if (!held || held.count === 0) return { ok: false, why: 'nothing' }
@@ -168,7 +206,8 @@ export function checkPlace(
   if (!isInsideWorld(x, y)) return { ok: false, why: 'outside' }
   if (!isWithinReach(player, x, y)) return { ok: false, why: 'reach' }
   if (there) return { ok: false, why: 'occupied' }
-  if (seed !== undefined && waterAt(seed, x, y)) return { ok: false, why: 'water' }
+  if (isInDungeons(x, y)) return { ok: false, why: 'dungeon' }
+  if (terrain !== undefined && waterAt(terrain, x, y)) return { ok: false, why: 'water' }
   if (BUILDINGS[kind].solid && playerOverlapsTile(player, x, y)) return { ok: false, why: 'standing' }
   return { ok: true, kind }
 }

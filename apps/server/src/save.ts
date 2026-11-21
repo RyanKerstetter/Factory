@@ -6,6 +6,7 @@ import {
   type LinkState,
   type PlantGeneration,
   type SavedWorldInfo,
+  type TerrainSettings,
 } from '../../../packages/shared/src/index.ts'
 import type { AnimalSave } from './animals.ts'
 
@@ -24,6 +25,8 @@ export type PlayerSave = {
   x: number
   y: number
   health: number
+  // The tile of the sleeping bag they last slept in, if any.
+  bed?: [number, number]
   // Slot by slot: [item key, count], or null for an empty slot.
   inventory: Array<[string, number] | null>
 }
@@ -44,6 +47,9 @@ export type WorldSave = {
   // seed grows there, its first flint's ID, how many pieces of flint, a checksum of them]. On loading, a chunk is grown
   // again with those IDs, and then what was saved for it put in place of what changed (see `chunks`).
   generation?: PlantGeneration
+  // How big the world is and how ragged its coasts are (see terrain.ts). A save from before biomes has none, and is
+  // given the default.
+  terrain?: TerrainSettings
   generated?: Array<[number, number, number, number, number, number]>
   // The key of each item number, as the world was saved with (index: the number).
   items: string[]
@@ -55,6 +61,9 @@ export type WorldSave = {
   animals?: AnimalSave
   // Everyone who has played in it, by name (lower case, which is how players are linked to their save).
   players: Record<string, PlayerSave>
+  // The host (the player who made it), and whether players can hurt each other.
+  host?: string
+  pvp?: boolean
 }
 
 // The keys of the items, by number, as they are now.

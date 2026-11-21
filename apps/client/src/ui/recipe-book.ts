@@ -1,6 +1,7 @@
 import { getItem, type ItemId } from '../../../../packages/shared/src/index.ts'
 import { artUrl } from '../render/art.ts'
 import { itemArt } from '../render/art-catalog.ts'
+import { itemTip } from './item-tip.ts'
 import { button, element } from './dom.ts'
 
 // One recipe in a book: what it makes, what it takes (and how much of each the player has), the tool it needs (for a
@@ -29,7 +30,7 @@ export function itemIcon(item: ItemId, className = 'pixel slot-icon'): HTMLImage
   icon.src = artUrl(itemArt(item))
   icon.alt = ''
   icon.draggable = false
-  icon.dataset.tip = getItem(item).name
+  icon.dataset.tip = itemTip(item)
   return icon
 }
 

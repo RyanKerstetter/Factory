@@ -1,4 +1,4 @@
-import { TICK_MS, type RequestMessage } from '../../../packages/shared/src/index.ts'
+import { TICK_MS, type RequestMessage, type TerrainSettings } from '../../../packages/shared/src/index.ts'
 import { GameRoom, type ServerPlayer } from '../../server/src/game-room.ts'
 
 // Singleplayer: the game server, run in a Web Worker in the player's own browser. It is the very GameRoom the hosted
@@ -8,7 +8,7 @@ import { GameRoom, type ServerPlayer } from '../../server/src/game-room.ts'
 
 // What the page sends: start a world (once), and then what a network connection would carry.
 export type ToLocalServer =
-  | { t: 'start'; seed: number; name: string }
+  | { t: 'start'; seed: number; name: string; terrain?: Partial<TerrainSettings> }
   | { t: 'req'; message: RequestMessage }
   | { t: 'input'; i: Array<[number, number]> }
   | { t: 'ack'; s: number }
@@ -37,7 +37,7 @@ scope.onmessage = (event) => {
   const message = event.data
   if (message.t === 'start') {
     if (room) return
-    room = new GameRoom('SOLO', message.seed)
+    room = new GameRoom('SOLO', message.seed, message.terrain ? { terrain: message.terrain } : {})
     player = room.join(message.name, {
       sendLog: (log) => scope.postMessage({ t: 'log', message: log }),
       sendState: (state) => scope.postMessage({ t: 'state', message: state }),

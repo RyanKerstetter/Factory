@@ -6,8 +6,9 @@
 // - `range`, `arc`: how far and how wide the basic attack reaches. A jab or a thrust is narrow and straight; a swing wide.
 //   It hits every animal, and every plant, rock or building, inside that shape, so spacing things right clears more.
 //   With `width` (tiles) instead of `arc`, it is a straight rectangle out in front, `range` long and `width` wide.
+//   A "strike" is a small circle instead, `radius` across, `range` ahead.
 // - `cooldown`: how long after it before the next attack (with anything: every weapon shares it).
-// - `basic`: "jab", "swing" or "thrust" (melee), or "shot": held to charge (`windup` the least, `charge` the most),
+// - `basic`: "jab", "swing", "thrust" or "strike" (melee), or "shot": held to charge (`windup` the least, `charge` the most),
 //   shooting one of `ammo` at `speed` tiles a second when let go.
 // - `special` (right click), held for its `windup` and let go: what it is (see weapons.ts), with its own `damage`,
 //   reach and `cooldown`, and what it does on top (`knockback` tiles, `stun` seconds, a `dash` forward, a `hop` back, a
@@ -19,8 +20,9 @@ export type AttackDef = {
   range?: number
   arc?: number
   width?: number
+  radius?: number
   cooldown: number
-  basic: 'jab' | 'swing' | 'thrust' | 'shot'
+  basic: 'jab' | 'swing' | 'thrust' | 'strike' | 'shot'
   ammo?: string
   windup?: number
   charge?: number
@@ -53,7 +55,7 @@ export const ATTACK_DEFS: Readonly<Record<string, AttackDef>> = {
     arc: 100,
     cooldown: 0.3,
     basic: 'swing',
-    special: { kind: 'lunge', windup: 0.25, damage: 4, range: 0.9, arc: 70, dash: 2, cooldown: 1.2 },
+    special: { kind: 'lunge', windup: 0.25, damage: 4, range: 0.9, arc: 70, dash: 3.5, cooldown: 1.2 },
   },
   axe: {
     damage: 3,
@@ -63,12 +65,13 @@ export const ATTACK_DEFS: Readonly<Record<string, AttackDef>> = {
     basic: 'swing',
     special: { kind: 'chop', windup: 0.7, damage: 8, range: 1.5, arc: 40, knockback: 0.5, cooldown: 1.4 },
   },
+  // A strike: the point comes down on a small spot just ahead, not a sweep.
   pickaxe: {
     damage: 3,
-    range: 1.3,
-    arc: 120,
+    range: 1,
+    radius: 0.45,
     cooldown: 0.5,
-    basic: 'swing',
+    basic: 'strike',
     special: { kind: 'smash', windup: 0.8, damage: 5, range: 1.1, radius: 1.3, knockback: 1.5, cooldown: 1.5 },
   },
   club: {

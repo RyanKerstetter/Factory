@@ -10,11 +10,33 @@ import {
   PLAYER_MASS,
   PLAYER_MAX_HEALTH,
   STATION_RECIPES,
+  stationOutputFits,
+  dashOf,
+  stationRecipe,
+  WORKBENCH_TOOL_SLOT,
   NO_ITEM,
   STATION_TOOL_SLOT,
   getCrop,
   growthNeeded,
   waterAt,
+  coldSpeedPercent,
+  frostOf,
+  dungeonSlotAt,
+  isInDungeons,
+  BODY_NORMAL,
+  ATTACK_SLOW_TICKS,
+  snowAt,
+  TPS,
+  WAVE_RADIUS,
+  WAVE_SPEED,
+  WATER_FALL_EVERY,
+  FOOD_SLOT,
+  PLAYER_REACH,
+  WEAPONS,
+  ARMOR_SLOT,
+  distanceToTileSquared,
+  EAT_COOLDOWN_TICKS,
+  airTemperatureAt,
   getRecipe,
   barrelPlan,
   BARREL_CAPACITY,
@@ -34,7 +56,7 @@ import {
   canAfford,
   resourceDamage,
   weaponIn,
-  tilesIn,
+  tilesHitBy,
   KEY_SLOW,
   type Weapon,
   hpOf,
@@ -58,16 +80,17 @@ import {
   type Command,
   type Entity,
   type Inventory,
+  type TerrainSettings,
   type ItemId,
   type Link,
 } from '../../../packages/shared/src/index.ts'
-import { footstep, Sounds, surfaceAt, type SoundId } from './audio/sounds.ts'
-import { DEFAULT_ZOOM, nextZoom } from './camera.ts'
+import { animalSound, footstep, Sounds, surfaceAt, type SoundId } from './audio/sounds.ts'
+import { DEFAULT_ZOOM, easeZoom, zoomAfterWheel } from './camera.ts'
 import { connect, connectLocal, type ConnectionHandlers } from './connection.ts'
 import { diffChunkSnapshots } from './desync-diff.ts'
 import { FactoryMirror } from './factory-mirror.ts'
 import { HeldKeys, isMovementAction, isTypingIn } from './input.ts'
-import { attackShape, INDICATOR_COLOR, INDICATOR_READY_COLOR, shapePolygons, type AttackShape } from './attack-shapes.ts'
+import { attackPose, attackSwish, holdingPose } from './attack-shapes.ts'
 import { LocalPlayer } from './local-player.ts'
 import { machineProgress, machineView } from './machine-views.ts'
 import { Prediction } from './prediction.ts'
@@ -84,6 +107,7 @@ import type {
   GhostView,
   OverlayView,
   PlayerView,
+  PlayerPose,
 } from './render/world-renderer.ts'
 import { createThreeView } from './render3d/three-view.ts'
 import { HOTBAR_ACTIONS, Settings } from './settings.ts'
@@ -91,6 +115,8 @@ import { createDebugOverlay } from './ui/debug-overlay.ts'
 import { copyText, element } from './ui/dom.ts'
 import { createHotbarView } from './ui/hotbar-view.ts'
 import { createHudView } from './ui/hud-view.ts'
+import { createSnowstorm } from './ui/snowstorm-view.ts'
+import { createFrostView } from './ui/frost-view.ts'
 import { createInventoryPanels, type MachineView, type PanelsView } from './ui/inventory-view.ts'
 import { createPauseMenu } from './ui/pause-menu-view.ts'
 import type { BookEntry } from './ui/recipe-book.ts'
@@ -100,8 +126,9 @@ export type GameOptions = {
   container: HTMLElement
   code: string
   name: string
-  // Singleplayer: the world is run in this browser (see connectLocal), from this seed, and nobody else can join.
-  local?: { seed: number }
+  // Singleplayer: the world is run in this browser (see connectLocal), from this seed and land, and nobody else can
+  // join.
+  local?: { seed: number; terrain?: TerrainSettings }
   // The player is going back to the menu: they chose to, or the game was lost. The message says why, if anything.
   onLeave: (message?: string, isError?: boolean) => void
 }
@@ -121,9 +148,32 @@ const STEP_DISTANCE = 1.75 * SUB
 const RUSTLE_DISTANCE = 1.1 * SUB
 // How long a punched plant sways, an attack's shape flashes as it lands, a spark lasts, and a damage number rises.
 const SHAKE_MS = 260
-const SWING_MS = 180
+// How long a killed animal takes to fall over before it is gone.
+const DEATH_MS = 450
+const SWING_MS = 280
 const SPARK_MS = 280
 const NUMBER_MS = 900
+// How far past reach (as a share of it) the player can walk from what they have open before it closes.
+const CLOSE_AWAY = 1
+// Refusals answered with a sound only.
+const QUIET_REFUSALS: ReadonlySet<string> = new Set(['busy', 'noWork', 'needsTool', 'noRecipe', 'notFood', 'fullHealth', 'eatTooSoon'])
+// How long a command can go unanswered before the player is told something is wrong.
+const STALL_WARN_MS = 6_000
+// How many hp each notch on a boss's health bar marks off.
+const BOSS_NOTCH = 50
+
+// A circle (tiles) as a polygon, for marks on the ground.
+function circle(x: number, y: number, radius: number): Array<{ x: number; y: number }> {
+  return Array.from({ length: 40 }, (_, i) => ({ x: x + Math.cos((i / 40) * Math.PI * 2) * radius, y: y + Math.sin((i / 40) * Math.PI * 2) * radius }))
+}
+
+// The frost lich's icicles: how long one takes to fall (as the server's ICICLE_TICKS), and how wide a ring shows where
+// it will land (its reach, in tiles).
+const ICICLE = itemByKey('icicle')?.id ?? -1
+const ICICLE_FALL_MS = 1200
+const ICICLE_RING = 0.9
+// How heavy the snow is inside the ice crypt: a few flakes drifting down, out of the wind.
+const DUNGEON_FLURRY = 0.12
 
 // Runs one game: the connection, the page's copy of the world, the player's input, and each frame. It works out
 // what to draw and hands it to the world renderer (render/) and the page's elements (ui/); it draws nothing itself.
@@ -150,7 +200,10 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   let openBuilding: number | undefined
   let inventoryOpen = false
   let debug = false
+  // The zoom drawn, easing towards where the wheel has put it, and when it last eased.
   let zoom = DEFAULT_ZOOM
+  let zoomTarget = DEFAULT_ZOOM
+  let zoomedAt = performance.now()
   let playout = PLAYOUT_START
   const local = new LocalPlayer()
   const remotes = new RemotePlayers()
@@ -170,6 +223,8 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   const animalFacesLeft = new Map<number, boolean>()
   // Which way each animal last walked, in radians.
   const animalFacing = new Map<number, number>()
+  // The animals just killed, shown falling over for DEATH_MS before they are gone (and their drops show).
+  const dying: Array<{ info: AnimalInfo; x: number; y: number; facing: number; facingLeft: boolean; at: number }> = []
   const animalHitAt = new Map<number, number>()
   let animalSpots = new Map<number, { x: number; y: number }>()
   let hoveredAnimal: number | undefined
@@ -178,7 +233,12 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   const shotItems = new Map<number, number>()
   // The tick each one stopped on (it is drawn flying until then, and then not at all).
   const shotStopped = new Map<number, number>()
+  // When each icicle was first seen (it is drawn falling from then), and those that have shattered.
+  const shotSeen = new Map<number, number>()
+  const shattered = new Set<number>()
   let health = PLAYER_MAX_HEALTH
+  // How warm the player's body is, in tenths of a °C, as the server last said (see cold.ts).
+  let bodyTenths = BODY_NORMAL * 10
   // The world's name (the server says it when the page joins).
   let worldName = solo ? 'Singleplayer' : code
   const localDumps = new Map<string, ChunkSnapshot>()
@@ -194,6 +254,19 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     hud.toast((await copyText(inviteLink())) ? 'Invite link copied.' : `Invite others with the code ${code}.`)
   }
   const hud = createHudView(hudRoot, () => void copyInvite())
+  // The temperature where the player is, and the snow blowing over the view in the cold.
+  const snow = createSnowstorm(stage)
+  const frost = createFrostView(stage)
+  // The health of a boss being fought, across the top of the screen.
+  const bossFill = element('div', 'boss-fill')
+  const bossName = element('span', 'boss-name')
+  // Its health as a number over the bar, and the bar marked off every BOSS_NOTCH hp.
+  const bossHp = element('span', 'boss-hp')
+  const bossNotches = element('div', 'boss-notches')
+  const bossBar = element('div', 'boss-bar', bossName, element('div', 'boss-track', bossFill, bossNotches, bossHp))
+  let bossNotchesFor = 0
+  bossBar.hidden = true
+  hudRoot.append(bossBar)
   hud.setConnecting(solo ? 'Making the world…' : `Connecting to ${code}…`)
   const hotbar = createHotbarView(hudRoot, (slot) => {
     selectedSlot = slot
@@ -203,9 +276,23 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     openBuilding = undefined
   }
   const panels = createInventoryPanels(hudRoot, {
-    take: (id, item, max) => send({ k: 'take', id, item, max }),
-    put: (id, item, max) => send({ k: 'put', id, item, max }),
-    slot: (from, to, count) => send({ k: 'slot', from, to, count }),
+    take: (id, item, max) => {
+      send({ k: 'take', id, item, max })
+      sounds.play('move')
+    },
+    put: (id, item, max) => {
+      send({ k: 'put', id, item, max })
+      sounds.play('move')
+    },
+    chest: (id, action) => {
+      send({ k: 'chest', id, action })
+      sounds.play('pickup')
+    },
+    rename: (id, chestName) => send({ k: 'rename', id, name: chestName }),
+    slot: (from, to, count) => {
+      send({ k: 'slot', from, to, count })
+      sounds.play('move')
+    },
     drop: (from, count, screen) => {
       const rect = view.canvas.getBoundingClientRect()
       const at = view.pick({ x: screen.x - rect.left, y: screen.y - rect.top })
@@ -220,7 +307,29 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     close: closePanels,
   })
   const debugOverlay = createDebugOverlay(hudRoot)
-  const pause = createPauseMenu(hudRoot, settings, { onCopyInvite: () => void copyInvite(), onLeave: () => leave() })
+  // The room's settings: who the host is, and whether players can hurt each other (the host can change it).
+  let room = { host: '', pvp: true }
+  const roomListeners = new Set<() => void>()
+  // When each player was last hurt by another, by ID, to flash them red.
+  const playerHitAt = new Map<number, number>()
+  const pause = createPauseMenu(
+    hudRoot,
+    settings,
+    { onCopyInvite: () => void copyInvite(), onLeave: () => leave() },
+    {
+      // The connection (`mirror`) is made below, after this menu: until the server has welcomed the player, the name they
+      // asked for stands in for the one the server gave them.
+      get: () => {
+        const me = welcomed ? (roster.get(mirror.playerId) ?? name) : name
+        return { host: room.host, pvp: room.pvp, isHost: room.host !== '' && room.host.toLowerCase() === me.toLowerCase() }
+      },
+      setPvp: (on) => send({ k: 'pvp', on }),
+      subscribe: (listener) => {
+        roomListeners.add(listener)
+        return () => roomListeners.delete(listener)
+      },
+    },
+  )
 
   // The key hints in the top right, written with the keys the player has bound.
   const refreshHints = (): void => {
@@ -254,27 +363,59 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       roster.clear()
       for (const [id, playerName] of players) roster.set(id, playerName)
     },
+    onRoom: (next) => {
+      room = next
+      for (const listener of roomListeners) listener()
+    },
+    // A player hurt by another: it flashes red with the damage rising off it; knocked out, it is back at the spawn.
+    onHurt: ({ id, amount, died }) => {
+      const now = performance.now()
+      playerHitAt.set(id, now)
+      const spot = id === mirror.playerId ? local.position : remotes.positionsAt(lastRemoteTick).find((remote) => remote.id === id)
+      if (spot) numbers.push({ x: spot.x / SUB, y: spot.y / SUB, text: `-${amount}`, at: now })
+      // Hurt yourself: a thud and a grunt; someone else, the dull thump of the hit.
+      sounds.play(id === mirror.playerId ? 'hurt' : 'hit/animal')
+      if (died) hud.toast(id === mirror.playerId ? 'You were knocked out, and woke up back at the start.' : `${roster.get(id) ?? 'Someone'} was knocked out.`)
+    },
     onAnimal: (info) => {
       const before = animalInfo.get(info.id)
       animalInfo.set(info.id, info)
+      // An archer that stops aiming without being hurt has loosed its arrow.
+      if (before?.aim !== undefined && info.aim === undefined && info.hp >= before.hp) sounds.play('attack/shoot')
       if (before && info.hp < before.hp) {
         const now = performance.now()
         const spot = animalSpots.get(info.id)
         animalHitAt.set(info.id, now)
-        sounds.play(info.kind === 'chicken' ? 'animal/chicken' : 'animal/cow')
+        sounds.play(animalSound(info.kind))
         if (spot) {
           numbers.push({ x: spot.x / SUB, y: spot.y / SUB, text: `-${before.hp - info.hp}`, at: now })
           sparks.push({ x: spot.x / SUB, y: spot.y / SUB, at: now, color: 0xd9483b })
         }
       }
     },
-    onAnimalGone: (id) => {
-      // Gone with its health at nothing left: it was killed, and the last hit has its number.
+    onGear: ({ id, held, armor }) => {
+      gear.set(id, { held, armor })
+    },
+    onSwung: ({ id, item, special, angle }) => {
+      const weapon = WEAPONS.get(item === NO_ITEM ? 'hand' : getItem(item as ItemId).key) ?? WEAPONS.get('hand')!
+      flashes.push({ id, weapon, special, angle, at: performance.now() })
+      remoteFacing.set(id, angle)
+    },
+    // A boss's wave of cold air: drawn rolling out from it, as the server rolls it (see dungeons.ts).
+    onWave: ({ x, y, delay }) => {
+      waves.push({ x: x / SUB, y: y / SUB, at: performance.now() + (delay * 1000) / TPS })
+      sounds.play('wave')
+    },
+    onAnimalGone: (id, died) => {
+      // Killed: the blow's number rises off it, and it falls over (its drops show once it has: see visibleDrops).
       const info = animalInfo.get(id)
       const spot = animalSpots.get(id)
-      if (info && spot && info.hp > 0 && performance.now() - (animalHitAt.get(id) ?? Number.NEGATIVE_INFINITY) < 500) {
-        numbers.push({ x: spot.x / SUB, y: spot.y / SUB, text: `-${info.hp}`, at: performance.now() })
-        sounds.play(info.kind === 'chicken' ? 'animal/chicken' : 'animal/cow')
+      if (info && spot && died !== undefined) {
+        const now = performance.now()
+        numbers.push({ x: spot.x / SUB, y: spot.y / SUB, text: `-${died}`, at: now })
+        sparks.push({ x: spot.x / SUB, y: spot.y / SUB, at: now, color: 0xd9483b })
+        sounds.play(animalSound(info.kind))
+        dying.push({ info, x: spot.x / SUB, y: spot.y / SUB, facing: animalFacing.get(id) ?? Math.PI, facingLeft: animalFacesLeft.get(id) ?? true, at: now })
       }
       animalInfo.delete(id)
       animalFacesLeft.delete(id)
@@ -283,8 +424,11 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     },
     onResult: (result) => {
       prediction.settle(result.seq)
-      // A punch a little too soon after the last is simply not counted; it is not worth a message.
-      if (!result.ok && result.why && result.why !== 'tooSoon') hud.toast(REFUSALS[result.why], 'error')
+      if (!result.ok) local.cancelDash(result.seq)
+      // A punch a little too soon after the last is simply not counted; it is not worth a message. Crafting and eating
+      // that cannot be done only make their sound.
+      if (!result.ok && result.why && QUIET_REFUSALS.has(result.why)) sounds.play('craft/fail')
+      else if (!result.ok && result.why && result.why !== 'tooSoon') hud.toast(REFUSALS[result.why], 'error')
     },
     onPlayerInventory: (inventory) => {
       const before = new Map(inventoryTotals(playerInventory).map((total) => [total.item, total.count]))
@@ -334,7 +478,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
         if (!placed) {
           local.place({ x: self[1], y: self[2] })
           placed = true
-        } else local.reconcile({ x: self[1], y: self[2] }, state.a)
+        } else local.reconcile({ x: self[1], y: self[2] }, state.a, state.d ?? 0)
       }
       remotes.update(state.t, state.p, mirror.playerId)
       animalTracks.update(state.t, state.n ?? [], -1)
@@ -344,6 +488,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
         if (stopped && !shotStopped.has(id)) shotStopped.set(id, state.t)
       }
       if (state.h !== undefined) health = state.h
+      if (state.b !== undefined) bodyTenths = state.b
     },
     onError: (message) => {
       if (!welcomed) leave(message, true)
@@ -352,11 +497,13 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     onDisconnect: () => leave('The connection to the game was lost.', true),
   }
   // Online, the game server; in singleplayer, the world run in this browser.
-  const connection = solo ? connectLocal(solo.seed, name, handlers) : connect(code, name, handlers)
+  const connection = solo ? connectLocal(solo.seed, name, handlers, solo.terrain) : connect(code, name, handlers)
   // The player walks into what the page's copy of the world says is solid, and is pushed out of it, and is slowed by
   // what it says is slow (bushes).
-  local.solid = solidIn(mirror.world, () => (mirror.started ? mirror.seed : Number.NaN))
+  local.solid = solidIn(mirror.world, () => (mirror.started ? mirror.terrain : undefined))
   local.slow = slowIn(mirror.world)
+  // Freezing, the player is slowed here as on the server (see cold.ts), by how cold the server says its body is.
+  local.speedPercent = () => coldSpeedPercent(bodyTenths)
   // The animals and other players, which the player is pushed off when on top of them.
   let lastRemoteTick = 0
   local.crowd = () => {
@@ -384,11 +531,19 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
 
   // ---- commands
 
-  const send = (command: Command): void => {
-    if (!welcomed) return
+  // Sends a command; gives its number (undefined if not sent).
+  const send = (command: Command): number | undefined => {
+    if (!welcomed) return undefined
+    // Every number in a command must be a real one: NaN and Infinity go over the wire as null, which the server cannot
+    // read. Such a command is a bug here; it is not sent.
+    if (!finiteThroughout(command)) {
+      console.error('Not sent: a command with a number that is not a number.', command)
+      return undefined
+    }
     const now = performance.now()
     const seq = connection.sendCommand(connection.clock.commandTick(now), command)
     prediction.add(seq, command, now)
+    return seq
   }
 
   // The player's inventory as it will be once what has been asked for is done.
@@ -425,9 +580,21 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   type Charging = { special: boolean; start: number; weapon: Weapon }
   let charging: Charging | undefined
   let attackReadyAt = 0
-  // What attacks covered, flashed on the ground for a moment as they land; sparks where they hit something; and the
-  // numbers that rise off animals that are hurt. Positions in tiles.
-  const flashes: Array<{ shape: AttackShape; angle: number; at: number }> = []
+  // Until when the player is slowed by having just attacked (see ATTACK_SLOW_TICKS), in page time.
+  let attackSlowUntil = 0
+  // Until when the player stands still, making an attack.
+  let attackStillUntil = 0
+  // When the player was last told the game is not answering.
+  let stallWarnedAt = Number.NEGATIVE_INFINITY
+  // The attacks being made, by this player and the others (for their arms' swing and the swish behind the weapon, each
+  // for SWING_MS); sparks where they hit something; and the numbers that rise off animals that are hurt. Positions in
+  // tiles.
+  const flashes: Array<{ id: number; weapon: Weapon; special: boolean; angle: number; at: number }> = []
+  // Waves of cold air: from where (tiles), rolling out from when (ms; before then it is gathering).
+  const waves: Array<{ x: number; y: number; at: number }> = []
+  // What each other player holds and wears (see the `gear` event), and the slot this page last told the server it holds.
+  const gear = new Map<number, { held: number; armor: number[] }>()
+  let holdSent: number | undefined
   const sparks: Array<{ x: number; y: number; at: number; color: number }> = []
   const numbers: Array<{ x: number; y: number; text: string; at: number }> = []
 
@@ -435,7 +602,8 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   // Where the mouse points, in units (straight ahead of the player without a mouse).
   const aimPoint = (): { x: number; y: number } => {
     if (!pointer) return { x: local.position.x + Math.cos(local.facing) * SUB, y: local.position.y + Math.sin(local.facing) * SUB }
-    const world = view.pick(pointer)
+    // The ground under the mouse itself, not the middle of a tree or rock there, so the attack goes exactly that way.
+    const world = view.aim(pointer)
     return { x: Math.round(world.x * SUB), y: Math.round(world.y * SUB) }
   }
   // Whether holding this attack slows the player down (charging a shot or a throw).
@@ -464,11 +632,18 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     const angle = Math.atan2(aim.y - local.position.y, aim.x - local.position.x)
     // With the tick the animals are drawn at, so the server judges the attack against where they are seen.
     const seen = Math.max(0, Math.round(lastRemoteTick))
-    send({ k: 'attack', special, slot: selectedSlot, x: aim.x, y: aim.y, charge: Math.round(chargeMs / TICK_MS), seen })
+    // The way it goes, in thousandths of a radian: the server dashes the player exactly this way too.
+    const dir = Math.round(angle * 1000)
+    const seq = send({ k: 'attack', special, slot: selectedSlot, x: aim.x, y: aim.y, charge: Math.round(chargeMs / TICK_MS), seen, input: local.lastInput, dir })
+    // A lunge or a volley's hop carries the player, from the next input on, as the server will (see dashOf).
+    if (seq !== undefined && special && move?.kind === 'lunge') local.dash(dashOf(dir / 1000, move.dash, local.lastInput), seq)
+    if (seq !== undefined && special && move?.kind === 'volley') local.dash(dashOf(dir / 1000 + Math.PI, move.hop, local.lastInput), seq)
     attackReadyAt = now + (special ? (move?.cooldown ?? 0) : weapon.cooldown) * TICK_MS
+    attackSlowUntil = now + ATTACK_SLOW_TICKS * TICK_MS
+    // The player stands still while the attack is made, so the swing is not dragged about.
+    attackStillUntil = now + SWING_MS
     local.facing = angle
-    const shape = attackShape(weapon, special)
-    if (shape) flashes.push({ shape, angle, at: now })
+    flashes.push({ id: mirror.playerId, weapon, special, angle, at: now })
     sounds.play(attackSound(special, weapon))
     if (!special && weapon.basic !== 'shot') showHits(weapon, angle, now)
   }
@@ -477,7 +652,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   // reaches shakes and throws up a spark, with the sound of what it is. Animals are not guessed at: they flash, spark and
   // show their damage only once the server says they were hurt (see onAnimal), so the flash and the number always agree.
   const showHits = (weapon: Weapon, angle: number, now: number): void => {
-    const targets = tilesIn(mirror.world, local.position, angle, weapon.range, weapon.arc, weapon.width)
+    const targets = tilesHitBy(mirror.world, weapon, local.position, angle)
     for (const target of targets) {
       shakes.set(target.id, now)
       sparks.push({ x: target.x + 0.5, y: target.y + 0.5, at: now, color: hitColor(target.kind) })
@@ -496,10 +671,25 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     return kind === 'throw' ? 'attack/throw' : kind === 'volley' ? 'attack/shoot' : 'attack/heavy'
   }
 
+  // Whether the player can attack: holding a weapon or a tool, or nothing (an empty slot, or Q). Holding anything else
+  // (logs, seeds) there is no attack: fists are for an empty hand.
+  const holdsWeaponOrNothing = (): boolean => {
+    const inHand = predictedInventory().slots[selectedSlot]
+    return !inHand || inHand.count === 0 || WEAPONS.has(getItem(inHand.item).key)
+  }
+
   // Starts holding an attack (a shot, a throw, a windup), or does it at once if it needs no holding.
   const pressAttack = (special: boolean): void => {
+    if (!holdsWeaponOrNothing()) return
     const weapon = heldWeapon()
     if (special && !weapon.special) return
+    // A shot with nothing to shoot is not drawn back at all.
+    const needsAmmo = (!special && weapon.basic === 'shot') || (special && weapon.special?.kind === 'volley')
+    if (needsAmmo && (weapon.ammo === undefined || countOf(predictedInventory(), weapon.ammo) === 0)) {
+      if (performance.now() >= attackReadyAt) hud.toast(REFUSALS.noAmmo, 'error')
+      attackReadyAt = Math.max(attackReadyAt, performance.now() + 400)
+      return
+    }
     const held: Charging = { special, start: performance.now(), weapon }
     if (windupMs(held) === 0 && fullMs(held) === 0) attack(special, weapon, 0)
     else if (!special && weapon.basic !== 'shot') attack(false, weapon, 0)
@@ -540,8 +730,13 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     const tool = using && using.count > 0 ? getItem(using.item) : undefined
     // A bucket fills at a pond, empties into a barrel or onto a plot, or is emptied out on bare ground.
     const dumps = tool?.bucket !== undefined && tool.bucket !== 'empty' && !there
-    if (tool && tool.bucket && (there?.kind === 'barrel' || there?.kind === 'plot' || (!there && waterAt(mirror.seed, x, y)) || dumps)) {
+    if (tool && tool.bucket && (there?.kind === 'barrel' || there?.kind === 'plot' || (!there && mirror.terrain !== undefined && waterAt(mirror.terrain, x, y)) || dumps)) {
       if (!quiet) send({ k: 'apply', x, y, slot: selectedSlot })
+      return
+    }
+    // A sleeping bag: sleep in it, to wake up here next time you are knocked out.
+    if (there?.kind === 'bed') {
+      if (!quiet) sleepIn(there.id)
       return
     }
     if (there && hasInventory(there)) {
@@ -556,7 +751,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       return
     }
     if (prediction.occupies(x, y)) return
-    const check = checkPlace(mirror.world, local.position, inventory, selectedSlot, x, y, mirror.seed)
+    const check = checkPlace(mirror.world, local.position, inventory, selectedSlot, x, y, mirror.terrain)
     if (!check.ok) {
       if (!quiet) hud.toast(REFUSALS[check.why], 'error')
       return
@@ -617,7 +812,9 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   }
   const onWheel = (event: WheelEvent): void => {
     event.preventDefault()
-    zoom = nextZoom(zoom, event.deltaY > 0 ? -1 : 1)
+    // Lines or pages (some mice, some browsers) as pixels, a notch being about 100.
+    const scale = event.deltaMode === 1 ? 33 : event.deltaMode === 2 ? 800 : 1
+    zoomTarget = zoomAfterWheel(zoomTarget, event.deltaY * scale)
   }
   const onContextMenu = (event: Event): void => event.preventDefault()
 
@@ -651,6 +848,16 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     if (event.repeat) return
     const slot = HOTBAR_ACTIONS.indexOf(action)
     if (slot >= 0) {
+      // Over a stack in the open inventory: swapped with that hotbar slot.
+      const over = inventoryOpen || openBuilding !== undefined ? panels.hovered() : undefined
+      if (over) {
+        const from = over.side === 'player' ? { id: 0, i: over.index } : openBuilding !== undefined ? { id: openBuilding, i: over.index } : undefined
+        if (from && !(from.id === 0 && from.i === slot)) {
+          send({ k: 'slot', from, to: { id: 0, i: slot }, count: 100_000 })
+          sounds.play('move')
+        }
+        return
+      }
       selectedSlot = slot
       return
     }
@@ -671,7 +878,8 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     if (action === 'inventory') {
       if (inventoryOpen || openBuilding !== undefined) closePanels()
       else inventoryOpen = true
-    } else if (action === 'debug') debug = !debug
+    } else if (action === 'eat') eat()
+    else if (action === 'debug') debug = !debug
   }
   const onKeyUp = (event: KeyboardEvent): void => keys.release(event.code)
   // The browser lets the page make sound only once the player has pressed something.
@@ -730,8 +938,11 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       localClock = Math.min(localClock + elapsed, TICK_MS * 6)
       while (localClock >= TICK_MS) {
         localClock -= TICK_MS
-        const slow = charging && slowsWhileCharging(charging) ? KEY_SLOW : 0
-        connection.sendInputs(local.step(pause.isOpen ? 0 : keys.movement(view.turned) | slow))
+        // Charging a shot or a throw, or just after an attack, the player is slowed (so a fight cannot be run from
+        // with the weapon swinging).
+        const slow = (charging && slowsWhileCharging(charging)) || performance.now() < attackSlowUntil ? KEY_SLOW : 0
+        const still = pause.isOpen || performance.now() < attackStillUntil
+        connection.sendInputs(local.step(still ? 0 : keys.movement(view.turned) | slow))
         stepSounds()
       }
     }
@@ -762,7 +973,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
 
     // Holding the left button keeps attacking as the cooldown allows (a shot is held to charge instead). Crops are
     // harvested by what the attack covers, like anything else.
-    if (leftDown && !pause.isOpen && !charging) {
+    if (leftDown && !pause.isOpen && !charging && holdsWeaponOrNothing()) {
       const weapon = heldWeapon()
       if (weapon.basic !== 'shot' && now >= attackReadyAt) attack(false, weapon, 0)
     }
@@ -772,6 +983,9 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     const t = localClock / TICK_MS
     const playerX = local.previous.x + (local.position.x - local.previous.x) * t
     const playerY = local.previous.y + (local.position.y - local.previous.y) * t
+    const zoomNow = performance.now()
+    zoom = easeZoom(zoom, zoomTarget, Math.min(100, zoomNow - zoomedAt))
+    zoomedAt = zoomNow
     view.look({ x: playerX / SUB, y: playerY / SUB }, zoom)
 
     const buildings = visibleBuildings(remoteTick)
@@ -780,8 +994,16 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       const entity = mirror.world.entity(building.id)
       if (entity && isNatural(entity) && punchesLeft(entity) <= 0) removing.add(entity.id)
     }
+    // The cold: frost creeping over the view as the body cools, and snow blowing in cold air (only a few flakes
+    // drifting down in the ice crypt, out of the wind).
+    if (mirror.terrain) {
+      const position = { x: Math.round(playerX), y: Math.round(playerY) }
+      const inside = isInDungeons(tileOfUnits(position.x), tileOfUnits(position.y))
+      frost.update(frostOf(bodyTenths / 10), elapsed)
+      snow.update(inside ? DUNGEON_FLURRY : snowAt(airTemperatureAt(mirror.terrain, position.x / SUB, position.y / SUB)), elapsed)
+    }
     view.draw({
-      seed: mirror.seed,
+      terrain: mirror.terrain,
       buildings,
       removingIds: removing,
       shaking: shaking(now),
@@ -800,6 +1022,13 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     if (now - lastUiAt >= UI_MS) {
       lastUiAt = now
       prediction.expire(now)
+      // Commands waiting a long time for their answer: the server is not hearing them (or not answering), so say so
+      // rather than leaving the player wondering why nothing they do takes effect.
+      const oldest = prediction.oldestSentAt()
+      if (oldest !== undefined && now - oldest > STALL_WARN_MS && now - stallWarnedAt > STALL_WARN_MS * 3) {
+        stallWarnedAt = now
+        hud.toast('The game has not answered for a while: what you do may not be taking effect. Leaving and joining again will fix it.', 'error')
+      }
       updateUi()
     }
     if (now - lastDebugAt >= DEBUG_MS) {
@@ -845,7 +1074,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     walked += moved
     if (walked < STEP_DISTANCE) return
     walked -= STEP_DISTANCE
-    sounds.play(footstep(surfaceAt(mirror.seed, tileX, tileY)))
+    sounds.play(footstep(surfaceAt(mirror.terrain, tileX, tileY)))
   }
 
   // The items on the ground in view, with how long each has lain there (in ticks, between the last tick and the next).
@@ -857,6 +1086,9 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       if ((cx + 1) * CHUNK_SIZE <= bounds.left || cx * CHUNK_SIZE > bounds.right + 1) continue
       if ((cy + 1) * CHUNK_SIZE <= bounds.top || cy * CHUNK_SIZE > bounds.bottom + 1) continue
       for (const drop of mirror.world.dropsInChunk(chunkId)) {
+        // What an animal just killed drops shows once it has fallen.
+        const fresh = mirror.simTick - drop.born < 2 * TPS
+        if (fresh && dying.some((dead) => Math.hypot(dead.x - drop.x / SUB, dead.y - drop.y / SUB) < 2.5 && performance.now() - dead.at < DEATH_MS)) continue
         found.push({ id: drop.id, item: drop.item, x: drop.x / SUB, y: drop.y / SUB, age: mirror.simTick + alpha - drop.born })
       }
     }
@@ -881,29 +1113,52 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     while (flashes.length > 0 && now - flashes[0].at > SWING_MS) flashes.shift()
     while (sparks.length > 0 && now - sparks[0].at > SPARK_MS) sparks.shift()
     while (numbers.length > 0 && now - numbers[0].at > NUMBER_MS) numbers.shift()
-    const view: AttackView = { marks: [], shots: [], sparks: [], numbers: [] }
-    // The attack being held: its shape, pointing at the mouse, pale until it can be let go and amber after; a shot or
-    // a throw reaches as far as it has been charged.
-    if (charging) {
-      const shape = attackShape(charging.weapon, charging.special)
-      const heldFor = now - charging.start
-      const full = fullMs(charging)
-      const fraction = full > 0 ? Math.min(1, heldFor / full) : 1
-      // Ready once it has been held long enough and the last attack's cooldown is over: let go then, and it lands.
-      const ready = heldFor >= windupMs(charging) && now >= attackReadyAt
-      const aim = aimPoint()
-      const angle = Math.atan2(aim.y - local.position.y, aim.x - local.position.x)
-      if (shape) {
-        const charged = shape.kind === 'band' || shape.kind === 'fan' ? 0.5 + fraction / 2 : 1
-        view.marks.push({ polygons: shapePolygons(shape, x, y, angle), color: INDICATOR_COLOR, fill: 0.1, stroke: 0.35 })
-        view.marks.push({ polygons: shapePolygons(shape, x, y, angle, charged), color: ready ? INDICATOR_READY_COLOR : INDICATOR_COLOR, fill: 0.08 + 0.17 * fraction, stroke: ready ? 0.9 : 0.6 })
-      }
-    }
+    const view: AttackView = { marks: [], swishes: [], shots: [], sparks: [], numbers: [] }
+    // The swish behind each weapon as it swings, from where its player is now, tracing what the attack covers.
+    const where = new Map(remotes.positionsAt(tick).map((remote) => [remote.id, { x: remote.x / SUB, y: remote.y / SUB }]))
+    where.set(mirror.playerId, { x, y })
     for (const flash of flashes) {
-      const fade = 1 - (now - flash.at) / SWING_MS
-      view.marks.push({ polygons: shapePolygons(flash.shape, x, y, flash.angle), color: INDICATOR_READY_COLOR, fill: 0.3 * fade, stroke: 0.8 * fade })
+      const from = where.get(flash.id)
+      const swish = from ? attackSwish(flash.weapon, flash.special, from.x, from.y, flash.angle, (now - flash.at) / SWING_MS) : undefined
+      if (swish) view.swishes.push(swish)
     }
     for (const spark of sparks) view.sparks.push({ x: spark.x, y: spark.y, age: (now - spark.at) / SPARK_MS, color: spark.color })
+    // Each archer aiming: a thin red line out along its aim, as far as it shoots, so it can be stepped out of.
+    for (const info of animalInfo.values()) {
+      const shoot = info.aim === undefined ? undefined : animalDef(info.kind).hunt?.shoot
+      const spot = shoot ? animalSpots.get(info.id) : undefined
+      if (!shoot || !spot || info.aim === undefined) continue
+      const length = shoot.range / SUB
+      const cx = spot.x / SUB
+      const cy = spot.y / SUB
+      const ax = Math.cos(info.aim)
+      const ay = Math.sin(info.aim)
+      const half = 0.06
+      view.marks.push({
+        polygons: [[
+          { x: cx + ax * 0.3 - ay * half, y: cy + ay * 0.3 + ax * half },
+          { x: cx + ax * length - ay * half, y: cy + ay * length + ax * half },
+          { x: cx + ax * length + ay * half, y: cy + ay * length - ax * half },
+          { x: cx + ax * 0.3 + ay * half, y: cy + ay * 0.3 - ax * half },
+        ]],
+        color: 0xd9483b,
+        fill: 0.45,
+        stroke: 0.2,
+      })
+    }
+    // Each wave of cold air: a small ring gathering round the lich, then a ring rolling out to its full reach and fading.
+    const rollMs = (WAVE_RADIUS / WAVE_SPEED) * 1000
+    while (waves.length > 0 && now - waves[0].at > rollMs) waves.shift()
+    for (const wave of waves) {
+      const gathering = now < wave.at
+      const radius = gathering ? 0.6 + 0.5 * Math.sin((now / 60) % (Math.PI * 2)) * 0.2 : ((now - wave.at) / 1000) * WAVE_SPEED
+      const outer = circle(wave.x, wave.y, Math.max(0.2, radius))
+      const fade = gathering ? 0.6 : 1 - (now - wave.at) / rollMs
+      // Strong blues, to show against the pale ice of the floor: the front, and a fainter ring trailing it.
+      view.marks.push({ polygons: [outer], color: 0x3f8fe0, fill: (gathering ? 0.35 : 0.22) * fade, stroke: fade })
+      if (!gathering && radius > 0.5) view.marks.push({ polygons: [circle(wave.x, wave.y, radius - 0.25)], color: 0x2a6fc4, fill: 0, stroke: 0.9 * fade })
+      if (!gathering && radius > 1.2) view.marks.push({ polygons: [circle(wave.x, wave.y, radius - 1.1)], color: 0x3f8fe0, fill: 0, stroke: 0.45 * fade })
+    }
     for (const number of numbers) view.numbers.push({ x: number.x, y: number.y, text: number.text, age: (now - number.at) / NUMBER_MS })
     const present = new Set<number>()
     for (const shot of shotTracks.positionsAt(tick)) {
@@ -911,13 +1166,35 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       const item = shotItems.get(shot.id)
       const stopped = shotStopped.get(shot.id)
       // Drawn flying until the tick it stopped on (it is drawn in the past, so it reaches what it hit), then gone.
-      if (item === undefined || (stopped !== undefined && tick >= stopped)) continue
+      if (item === undefined || (stopped !== undefined && tick >= stopped)) {
+        // An icicle shatters where it lands.
+        if (item === ICICLE && !shattered.has(shot.id)) {
+          shattered.add(shot.id)
+          sparks.push({ x: shot.x / SUB, y: shot.y / SUB, at: now, color: 0xcfeaff })
+          sounds.play('punch/stone')
+        }
+        continue
+      }
+      if (item === ICICLE) {
+        // Falling from above, over where it will land: a ring on the ground there, filling as it comes down.
+        if (!shotSeen.has(shot.id)) shotSeen.set(shot.id, now)
+        const fall = Math.min(1, (now - shotSeen.get(shot.id)!) / ICICLE_FALL_MS)
+        const ring = Array.from({ length: 24 }, (_, i) => ({
+          x: shot.x / SUB + Math.cos((i / 24) * Math.PI * 2) * ICICLE_RING,
+          y: shot.y / SUB + Math.sin((i / 24) * Math.PI * 2) * ICICLE_RING,
+        }))
+        view.marks.push({ polygons: [ring], color: 0x9fd6ff, fill: 0.08 + 0.3 * fall, stroke: 0.9 })
+        view.shots.push({ id: shot.id, item, x: shot.x / SUB, y: shot.y / SUB, angle: 0, fall })
+        continue
+      }
       view.shots.push({ id: shot.id, item, x: shot.x / SUB, y: shot.y / SUB, angle: Math.atan2(shot.dy, shot.dx) })
     }
     for (const id of shotItems.keys()) {
       if (present.has(id)) continue
       shotItems.delete(id)
       shotStopped.delete(id)
+      shotSeen.delete(id)
+      shattered.delete(id)
     }
     return view
   }
@@ -950,9 +1227,13 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
         size: def.size,
         baby,
         facingLeft: animalFacesLeft.get(track.id) ?? true,
-        facing: animalFacing.get(track.id) ?? Math.PI,
+        // An archer aiming turns to its aim.
+        facing: info.aim ?? animalFacing.get(track.id) ?? Math.PI,
         hovered: false,
         hurt: now - (animalHitAt.get(track.id) ?? Number.NEGATIVE_INFINITY) < SHAKE_MS,
+        angry: info.angry === true,
+        male: info.sex === 'm',
+        ...(info.aim !== undefined ? { aiming: true } : {}),
       }
       const leader = info.leader ? leaderSpot(info.leader) : undefined
       if (leader) view.leader = leader
@@ -968,6 +1249,25 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     animalSpots = spots
     hoveredAnimal = hovered
     for (const view of views) view.hovered = view.id === hovered
+    // The ones just killed, falling over where they died.
+    for (let i = dying.length - 1; i >= 0; i--) if (now - dying[i].at > DEATH_MS) dying.splice(i, 1)
+    for (const dead of dying) {
+      views.push({
+        id: -dead.info.id,
+        kind: dead.info.kind,
+        x: dead.x,
+        y: dead.y,
+        size: animalDef(dead.info.kind).size,
+        baby: dead.info.growth < 100,
+        facingLeft: dead.facingLeft,
+        facing: dead.facing,
+        hovered: false,
+        hurt: true,
+        angry: false,
+        male: dead.info.sex === 'm',
+        dying: (now - dead.at) / DEATH_MS,
+      })
+    }
     return views
   }
 
@@ -1017,13 +1317,45 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     return found
   }
 
+  // A player's pose while their latest attack is still being made.
+  const poseOf = (id: number, now: number): PlayerPose | undefined => {
+    for (let i = flashes.length - 1; i >= 0; i--) {
+      const flash = flashes[i]
+      if (flash.id !== id) continue
+      return now - flash.at < SWING_MS ? attackPose(flash.weapon, flash.special, (now - flash.at) / SWING_MS) : undefined
+    }
+    return undefined
+  }
+
   const players = (x: number, y: number, remoteTick: number, now: number): PlayerView[] => {
     const list: PlayerView[] = []
     if (placed) {
-      const me: PlayerView = { id: mirror.playerId, name: roster.get(mirror.playerId) ?? name, x: x / SUB, y: y / SUB, facing: local.facing, local: true }
-      // Its arm jabs while its last attack's shape flashes.
-      const last = flashes[flashes.length - 1]
-      if (last && now - last.at < SWING_MS) me.swing = (now - last.at) / SWING_MS
+      const inventory = predictedInventory()
+      const holding = inventory.slots[selectedSlot]
+      const me: PlayerView = {
+        id: mirror.playerId,
+        name: roster.get(mirror.playerId) ?? name,
+        x: x / SUB,
+        y: y / SUB,
+        facing: local.facing,
+        local: true,
+        held: holding && holding.count > 0 ? holding.item : 0,
+        armor: [0, 1, 2].map((i) => {
+          const worn = inventory.slots[ARMOR_SLOT + i]
+          return worn && worn.count > 0 ? worn.item : 0
+        }),
+      }
+      // Its arms: holding an attack (a bow drawn, a sling whirled, a spear pulled back, a special cocked), or making one.
+      if (charging) {
+        const full = fullMs(charging)
+        me.pose = holdingPose(charging.weapon, charging.special, full > 0 ? Math.min(1, (now - charging.start) / full) : 1)
+        const aim = aimPoint()
+        me.facing = local.facing = Math.atan2(aim.y - local.position.y, aim.x - local.position.x)
+      } else {
+        const pose = poseOf(mirror.playerId, now)
+        if (pose) me.pose = pose
+      }
+      if (now - (playerHitAt.get(mirror.playerId) ?? Number.NEGATIVE_INFINITY) < SHAKE_MS) me.hurt = true
       list.push(me)
     }
     const present = new Set<number>()
@@ -1032,14 +1364,28 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       // Facing the way it is going, or the way it last went.
       if (remote.dx !== 0 || remote.dy !== 0) remoteFacing.set(remote.id, Math.atan2(remote.dy, remote.dx))
       const facing = remoteFacing.get(remote.id) ?? Math.PI / 2
-      list.push({ id: remote.id, name: roster.get(remote.id) ?? '', x: remote.x / SUB, y: remote.y / SUB, facing, local: false })
+      const hurt = now - (playerHitAt.get(remote.id) ?? Number.NEGATIVE_INFINITY) < SHAKE_MS
+      const theirs = gear.get(remote.id)
+      const pose = poseOf(remote.id, now)
+      list.push({
+        id: remote.id,
+        name: roster.get(remote.id) ?? '',
+        x: remote.x / SUB,
+        y: remote.y / SUB,
+        facing,
+        local: false,
+        ...(hurt ? { hurt } : {}),
+        ...(theirs ? { held: theirs.held, armor: theirs.armor } : {}),
+        ...(pose ? { pose } : {}),
+      })
     }
     for (const id of remoteFacing.keys()) if (!present.has(id)) remoteFacing.delete(id)
     return list
   }
 
   const overlay = (buildings: readonly BuildingView[]): OverlayView => {
-    const hover = pointer && !pause.isOpen ? tileUnderPointer() : undefined
+    // Holding a weapon or tool, a click is an attack the way the mouse points, not at a tile: no tile lights up.
+    const hover = pointer && !pause.isOpen && !rightClickAttacks() ? tileUnderPointer() : undefined
     const target = hover && hoveredAnimal === undefined ? punchable(hover.x, hover.y) : undefined
     // With something that can be put down in the picked slot, a ghost of it under the mouse, red where it cannot go.
     let ghost: GhostView | undefined
@@ -1048,7 +1394,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       const held = inventory.slots[selectedSlot]
       const kind = held && held.count > 0 ? getItem(held.item).places : undefined
       if (kind) {
-        const valid = !prediction.occupies(hover.x, hover.y) && checkPlace(mirror.world, local.position, inventory, selectedSlot, hover.x, hover.y, mirror.seed).ok
+        const valid = !prediction.occupies(hover.x, hover.y) && checkPlace(mirror.world, local.position, inventory, selectedSlot, hover.x, hover.y, mirror.terrain).ok
         ghost = { kind, x: hover.x, y: hover.y, dir: 0, valid }
       }
     }
@@ -1067,6 +1413,9 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       if (entity) removing.push({ x: entity.x, y: entity.y })
     }
     const opened = openBuilding !== undefined ? mirror.world.entity(openBuilding) : undefined
+    // A named chest under the mouse shows its name.
+    const hovered = hover ? mirror.world.entityAt(hover.x, hover.y) : undefined
+    const named = hovered?.kind === 'chest' && hovered.name ? { x: hovered.x, y: hovered.y, name: hovered.name } : undefined
     return {
       ...(hover ? { hover } : {}),
       ...(target ? { target: { x: target.x, y: target.y } } : {}),
@@ -1075,6 +1424,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       removing,
       bars,
       ...(opened ? { selected: { x: opened.x, y: opened.y } } : {}),
+      ...(named ? { label: { x: named.x, y: named.y, text: named.name } } : {}),
     }
   }
 
@@ -1087,14 +1437,43 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       pingMs: connection.clock.ready ? connection.clock.rttMs : undefined,
     })
     const predicted = prediction.predictInventories(playerInventory, mirror.world)
+    // A boss that is after someone: its name and health over the top of the screen.
+    const boss = [...animalInfo.values()].find((info) => animalDef(info.kind).boss && info.angry)
+    bossBar.hidden = !boss
+    if (boss) {
+      const def = animalDef(boss.kind)
+      if (bossName.textContent !== def.name) bossName.textContent = def.name
+      bossFill.style.transform = `scaleX(${Math.max(0, Math.min(1, boss.hp / def.hp))})`
+      const hpText = `${Math.max(0, boss.hp)} / ${def.hp}`
+      if (bossHp.textContent !== hpText) bossHp.textContent = hpText
+      if (bossNotchesFor !== def.hp) {
+        bossNotchesFor = def.hp
+        bossNotches.replaceChildren()
+        for (let at = BOSS_NOTCH; at < def.hp; at += BOSS_NOTCH) {
+          const notch = element('i')
+          notch.style.left = `${(at / def.hp) * 100}%`
+          bossNotches.append(notch)
+        }
+      }
+    }
+    // The server is told which slot the player holds, so the others see it in their hand.
+    if (welcomed && holdSent !== selectedSlot) {
+      holdSent = selectedSlot
+      send({ k: 'hold', slot: selectedSlot })
+    }
     hotbar.update({
       slots: predicted.player.slots.slice(0, HOTBAR_SLOTS),
       selected: selectedSlot,
       keys: HOTBAR_ACTIONS.map((action) => settings.keyLabel(action)),
       health,
+      food: predicted.player.slots[FOOD_SLOT] ?? { item: NO_ITEM, count: 0 },
+      foodKey: settings.keyLabel('eat'),
+      foodReady: 1 - Math.max(0, eatReadyAt - performance.now()) / (EAT_COOLDOWN_TICKS * TICK_MS),
     })
     const opened = openBuilding !== undefined ? mirror.world.entity(openBuilding) : undefined
     if (openBuilding !== undefined && (!opened || !hasInventory(opened))) openBuilding = undefined
+    // Walked off well out of reach of what is open: it closes.
+    if (opened && openBuilding !== undefined && Math.sqrt(distanceToTileSquared(local.position.x, local.position.y, opened.x, opened.y)) > PLAYER_REACH * CLOSE_AWAY) closePanels()
     panels.show(inventoryOpen || opened ? panelsView(opened, predicted) : undefined)
     // A work station only works while someone has it open, so the server is told which one this player has.
     const using = opened?.kind === 'stump' || opened?.kind === 'workbench' ? opened.id : 0
@@ -1119,10 +1498,24 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   // Infinity) goes in from the player's inventory, and it starts. It keeps going while what is in it is enough.
   const machineRecipe = (id: number, index: number, times: number): void => {
     const machine = mirror.world.entity(id)
-    if (machine?.kind === 'stump') loadStation(id, index, times)
-    if (machine?.kind !== 'workbench') return
-    const recipe = STATION_RECIPES.workbench[index]
+    if (machine?.kind !== 'stump' && machine?.kind !== 'workbench') return
+    const recipe = STATION_RECIPES[machine.kind][index]
     if (!recipe) return
+    // Busy making something else (that carries on); what it would make has nowhere to go (the output slot holds
+    // something else, or is full); or nothing to make it from: it does not start.
+    const station = prediction.predictInventories(playerInventory, mirror.world).buildings.get(id) ?? machine.inv
+    if (machine.active !== 0 && workingOn(machine) !== index) return craftFailed()
+    if (!stationOutputFits(machine.kind, station, recipe)) return craftFailed()
+    if (timesAfford(predictedInventory(), recipe.inputs, times) === 0 && !workbenchReady(machine, recipe)) return craftFailed()
+    sounds.play(craftSound(times))
+    if (machine.kind === 'stump') return loadStation(id, index, times)
+    // The tool it needs goes into its tool slot, from the player's things, if it has none there.
+    const toolSlot = machine.inv.slots[WORKBENCH_TOOL_SLOT]
+    if (recipe.tool && !(toolSlot && toolSlot.count > 0 && getItem(toolSlot.item).tool === recipe.tool)) {
+      const tool = predictedInventory().slots.find((slot) => slot.count > 0 && getItem(slot.item).tool === recipe.tool)
+      if (!tool) return craftFailed()
+      send({ k: 'put', id, item: tool.item, max: 1 })
+    }
     const more = timesAfford(predictedInventory(), recipe.inputs, times)
     if (more > 0) for (const [item, need] of recipe.inputs) send({ k: 'put', id, item, max: need * more })
     send({ k: 'work', id, recipe: index, repeat: true })
@@ -1132,9 +1525,50 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   const craftByHand = (index: number, times: number): void => {
     const recipe = getRecipe(index)
     if (!recipe) return
-    const count = timesAfford(predictedInventory(), recipe.inputs, times)
+    const inventory = predictedInventory()
+    const count = timesAfford(inventory, recipe.inputs, times)
+    if (count === 0 || roomFor(inventory, recipe.output, recipe.count) < recipe.count) return craftFailed()
+    sounds.play(craftSound(times))
     for (let i = 0; i < count; i++) send({ k: 'craft', recipe: index })
   }
+
+  // Eats one of what the picked slot holds, if it is food and the player is hurt.
+  // Eats one of what is in the food slot, if the cooldown is over and the player is hurt (else just a sound).
+  let eatReadyAt = 0
+  const eat = (): void => {
+    const held = predictedInventory().slots[FOOD_SLOT]
+    const food = held && held.count > 0 ? getItem(held.item) : undefined
+    const now = performance.now()
+    if (!food?.heals || health >= PLAYER_MAX_HEALTH || now < eatReadyAt) return void sounds.play('craft/fail')
+    send({ k: 'eat', slot: FOOD_SLOT })
+    eatReadyAt = now + EAT_COOLDOWN_TICKS * TICK_MS
+    sounds.play('eat')
+  }
+
+  // Sleeps in a sleeping bag: the screen dims for a moment, and the player will wake up here.
+  const sleepIn = (id: number): void => {
+    send({ k: 'sleep', id })
+    sounds.play('sleep')
+    const dim = document.createElement('div')
+    dim.className = 'sleep-fade'
+    stage.append(dim)
+    setTimeout(() => dim.remove(), 1600)
+    hud.toast('Spawn point set.')
+  }
+
+  // A craft that cannot be done: its sound, and nothing more.
+  const craftFailed = (): void => sounds.play('craft/fail')
+  // The recipe a station is working on (its index), or -1.
+  const workingOn = (machine: Entity): number => {
+    if (machine.kind === 'workbench') return machine.recipe - 1
+    if (machine.kind === 'stump') return stationRecipe('stump', machine.inv)?.index ?? -1
+    return -1
+  }
+  // The sound of a craft: one (a click), some (shift: five), or all you can (ctrl).
+  const craftSound = (times: number): SoundId => (times === 1 ? 'craft/one' : Number.isFinite(times) ? 'craft/some' : 'craft/all')
+  // Whether a station already has what a recipe takes in it (so Craft starts it with nothing more put in).
+  const workbenchReady = (machine: Entity & { inv: Inventory }, recipe: (typeof STATION_RECIPES.workbench)[number]): boolean =>
+    recipe.inputs.every(([item, need]) => countOf(machine.inv, item) >= need)
 
   // The hand recipes, grouped by category in the order the categories first come in recipes.json.
   const craftingBook = (player: Inventory): BookEntry[] => {
@@ -1180,14 +1614,27 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
         id: opened.id,
         kind: opened.kind,
         title: def.name,
+        ...(opened.kind === 'chest' && opened.name ? { name: opened.name } : {}),
         slots: (predicted.buildings.get(opened.id) ?? opened.inv).slots,
         ...(opened.kind === 'miner' ? { mining: { item: opened.ore } } : {}),
         ...machinePanel(opened, predicted.player, predicted.buildings.get(opened.id) ?? opened.inv),
         acceptsDeposits: def.acceptsDeposits,
         inReach: isWithinReach(local.position, opened.x, opened.y),
         ...(opened.kind === 'barrel' && opened.sealed ? { locked: true } : {}),
+        ...(chestGuarded(opened) ? { locked: true, guarded: true } : {}),
       },
     }
+  }
+
+  // Whether a chest is a dungeon's with its lich still standing in its copy (the server keeps it shut till it falls).
+  const chestGuarded = (opened: Entity): boolean => {
+    const slot = dungeonSlotAt(opened.x, opened.y)
+    if (opened.kind !== 'chest' || slot === undefined) return false
+    for (const info of animalInfo.values()) {
+      const spot = animalSpots.get(info.id)
+      if (info.kind === 'frost-lich' && spot && dungeonSlotAt(tileOfUnits(spot.x), tileOfUnits(spot.y)) === slot) return true
+    }
+    return false
   }
 
   const machinePanel = (opened: Entity, player: Inventory, inv: Inventory): { machine?: MachineView } => {
@@ -1241,7 +1688,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       `desyncs       ${mirror.desyncs}${mirror.desynced.size ? ` (${mirror.desynced.size} waiting)` : ''}`,
       `commands      ${prediction.size} waiting`,
       `position      ${(local.position.x / SUB).toFixed(1)}, ${(local.position.y / SUB).toFixed(1)}`,
-      `view          ${view.describe()}, zoom ${zoom}×`,
+      `view          ${view.describe()}, zoom ${zoom.toFixed(2)}×`,
       ...(lag.latencyMs || lag.jitterMs || lag.loss ? [`lag sim       ${lag.latencyMs} ms +${lag.jitterMs} jitter, ${Math.round(lag.loss * 100)}% loss`] : []),
       ...(import.meta.env.DEV ? ['F9            break a chunk here, to test desync repair'] : []),
       `animals       ${animalInfo.size} near`,
@@ -1257,7 +1704,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     if (plot?.kind !== 'plot') return []
     const crop = getCrop(plot.crop)
     const grown = crop ? `${crop.name} ${Math.floor((plot.growth * 100) / growthNeeded(crop.growTicks))}% grown` : 'nothing planted'
-    return ['', `Garden plot   ${grown}`, `watered ${plot.water}%   (speeds growth up to 2×; dries out over time)`]
+    return ['', `Garden plot   ${grown}`, plot.water > 0 ? `watered (${Math.ceil((plot.water * WATER_FALL_EVERY) / TPS)} s left)` : 'dry']
   }
 
   // The animal under the mouse, and its genetics.
@@ -1294,6 +1741,8 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     unsubscribeSettings()
     pause.dispose()
     panels.dispose()
+    snow.dispose()
+    frost.dispose()
     sounds.dispose()
     view.destroy()
   }
@@ -1304,6 +1753,14 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   }
 
   return dispose
+}
+
+// Whether every number in a value is a finite number.
+function finiteThroughout(value: unknown): boolean {
+  if (typeof value === 'number') return Number.isFinite(value)
+  if (Array.isArray(value)) return value.every(finiteThroughout)
+  if (value && typeof value === 'object') return Object.values(value).every(finiteThroughout)
+  return true
 }
 
 // The view the settings ask for: 3D unless 2D was picked (or this browser cannot draw in 3D).

@@ -20,7 +20,11 @@ import {
   STATION_RECIPES,
   SUB,
   TPS,
+  WATERED_SECONDS,
+  WATER_FALL_EVERY,
   waterAt,
+  terrainOf,
+  isSeaAt,
   type Entity,
 } from '../packages/shared/src/index.ts'
 import { differingChunks, run, TestClient } from './helpers.ts'
@@ -137,10 +141,10 @@ test('a drying rack dries a hide, much faster beside a lit campfire', () => {
 })
 
 test('a bucket fills at a pond and empties into a barrel; bark and water, sealed and boiled, make tannin; a full barrel of it tans a hide', () => {
-  const seed = 11
+  const terrain = terrainOf(11)
   let pond: { x: number; y: number } | undefined
   for (let r = 0; r < 200 && !pond; r++) {
-    for (let x = -r; x <= r && !pond; x++) for (const y of [-r, r]) if (!pond && waterAt(seed, x, y)) pond = { x, y }
+    for (let x = -r; x <= r && !pond; x++) for (const y of [-r, r]) if (!pond && waterAt(terrain, x, y) && !isSeaAt(terrain, x, y)) pond = { x, y }
   }
   assert.ok(pond, 'there is a pond')
   const { room, client } = workshop('BARREL', { barrel: 1, bucket: 1, bark: 1, campfire: 1, charcoal: 20 })
@@ -148,7 +152,7 @@ test('a bucket fills at a pond and empties into a barrel; bark and water, sealed
   run(room, [client], 1)
   // Find a dry spot beside the player for the barrel, and one beside that for the fire.
   const spot = { x: pond.x + 0, y: pond.y + 5 }
-  while (waterAt(seed, spot.x, spot.y) || waterAt(seed, spot.x + 1, spot.y)) spot.y++
+  while (waterAt(terrain, spot.x, spot.y) || waterAt(terrain, spot.x + 1, spot.y)) spot.y++
   client.player.position = center(spot.x, spot.y + 2)
   const barrel = place(room, client, 0, spot.x, spot.y)
   client.player.position = center(pond.x, pond.y + 2)
@@ -225,10 +229,17 @@ test('organic things rot to compost in an open, dry barrel; water makes a plot g
     return ticks
   }
   assert.ok(grow(100, 0) < grow(0, 0), 'faster watered')
+  // Watering lasts a set time, on the clock (not by chance).
   const plot = createEntity(1, 'plot', 0, 0, 0, 0) as Entity & Record<string, number>
   Object.assign(plot, { water: 100 })
   for (let i = 0; i < 40; i++) randomTick(plot)
-  assert.equal(plot.water, 0, 'and it dries out')
+  assert.equal(plot.water, 100, 'random ticks do not dry it')
+  const dry = new FactoryWorld()
+  dry.addEntity(plot)
+  for (let tick = 1; tick <= (WATERED_SECONDS * TPS) / 2; tick++) dry.stepInterior(tick, 1)
+  assert.ok(Math.abs(plot.water - 50) <= 1, `half dry half way (${plot.water})`)
+  for (let tick = (WATERED_SECONDS * TPS) / 2 + 1; tick <= WATERED_SECONDS * TPS + WATER_FALL_EVERY; tick++) dry.stepInterior(tick, 1)
+  assert.equal(plot.water, 0, 'and dry once its time is up')
 
   const { room, client } = workshop('SOIL', { 'garden-plot': 1, compost: 2, 'water-bucket': 1 })
   const bed = place(room, client, 0, 2, 2)

@@ -12,6 +12,7 @@ import {
   type RequestAckMessage,
   type RequestMessage,
   type StateMessage,
+  type TerrainSettings,
 } from '../../../packages/shared/src/index.ts'
 import type { DesyncReport } from './factory-mirror.ts'
 import type { FromLocalServer, ToLocalServer } from './local-server.worker.ts'
@@ -113,7 +114,7 @@ export function connect(code: string, name: string, handlers: ConnectionHandlers
 // Singleplayer: a world run in the player's own browser, by the game server in a Web Worker (local-server.worker.ts),
 // and the page's connection to it. It carries the same messages as a network connection, through the same reliable
 // streams, so the rest of the page cannot tell the difference; nothing leaves the player's machine.
-export function connectLocal(seed: number, name: string, handlers: ConnectionHandlers): Connection {
+export function connectLocal(seed: number, name: string, handlers: ConnectionHandlers, terrain?: TerrainSettings): Connection {
   const clock = new TickClock()
   const worker = new Worker(new URL('./local-server.worker.ts', import.meta.url), { type: 'module' })
   const post = (message: ToLocalServer): void => worker.postMessage(message)
@@ -151,7 +152,7 @@ export function connectLocal(seed: number, name: string, handlers: ConnectionHan
     if (!closed) handlers.onError(`The world could not run in this browser (${event.message || 'the worker failed'}).`)
   }
 
-  post({ t: 'start', seed, name })
+  post({ t: 'start', seed, name, ...(terrain ? { terrain } : {}) })
   const ping = (): void => post({ t: 'ping', c: performance.now() })
   ping()
   timers.push(setInterval(ping, PING_MS))

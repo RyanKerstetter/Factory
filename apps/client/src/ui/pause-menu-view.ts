@@ -1,6 +1,6 @@
 import type { Settings } from '../settings.ts'
 import { button, element } from './dom.ts'
-import { createSettingsView } from './settings-view.ts'
+import { createSettingsView, type GameSettings } from './settings-view.ts'
 
 export type PauseMenuHandlers = { onCopyInvite: () => void; onLeave: () => void }
 export type PauseMenu = {
@@ -14,7 +14,7 @@ export type PauseMenu = {
 
 // The menu Escape opens over the game, and the settings it leads to. The game goes on behind it (it is multiplayer),
 // but while it is open the keys and the mouse do not reach the game.
-export function createPauseMenu(container: HTMLElement, settings: Settings, handlers: PauseMenuHandlers): PauseMenu {
+export function createPauseMenu(container: HTMLElement, settings: Settings, handlers: PauseMenuHandlers, game?: GameSettings): PauseMenu {
   let open = false
   const resume = button('btn btn-primary', 'Back to the game', () => menu.close())
   const main = element(
@@ -27,7 +27,7 @@ export function createPauseMenu(container: HTMLElement, settings: Settings, hand
     button('btn', 'Copy invite link', () => handlers.onCopyInvite()),
     button('btn btn-danger', 'Leave game', () => handlers.onLeave()),
   )
-  const settingsView = createSettingsView(settings, () => showMain())
+  const settingsView = createSettingsView(settings, () => showMain(), game)
   const backdrop = element('div', 'pause', main)
   backdrop.hidden = true
   backdrop.addEventListener('click', (event) => {

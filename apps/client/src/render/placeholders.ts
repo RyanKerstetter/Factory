@@ -485,6 +485,17 @@ export const plot: Painter = (g) => {
   rect(g, WOOD, 1, 1, 30, 2)
 }
 
+// A sleeping bag: a rolled-out bag of hide, its flap turned back, with a pillow at the head.
+export const bed: Painter = (g) => {
+  g.fillStyle = 'rgba(0, 0, 0, 0.25)'
+  g.fillRect(6, 27, 22, 3)
+  rect(g, '#4f5a35', 8, 3, 16, 25)
+  rect(g, '#6a7a4a', 9, 4, 14, 23)
+  rect(g, '#8a9a62', 9, 11, 14, 3)
+  rect(g, '#d8cfb4', 11, 5, 10, 5)
+  rect(g, '#6a7a4a', 9, 14, 14, 1)
+}
+
 // A feed box: a wooden trough with hay in it.
 export const feeder: Painter = (g) => {
   g.fillStyle = 'rgba(0, 0, 0, 0.25)'

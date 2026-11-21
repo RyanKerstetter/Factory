@@ -2,9 +2,12 @@ import { CHUNK_SIZE, SUB } from './constants.ts'
 import { floorDiv } from './geometry.ts'
 import { NO_ITEM, ORES, type ItemId } from './items.ts'
 import { hashInts } from './rng.ts'
+import { dungeonBlocks, isInDungeons } from './dungeon.ts'
+import { biomeSiteAt, inLandmarkClearing, seaWithin, type Terrain } from './terrain.ts'
 
 // What the world is made of, worked out from its seed wherever it is needed, the same on the server and on every
-// client, with whole numbers only: the ore deposits (put away for now) and where plants first grow.
+// client, with whole numbers only: the ore deposits (put away for now), and where plants first grow in each biome (see
+// terrain.ts for the land, the sea and the biomes).
 
 // ---- ore deposits
 
@@ -92,7 +95,8 @@ export function depositOreAt(seed: number, x: number, y: number): ItemId {
 
 // ---- plants
 
-// Where trees, bushes and rocks are when the world is made, and the flint lying about. The server puts them in a chunk
+// Where trees, bushes and rocks are when the world is made, and the flint lying about: in the forest, trees, bushes,
+// grass and flint; in the mountains, rocks. The server puts them in a chunk
 // the first time a player comes near it, as buildings (and items on the ground) like any other (they are punched, and
 // change), so after that the chunk is what it says.
 export type PlantKind = 'tree' | 'bush' | 'rock' | 'grass'
@@ -111,7 +115,7 @@ export type PlantGeneration = {
   // How many bushes a patch has (from min to max, both included; at most 9, since a patch is a 3x3 cluster).
   bushesPerPatchMin: number
   bushesPerPatchMax: number
-  // The chance, in percent, that a PATCH_CELL square of the world has a group of rocks in it, and how many rocks a
+  // The chance, in percent, that a ROCK_CELL square of the mountains has a group of rocks in it, and how many rocks a
   // group has (like bush patches).
   rockPatchChance: number
   rocksPerPatchMin: number
@@ -133,9 +137,9 @@ export const DEFAULT_PLANT_GENERATION: Readonly<PlantGeneration> = {
   bushPatchChance: 8,
   bushesPerPatchMin: 1,
   bushesPerPatchMax: 5,
-  rockPatchChance: 6,
+  rockPatchChance: 75,
   rocksPerPatchMin: 2,
-  rocksPerPatchMax: 5,
+  rocksPerPatchMax: 6,
   grassPatchChance: 30,
   grassPerPatchMin: 3,
   grassPerPatchMax: 8,
@@ -151,6 +155,8 @@ const FOREST_CELL = 24
 // on the 3x3 tiles around its centre (the centre always, and the rest on some of the eight around it).
 const PATCH_CELL = 16
 const GRASS_CELL = 8
+// Rocks lie in smaller cells than bushes, so the mountains are thick with them.
+const ROCK_CELL = 10
 const PATCH_NEIGHBOURS: ReadonlyArray<readonly [number, number]> = [
   [-1, -1], [0, -1], [1, -1],
   [-1, 0], [1, 0],
@@ -192,7 +198,7 @@ const rockPatches = (rates: PlantGeneration): PatchKind => ({
   min: rates.rocksPerPatchMin,
   max: rates.rocksPerPatchMax,
   salt: 80,
-  cell: PATCH_CELL,
+  cell: ROCK_CELL,
 })
 const grassPatches = (rates: PlantGeneration): PatchKind => ({
   chance: rates.grassPatchChance,
@@ -226,11 +232,14 @@ function inPatch(seed: number, x: number, y: number, kind: PatchKind): boolean {
 
 // The plant that first grows on a tile, if any. A tree keeps clear of the trees that might grow just before it (above
 // it, and to its left), so even thick forest has room to walk between the trunks.
-export function plantAt(seed: number, x: number, y: number, rates: PlantGeneration = DEFAULT_PLANT_GENERATION): PlantKind | undefined {
+export function plantAt(terrain: Terrain, x: number, y: number, rates: PlantGeneration = DEFAULT_PLANT_GENERATION): PlantKind | undefined {
   if (Math.abs(x) <= rates.spawnClearing && Math.abs(y) <= rates.spawnClearing) return undefined
-  if (waterAt(seed, x, y)) return undefined
+  const biome = biomeSiteAt(terrain, x, y)?.biome
+  if (!biome || waterAt(terrain, x, y)) return undefined
+  if (biome.key === 'mountain' && inLandmarkClearing(terrain, x, y)) return undefined
+  const seed = terrain.seed
+  if (biome.key === 'mountain') return inPatch(seed, x, y, rockPatches(rates)) ? 'rock' : undefined
   if (inPatch(seed, x, y, bushPatches(rates))) return 'bush'
-  if (inPatch(seed, x, y, rockPatches(rates))) return 'rock'
   if (inPatch(seed, x, y, grassPatches(rates))) return 'grass'
   if (!treeChance(seed, x, y, rates)) return undefined
   for (const [ox, oy] of [[-1, -1], [0, -1], [1, -1], [-1, 0]]) if (treeChance(seed, x + ox, y + oy, rates)) return undefined
@@ -239,7 +248,7 @@ export function plantAt(seed: number, x: number, y: number, rates: PlantGenerati
 
 // The plants that first grow in a chunk, row by row.
 export function plantsInChunk(
-  seed: number,
+  terrain: Terrain,
   cx: number,
   cy: number,
   rates: PlantGeneration = DEFAULT_PLANT_GENERATION,
@@ -247,7 +256,7 @@ export function plantsInChunk(
   const found: Array<{ x: number; y: number; kind: PlantKind }> = []
   for (let y = cy * CHUNK_SIZE; y < (cy + 1) * CHUNK_SIZE; y++) {
     for (let x = cx * CHUNK_SIZE; x < (cx + 1) * CHUNK_SIZE; x++) {
-      const kind = plantAt(seed, x, y, rates)
+      const kind = plantAt(terrain, x, y, rates)
       if (kind) found.push({ x, y, kind })
     }
   }
@@ -256,14 +265,17 @@ export function plantsInChunk(
 
 // ---- ponds
 
-// Ponds: each cell of POND_CELL tiles may hold one, a rough disc of water (POND_MIN_RADIUS to POND_MAX_RADIUS), POND_CHANCE
-// percent of the time; none near the spawn. Water is part of the ground, worked out from the seed like ore: players and
-// animals cannot walk into it, nothing grows or is built on it, and a bucket is filled from it.
+// Water: the sea round the biomes (see terrain.ts), and ponds in the biomes that have them (the forest). Each cell of
+// POND_CELL tiles may hold one pond, a rough disc of water (POND_MIN_RADIUS to POND_MAX_RADIUS), POND_CHANCE percent of
+// the time; none near the spawn, and none within POND_SHORE tiles of the sea (so a pond never runs into it). Water is
+// part of the ground, worked out from the seed like ore: players and animals cannot walk into it, nothing grows or is
+// built on it, and a bucket is filled from it.
 const POND_CELL = 28
 const POND_CHANCE = 22
 const POND_MIN_RADIUS = 2
 const POND_MAX_RADIUS = 4
 const POND_CLEARING = 12
+const POND_SHORE = 3
 
 function pondOf(seed: number, cx: number, cy: number): { x: number; y: number; radius: number } | undefined {
   if (hashInts(seed, cx, cy, 201) % 100 >= POND_CHANCE) return undefined
@@ -276,25 +288,52 @@ function pondOf(seed: number, cx: number, cy: number): { x: number; y: number; r
   return Math.abs(pond.x) <= POND_CLEARING && Math.abs(pond.y) <= POND_CLEARING ? undefined : pond
 }
 
-export function waterAt(seed: number, x: number, y: number): boolean {
-  const pond = pondOf(seed, floorDiv(x, POND_CELL), floorDiv(y, POND_CELL))
-  return pond !== undefined && inDisc(seed, pond, x, y)
+export function waterAt(terrain: Terrain, x: number, y: number): boolean {
+  if (isInDungeons(x, y)) return false
+  const site = biomeSiteAt(terrain, x, y)
+  if (!site) return true
+  if (!site.biome.ponds) return false
+  const cx = floorDiv(x, POND_CELL)
+  const cy = floorDiv(y, POND_CELL)
+  const pond = pondOf(terrain.seed, cx, cy)
+  return pond !== undefined && inDisc(terrain.seed, pond, x, y) && pondClearOfSea(terrain, cx, cy, pond)
 }
 
-// The flint lying on the ground in a chunk when the world is made, as positions in units (anywhere in a tile, kept a
+// Whether a pond is far enough from the sea to be there (worked out once a pond, and kept).
+const pondsChecked = new WeakMap<Terrain, Map<string, boolean>>()
+function pondClearOfSea(terrain: Terrain, cx: number, cy: number, pond: { x: number; y: number; radius: number }): boolean {
+  let checked = pondsChecked.get(terrain)
+  if (!checked) pondsChecked.set(terrain, (checked = new Map()))
+  const key = `${cx},${cy}`
+  let clear = checked.get(key)
+  if (clear === undefined) {
+    clear = !seaWithin(terrain, pond.x, pond.y, pond.radius + POND_SHORE) && !seaWithin(terrain, pond.x, pond.y, pond.radius + 1)
+    checked.set(key, clear)
+  }
+  return clear
+}
+
+// Whether the ground itself stops anyone walking onto a tile: water, or a dungeon's walls.
+export function groundBlocks(terrain: Terrain, x: number, y: number): boolean {
+  return dungeonBlocks(x, y) || waterAt(terrain, x, y)
+}
+
+// The flint lying on the ground in the forest in a chunk when the world is made, as positions in units (anywhere in a tile, kept a
 // little in from its edges), on tiles where nothing else is. Unlike what a punch drops, it never goes away by itself.
 export function flintInChunk(
-  seed: number,
+  terrain: Terrain,
   cx: number,
   cy: number,
   rates: PlantGeneration = DEFAULT_PLANT_GENERATION,
 ): Array<{ x: number; y: number }> {
   const found: Array<{ x: number; y: number }> = []
   const margin = SUB / 8
+  const seed = terrain.seed
   for (let y = cy * CHUNK_SIZE; y < (cy + 1) * CHUNK_SIZE; y++) {
     for (let x = cx * CHUNK_SIZE; x < (cx + 1) * CHUNK_SIZE; x++) {
       if (hashInts(seed, x, y, 71) % 1000 >= rates.flintScatter) continue
-      if (plantAt(seed, x, y, rates) || waterAt(seed, x, y)) continue
+      if (biomeSiteAt(terrain, x, y)?.biome.key !== 'forest') continue
+      if (plantAt(terrain, x, y, rates) || waterAt(terrain, x, y)) continue
       found.push({
         x: x * SUB + margin + (hashInts(seed, x, y, 72) % (SUB - 2 * margin)),
         y: y * SUB + margin + (hashInts(seed, x, y, 73) % (SUB - 2 * margin)),

@@ -2,7 +2,7 @@ import { CHUNK_SIZE, RANDOM_TICKS_PER_CHUNK } from '../constants.ts'
 import { localTileIndex } from '../geometry.ts'
 import { hashInts } from '../rng.ts'
 import { heatFrom } from '../machines.ts'
-import { hashEntity, randomTick, stepEntity, type Entity } from './entity.ts'
+import { hashEntity, randomTick, stepEntity, WATER_FALL_EVERY, type Entity } from './entity.ts'
 import { Hasher } from './hash.ts'
 
 // One chunk's buildings. They are walked in order of their IDs, always, and a chunk only ever touches its own
@@ -71,6 +71,8 @@ export class Chunk {
   step(tick: number, seed: number): void {
     this.spreadHeat()
     for (const entity of this.ordered) stepEntity(entity)
+    // Watered plots dry out on the clock, not by chance (see WATERED_SECONDS).
+    if (tick % WATER_FALL_EVERY === 0) for (const entity of this.ordered) if (entity.kind === 'plot' && entity.water > 0) entity.water--
     if (this.ordered.length === 0) return
     for (let i = 0; i < RANDOM_TICKS_PER_CHUNK; i++) {
       const entity = this.byTile.get(hashInts(seed, tick, this.id, i) % (CHUNK_SIZE * CHUNK_SIZE))

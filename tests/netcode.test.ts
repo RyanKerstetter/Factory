@@ -29,7 +29,8 @@ function seeded(seed: number): () => number {
 }
 
 // The factory's tests build near the spawn with no plants in the way (the world grows none in these rooms).
-const FACTORY = { plants: false }
+// The factory's tests build a few chunks out from the spawn: a big, round forest keeps it all on land.
+const FACTORY = { plants: false, terrain: { size: 'huge', bumpiness: 0 } } as const
 
 // Starts a production line with no ore to mine (deposits are off for now): the player is given some iron and puts it
 // into a chest at the start of the line, where an extractor pulls it out. Gives the source chest's tile.

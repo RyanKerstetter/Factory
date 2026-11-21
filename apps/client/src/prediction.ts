@@ -43,6 +43,13 @@ export class Prediction {
     return this.pending.size
   }
 
+  // When the oldest command still waiting for its answer was sent (undefined with none waiting).
+  oldestSentAt(): number | undefined {
+    let oldest: number | undefined
+    for (const pending of this.pending.values()) if (oldest === undefined || pending.sentAt < oldest) oldest = pending.sentAt
+    return oldest
+  }
+
   add(seq: number, command: Command, now: number): void {
     this.pending.set(seq, { seq, command, sentAt: now })
   }

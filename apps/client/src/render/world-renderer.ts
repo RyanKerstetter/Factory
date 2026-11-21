@@ -1,5 +1,5 @@
 import { Container } from 'pixi.js'
-import type { BeltShape, BuildingKind, Direction, ItemId } from '../../../../packages/shared/src/index.ts'
+import type { BeltShape, BuildingKind, Direction, ItemId, Terrain } from '../../../../packages/shared/src/index.ts'
 import { cameraTransform, visibleTiles, type Camera } from '../camera.ts'
 import type { Art } from './art.ts'
 import { AnimalLayer } from './animal-layer.ts'
@@ -52,7 +52,12 @@ export type BuildingView = {
 // where things were hit; and damage numbers rising off animals (`age` 0 to 1 as each fades).
 export type AttackView = {
   marks: Array<{ polygons: Array<Array<{ x: number; y: number }>>; color: number; fill: number; stroke: number }>
-  shots: Array<{ id: number; item: number; x: number; y: number; angle: number }>
+  // The air swishing behind a weapon as it swings, tracing exactly what the attack covers (`progress` 0 to 1 through
+  // the swing): a sweep round the player `arc` wide from `inner` to `outer` tiles out (a swing), a straight streak
+  // `outer` long and `width` wide (a jab or thrust), or a ring `outer` across, `distance` ahead (a strike or slam).
+  swishes: Swish[]
+  // `fall`: for an icicle, how far it has fallen, 0 (high above) to 1 (landing).
+  shots: Array<{ id: number; item: number; x: number; y: number; angle: number; fall?: number }>
   sparks: Array<{ x: number; y: number; age: number; color: number }>
   numbers: Array<{ x: number; y: number; text: string; age: number }>
 }
@@ -70,13 +75,67 @@ export type AnimalView = {
   facing: number
   hovered: boolean
   hurt: boolean
+  // A hostile one that is after a player (shown with a mark over it).
+  angry: boolean
+  // A male (drawn as such: antlers, a mane, a comb).
+  male: boolean
+  // One just killed, falling over: how far through it is, 0 to 1.
+  dying?: number
   leader?: { x: number; y: number }
+  // An archer drawing its bow (its arrow is nocked).
+  aiming?: boolean
 }
 // `facing` is which way the player looks, in radians: 0 is east, a quarter turn (π/2) is south.
 // An item on the ground, in tiles, and how many ticks it has lain there (for its landing hop).
 export type DropView = { id: number; item: ItemId; x: number; y: number; age: number }
-// `swing` is how far through an attack the player is, 0 to 1, while it is attacking.
-export type PlayerView = { id: number; name: string; x: number; y: number; facing: number; local: boolean; swing?: number }
+// `swing` is how far through an attack the player is, 0 to 1, while it is attacking; `hurt` while it has just been hit.
+// `held` is the item in their hand (0 or none for nothing), `armor` what they wear (head, body, feet: item IDs), and
+// `pose` what they are doing with what they hold.
+export type PlayerView = {
+  id: number
+  name: string
+  x: number
+  y: number
+  facing: number
+  local: boolean
+  swing?: number
+  hurt?: boolean
+  held?: number
+  armor?: readonly number[]
+  pose?: PlayerPose
+}
+
+// How a player's arms are posed for what they are doing (progress and charge 0 to 1):
+// - swing: the weapon sweeps from their right to their left through `arc` (radians), arm out level;
+// - thrust: straight out and back (a jab, a spear's thrust, a lunge);
+// - strike: raised overhead and brought down in front (a pickaxe, a chop, a slam);
+// - windup: held back ready for a special, in the style it will land in, as it charges;
+// - draw: a bow drawn, the string pulled back as far as it is charged;
+// - whirl: a sling whirled round over the head, faster as it charges;
+// - aimThrow: a spear raised and pulled back to throw, as far as it is charged;
+// - release: a shot let go, or a spear thrown (`thrown`: it has left the hand).
+export type PlayerPose =
+  | { kind: 'swing'; progress: number; arc: number }
+  | { kind: 'thrust'; progress: number }
+  | { kind: 'strike'; progress: number }
+  | { kind: 'windup'; style: 'swing' | 'thrust' | 'strike'; arc: number; charge: number }
+  | { kind: 'draw'; charge: number }
+  | { kind: 'whirl'; charge: number }
+  | { kind: 'aimThrow'; charge: number }
+  | { kind: 'release'; progress: number; thrown: boolean }
+
+export type Swish = {
+  x: number
+  y: number
+  angle: number
+  shape: 'arc' | 'band' | 'ring'
+  arc: number
+  inner: number
+  outer: number
+  width: number
+  distance: number
+  progress: number
+}
 export type GhostView = { kind: BuildingKind; x: number; y: number; dir: Direction; valid: boolean; shape?: BeltShape }
 export type OverlayView = {
   hover?: { x: number; y: number }
@@ -92,6 +151,8 @@ export type OverlayView = {
   target?: { x: number; y: number }
   // Health bars over plants that have been punched: how much is left, 0 to 1, and whether the plant is a tall one.
   bars: ReadonlyArray<{ x: number; y: number; fraction: number; tall: boolean }>
+  // A name shown over the building under the mouse (a chest's), at its tile.
+  label?: { x: number; y: number; text: string }
 }
 export type DebugView = {
   chunks: readonly number[]
@@ -100,7 +161,8 @@ export type DebugView = {
 }
 
 export type WorldFrame = {
-  seed: number
+  // The land (undefined until the world's arrives).
+  terrain: Terrain | undefined
   buildings: readonly BuildingView[]
   // The IDs of the buildings being taken away, drawn faded.
   removingIds: ReadonlySet<number>
@@ -158,7 +220,7 @@ export class WorldRenderer {
     const { x, y, scale } = cameraTransform(camera)
     this.scene.position.set(x, y)
     this.scene.scale.set(scale)
-    this.ground.update(frame.seed, visibleTiles(camera))
+    this.ground.update(frame.terrain, visibleTiles(camera))
     this.buildings.update(frame.buildings, frame.removingIds, frame.shaking, frame.now)
     this.items.update(frame.buildings, frame.alpha)
     this.drops.update(frame.drops, frame.now)

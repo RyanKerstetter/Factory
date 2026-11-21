@@ -12,7 +12,11 @@ import {
   KEY_SLOW,
   PLAYER_SPEED,
   STATION_RECIPES,
+  WORKBENCH_OUTPUT_SLOT,
+  WORKBENCH_TOOL_SLOT,
   stepPlayer,
+  PLAYER_MAX_HEALTH,
+  PLAYER_SPAWN,
   SUB,
   TPS,
   WEAPONS,
@@ -99,7 +103,10 @@ test('specials: a sling bash knocks back, a club stuns, a spear is thrown and la
   attack(client, true, 2, center(5, 0))
   run(room, [client], 3)
   assert.equal(countOf(client.player.inventory, itemId('arrow')), 2, 'three arrows at once')
-  assert.ok(client.player.position.x < before - SUB, 'and a hop backwards')
+  const partWay = client.player.position.x
+  assert.ok(partWay < before && partWay > before - WEAPONS.get('bow')!.special!.hop, 'a hop backwards, over a few ticks rather than at once')
+  run(room, [client], 6)
+  assert.ok(client.player.position.x < before - SUB, 'and all the way back')
 })
 
 test('an animal that is hit runs away from whoever hit it', () => {
@@ -121,7 +128,7 @@ test('a hungry animal goes for the nearest grass in reach, every time', () => {
   assert.equal(room.animals!.info(cow).doing, 'going to grass')
 })
 
-test('a spear needs a knife on the player at the workbench, and is not used up', () => {
+test('a spear needs a knife in the tool slot of the workbench, and does not use it up', () => {
   const { room, client } = arena('SPEARS', { workbench: 1, log: 2 })
   client.command({ k: 'place', x: 2, y: 2, slot: 0 })
   run(room, [client], 5)
@@ -131,11 +138,17 @@ test('a spear needs a knife on the player at the workbench, and is not used up',
   client.command({ k: 'work', id: bench.id, recipe: spear.index })
   run(room, [client], 3)
   assert.equal(client.results.at(-1)?.why, 'needsTool')
+  // A knife on the player is not enough: it goes in the workbench's tool slot.
   client.player.inventory.slots[5] = { item: itemId('knife'), count: 1 }
   client.command({ k: 'work', id: bench.id, recipe: spear.index })
+  run(room, [client], 3)
+  assert.equal(client.results.at(-1)?.why, 'needsTool')
+  client.command({ k: 'put', id: bench.id, item: itemId('knife'), max: 1 })
+  client.command({ k: 'work', id: bench.id, recipe: spear.index })
   run(room, [client], spear.ticks + 5)
-  assert.equal((room.world.entity(bench.id) as { inv: { slots: Array<{ item: number }> } }).inv.slots[3].item, itemId('wood-spear'))
-  assert.equal(countOf(client.player.inventory, itemId('knife')), 1)
+  const slots = (room.world.entity(bench.id) as { inv: { slots: Array<{ item: number; count: number }> } }).inv.slots
+  assert.equal(slots[WORKBENCH_OUTPUT_SLOT].item, itemId('wood-spear'))
+  assert.equal(slots[WORKBENCH_TOOL_SLOT].item, itemId('knife'), 'the knife is still there')
 })
 
 test('a campfire warms a barrel over a chunk edge, and pages agree', () => {
@@ -219,4 +232,35 @@ test('an attack is judged against where the player saw the animals, up to half a
   client.command({ k: 'attack', special: false, slot: -1, x: center(3, 0).x, y: center(3, 0).y, charge: 0, seen: sawIt })
   run(room, [client], 3)
   assert.equal(chicken.hp, hp - 1, 'judged where the player saw it, it is hit')
+})
+
+test('with PvP on, players hurt each other, and one knocked out wakes up at the spawn healed; only the host turns it off', () => {
+  const room = new GameRoom('PVP', 11, { dropsOnGround: false, wildAnimals: false, plants: false, animals: false })
+  const host = new TestClient(room, 'Host')
+  const guest = new TestClient(room, 'Guest')
+  run(room, [host, guest], 5)
+  guest.player.position = { x: host.player.position.x + SUB, y: host.player.position.y }
+  const punch = (client: TestClient, at: { x: number; y: number }): void => client.command({ k: 'attack', special: false, slot: -1, x: at.x, y: at.y, charge: 0 })
+  punch(host, guest.player.position)
+  run(room, [host, guest], 3)
+  assert.equal(guest.player.health, PLAYER_MAX_HEALTH - 1, 'a punch hurts')
+  // Down to nothing: back at the spawn, healed.
+  guest.player.health = 1
+  run(room, [host, guest], TPS)
+  punch(host, guest.player.position)
+  run(room, [host, guest], 3)
+  assert.equal(guest.player.health, PLAYER_MAX_HEALTH)
+  // At the spawn (nudged off the host, who stands there too).
+  assert.ok(Math.hypot(guest.player.position.x - PLAYER_SPAWN.x, guest.player.position.y - PLAYER_SPAWN.y) < SUB, 'back at the spawn')
+  // Only the host changes it.
+  guest.command({ k: 'pvp', on: false })
+  run(room, [host, guest], 3)
+  assert.equal(guest.results.at(-1)?.why, 'notHost')
+  host.command({ k: 'pvp', on: false })
+  run(room, [host, guest], TPS)
+  guest.player.position = { x: host.player.position.x + SUB, y: host.player.position.y }
+  run(room, [host, guest], 2)
+  punch(host, guest.player.position)
+  run(room, [host, guest], 3)
+  assert.equal(guest.player.health, PLAYER_MAX_HEALTH, 'with PvP off, nothing')
 })

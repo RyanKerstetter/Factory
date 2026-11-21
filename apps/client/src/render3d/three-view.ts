@@ -1,19 +1,32 @@
 import * as THREE from 'three'
-import { CHUNK_SIZE, chunkCoords, gateRunsAcross, getItem, SAPLING_STAGES, SPROUT_STAGES, type ItemId } from '../../../../packages/shared/src/index.ts'
-import type { TileBounds } from '../camera.ts'
+import {
+  campSites,
+  CHUNK_SIZE,
+  chunkCoords,
+  DUNGEON_LAYOUT,
+  DUNGEON_SLOTS,
+  dungeonEntrance,
+  dungeonTile,
+  gateRunsAcross,
+  getItem,
+  SAPLING_STAGES,
+  SPROUT_STAGES,
+  type ItemId,
+  type Terrain,
+} from '../../../../packages/shared/src/index.ts'
+import { cameraPitch, type TileBounds } from '../camera.ts'
 import { artUrl } from '../render/art.ts'
 import { itemArt } from '../render/art-catalog.ts'
 import type { GameView } from '../render/game-view.ts'
-import type { AnimalView, BuildingView, GhostView, OverlayView, PlayerView, WorldFrame } from '../render/world-renderer.ts'
+import type { AnimalView, BuildingView, GhostView, OverlayView, PlayerView, Swish, WorldFrame } from '../render/world-renderer.ts'
 import { Ground } from './ground.ts'
 import * as models from './models.ts'
 import { GroundPaint, Label } from './paint.ts'
 
 // How many screen pixels a tile is across at a zoom of 1.
 const PX_PER_TILE = 56
-// Where the camera is from what it looks at: straight south and above, so the world's grid runs square with the
-// screen (north is up). Make the middle number bigger to look down more steeply, smaller for a lower angle.
-const CAMERA_FROM = new THREE.Vector3(0, 1.4, 1).normalize()
+// The camera looks from straight south and above, so the world's grid runs square with the screen (north is up), at an
+// angle that levels off as you zoom in (see cameraPitch in camera.ts).
 const CAMERA_DISTANCE = 80
 // Where the sunlight comes from (from the south-west and high), and how far round what the camera looks at shadows are
 // worked out, in tiles.
@@ -38,7 +51,12 @@ const STRIDE_PER_TILE = 2.2
 const ARM_SWING = 0.45
 const STRIDE_EASE = 0.12
 // How the models' natural sizes (in tiles) compare with the animals' sizes in data/animals.json.
-const ANIMAL_MODEL_SIZE: Readonly<Record<string, number>> = { cow: 1, chicken: 0.55 }
+const ANIMAL_MODEL_SIZE: Readonly<Record<string, number>> = { cow: 1, chicken: 0.55, deer: 1, wolf: 0.9, skeleton: 1, 'frost-lich': 1.1 }
+// How much bigger a male is drawn than a female, by kind.
+export const MALE_SCALE: Readonly<Record<string, number>> = { cow: 1.08, deer: 1.06, wolf: 1.14, chicken: 1.05 }
+// The mark over a hostile animal that is after a player, and the ring under it.
+const ANGRY = '#ff4a3a'
+const ANGRY_RING = 0xff4a3a
 // How big an item on the ground is, in tiles, and how it hops out of the ground and bobs (as the 2D view's).
 const DROP_SIZE = 0.42
 const LANDING_TICKS = 8
@@ -121,7 +139,8 @@ export async function createThreeView(stage: HTMLElement): Promise<GameView> {
       camera.bottom = -halfHeight
       camera.updateProjectionMatrix()
       const target = new THREE.Vector3(at.x, 0, at.y)
-      camera.position.copy(target).addScaledVector(CAMERA_FROM, CAMERA_DISTANCE)
+      const pitch = cameraPitch(zoom)
+      camera.position.copy(target).add(new THREE.Vector3(0, Math.sin(pitch), Math.cos(pitch)).multiplyScalar(CAMERA_DISTANCE))
       camera.lookAt(target)
       camera.updateMatrixWorld()
       sun.position.copy(target).addScaledVector(SUN_FROM, 60)
@@ -151,6 +170,12 @@ export async function createThreeView(stage: HTMLElement): Promise<GameView> {
       }
       picked.set(key, found)
       return found
+    },
+    aim(point) {
+      const ndc = new THREE.Vector2((point.x / width) * 2 - 1, -(point.y / height) * 2 + 1)
+      raycaster.setFromCamera(ndc, camera)
+      const at = raycaster.ray.intersectPlane(ground, new THREE.Vector3())
+      return at ? { x: at.x, y: at.z } : { ...focus }
     },
     visible(): TileBounds {
       const corners = [
@@ -209,11 +234,24 @@ class World {
 
   private readonly keptBuildings = new Map<number, Kept>()
   private readonly keptAnimals = new Map<number, Kept & { hurt: boolean; angle: number; last: { x: number; y: number } }>()
-  private readonly keptPlayers = new Map<number, Kept & { name: Label; angle: number; last: { x: number; y: number }; walk: number; stride: number }>()
+  private readonly keptPlayers = new Map<
+    number,
+    Kept & { name: Label; angle: number; last: { x: number; y: number }; walk: number; stride: number; hurt: boolean; dressed: string; holding: string }
+  >()
+  // The swishes in the air behind swinging weapons (see Swish), a mesh each, reused.
+  private readonly swishMeshes: THREE.Mesh[] = []
   private readonly keptDrops = new Map<number, THREE.Sprite>()
   private readonly keptShots = new Map<number, Kept>()
   private readonly keptGhosts: Kept[] = []
   private readonly numberLabels: Label[] = []
+  private readonly angryLabels: Label[] = []
+  private readonly angryRings: THREE.Mesh[] = []
+  private readonly angryRingGeometry = new THREE.RingGeometry(0.7, 0.85, 24).rotateX(-Math.PI / 2)
+  private readonly angryRingMaterial = new THREE.MeshBasicMaterial({ color: ANGRY_RING, transparent: true, opacity: 0.75, depthWrite: false })
+  // The camps, the way into the dungeon and the stairs out of it (see landmarksOf in terrain.ts), for the terrain they
+  // were placed for.
+  private readonly landmarks = new THREE.Group()
+  private landmarksFor: Terrain | undefined
   private readonly sparkMeshes: THREE.Mesh[] = []
   private readonly bars: Array<{ back: THREE.Mesh; fill: THREE.Mesh }> = []
   private readonly hoverRing: THREE.Mesh
@@ -236,23 +274,46 @@ class World {
     )
     this.dropShadows.frustumCulled = false
     scene.add(this.ground.view, this.paint.mesh, this.buildings, this.animals, this.players, this.drops, this.dropShadows, this.shots, this.ghosts)
-    scene.add(this.effects, this.labels, this.hoverRing, this.ropes)
+    scene.add(this.effects, this.labels, this.hoverRing, this.ropes, this.landmarks)
   }
 
   update(frame: WorldFrame, bounds: TileBounds, camera: THREE.OrthographicCamera, pxPerTile: number): void {
-    this.ground.update(frame.seed, bounds)
+    this.ground.update(frame.terrain, bounds)
+    this.updateLandmarks(frame.terrain)
     this.updateBuildings(frame)
-    this.updateAnimals(frame.animals, frame.now)
-    this.updatePlayers(frame.players, pxPerTile)
+    this.updateAnimals(frame.animals, frame.now, pxPerTile)
+    this.updatePlayers(frame.players, pxPerTile, frame.now)
+    this.updateSwishes(frame)
     this.updateDrops(frame)
     this.updateShots(frame)
     this.updateGhosts(frame.overlay)
     this.paint.clear()
     this.paintOverlay(frame.overlay, pxPerTile)
+    this.updateHoverLabel(frame.overlay, pxPerTile)
     this.paintAttacks(frame, pxPerTile)
     if (frame.debug) this.paintDebug(frame, pxPerTile)
     this.paint.finish()
     this.updateEffects(frame, camera, pxPerTile)
+  }
+
+  // ---- landmarks
+
+  private updateLandmarks(terrain: Terrain | undefined): void {
+    if (terrain === this.landmarksFor) return
+    this.landmarksFor = terrain
+    this.landmarks.clear()
+    if (!terrain) return
+    const place = (object: THREE.Object3D, x: number, y: number): void => {
+      object.position.set(x + 0.5, 0, y + 0.5)
+      this.landmarks.add(object)
+    }
+    for (const site of campSites(terrain)) place(models.camp(), site.x, site.y)
+    const entrance = dungeonEntrance(terrain)
+    if (entrance) place(models.dungeonEntrance(), entrance.x, entrance.y)
+    for (let slot = 0; slot < DUNGEON_SLOTS; slot++) {
+      const exit = dungeonTile(slot, DUNGEON_LAYOUT.exit)
+      place(models.dungeonExit(), exit.x, exit.y)
+    }
   }
 
   // ---- buildings and plants
@@ -295,18 +356,20 @@ class World {
 
   // ---- animals
 
-  private updateAnimals(animals: readonly AnimalView[], now: number): void {
+  private updateAnimals(animals: readonly AnimalView[], now: number, pxPerTile: number): void {
     const seen = new Set<number>()
+    let angry = 0
     let hovered: AnimalView | undefined
     let ropes = 0
     const rope = this.ropes.geometry.getAttribute('position') as THREE.BufferAttribute
     for (const animal of animals) {
       seen.add(animal.id)
       let kept = this.keptAnimals.get(animal.id)
-      const key = `${animal.kind}`
+      const key = `${animal.kind}|${animal.male}`
       if (!kept || kept.key !== key) {
         if (kept) this.animals.remove(kept.object)
-        const object = animalModel(animal.kind)
+        const object = animalModel(animal.kind, animal.male)
+        object.rotation.order = 'YXZ'
         object.traverse((part) => {
           if (part instanceof THREE.Mesh) part.userData.material = part.material
         })
@@ -321,8 +384,15 @@ class World {
       kept.angle += shortestTurn(kept.angle, animal.facing) * TURN_RATE
       object.rotation.y = -kept.angle
       object.position.set(animal.x, moving ? Math.abs(Math.sin(now * 0.014 + animal.id)) * 0.05 : 0, animal.y)
-      const scale = (animal.size / (ANIMAL_MODEL_SIZE[animal.kind] ?? 1)) * (animal.baby ? BABY_SCALE : 1)
+      const scale = (animal.size / (ANIMAL_MODEL_SIZE[animal.kind] ?? 1)) * (animal.baby ? BABY_SCALE : 1) * (animal.male ? (MALE_SCALE[animal.kind] ?? 1) : 1)
       object.scale.setScalar(scale)
+      // Killed: it keels over onto its side, and in the last moment shrinks away (into its drops).
+      if (animal.dying !== undefined) {
+        const fall = Math.min(1, animal.dying / 0.6)
+        object.rotation.x = (1 - (1 - fall) * (1 - fall)) * (Math.PI / 2)
+        const shrink = animal.dying > 0.75 ? 1 - (animal.dying - 0.75) / 0.25 : 1
+        object.scale.setScalar(scale * Math.max(0.05, shrink))
+      }
       // Lit up red while it has just been hurt.
       if (kept.hurt !== animal.hurt) {
         kept.hurt = animal.hurt
@@ -333,6 +403,31 @@ class World {
         })
       }
       if (animal.hovered) hovered = animal
+      // An archer aiming has its arrow on the string.
+      const nocked = object.getObjectByName('nocked')
+      if (nocked) nocked.visible = animal.aiming === true
+      // A hostile one after a player: a red mark bobbing over it, and a red ring under it.
+      if (animal.angry) {
+        let label = this.angryLabels[angry]
+        let ring = this.angryRings[angry]
+        if (!label || !ring) {
+          label = new Label({ color: ANGRY, size: 26, bold: true })
+          label.set('!')
+          ring = new THREE.Mesh(this.angryRingGeometry, this.angryRingMaterial)
+          ring.renderOrder = 6
+          this.angryLabels.push(label)
+          this.angryRings.push(ring)
+          this.labels.add(label.sprite)
+          this.effects.add(ring)
+        }
+        label.sprite.visible = true
+        label.fit(pxPerTile)
+        label.sprite.position.set(animal.x, 1.35 * scale + 0.1 * Math.sin(now * 0.008 + animal.id), animal.y)
+        ring.visible = true
+        ring.position.set(animal.x, 0.04, animal.y)
+        ring.scale.setScalar(Math.max(0.45, animal.size * 0.6) * (1 + 0.08 * Math.sin(now * 0.01)))
+        angry++
+      }
       if (animal.leader && ropes < 64) {
         const neck = 0.55 * scale
         rope.setXYZ(ropes * 2, animal.leader.x, 0.55, animal.leader.y)
@@ -344,6 +439,10 @@ class World {
       if (seen.has(id)) continue
       this.animals.remove(kept.object)
       this.keptAnimals.delete(id)
+    }
+    for (let i = angry; i < this.angryLabels.length; i++) {
+      this.angryLabels[i].sprite.visible = false
+      this.angryRings[i].visible = false
     }
     rope.needsUpdate = true
     this.ropes.geometry.setDrawRange(0, ropes * 2)
@@ -357,7 +456,7 @@ class World {
 
   // ---- players
 
-  private updatePlayers(players: readonly PlayerView[], pxPerTile: number): void {
+  private updatePlayers(players: readonly PlayerView[], pxPerTile: number, now: number): void {
     const seen = new Set<number>()
     for (const player of players) {
       seen.add(player.id)
@@ -366,24 +465,50 @@ class World {
         const object = models.caveman()
         const name = new Label({ color: '#f0e6d2', size: 14, bold: true })
         this.labels.add(name.sprite)
-        kept = { object, key: 'caveman', name, angle: player.facing, last: { x: player.x, y: player.y }, walk: 0, stride: 0 }
+        kept = { object, key: 'caveman', name, angle: player.facing, last: { x: player.x, y: player.y }, walk: 0, stride: 0, hurt: false, dressed: '', holding: '' }
         this.keptPlayers.set(player.id, kept)
         this.players.add(object)
+      }
+      const object = kept.object
+      // What they wear and hold, put on and in hand when it changes.
+      const armor = player.armor ?? [0, 0, 0]
+      const dressed = armor.join(',')
+      const held = player.held ?? 0
+      const holding = `${held}`
+      if (dressed !== kept.dressed || holding !== kept.holding) {
+        // Back to their own colours first, so the new parts' colours are the ones remembered.
+        if (kept.hurt) this.tint(object, false)
+        kept.hurt = false
+        if (dressed !== kept.dressed) {
+          kept.dressed = dressed
+          ;(['head', 'body', 'feet'] as const).forEach((slot, i) => {
+            const item = armor[i] ? getItem(armor[i] as ItemId) : undefined
+            models.wear(object, slot, item?.key, item ? new THREE.Color(item.color).getHex() : undefined)
+          })
+        }
+        if (holding !== kept.holding) {
+          kept.holding = holding
+          this.hold(object, held)
+        }
+        object.traverse((part) => {
+          if (part instanceof THREE.Mesh) part.userData.material = part.material
+        })
       }
       const moved = Math.hypot(player.x - kept.last.x, player.y - kept.last.y)
       kept.last = { x: player.x, y: player.y }
       kept.walk += moved * STRIDE_PER_TILE
       kept.stride += ((moved > 0.001 ? 1 : 0) - kept.stride) * STRIDE_EASE
-      kept.angle += shortestTurn(kept.angle, player.facing) * TURN_RATE
-      const object = kept.object
+      // Facing where they attack at once (an attack is aimed), else turning towards where they walk.
+      kept.angle += shortestTurn(kept.angle, player.facing) * (player.pose ? 1 : TURN_RATE)
       object.position.set(player.x, Math.abs(Math.sin(kept.walk)) * 0.03 * kept.stride, player.y)
       object.rotation.y = -kept.angle
-      // Arms swing as it walks; the right one jabs straight forward as it attacks.
-      const left = object.getObjectByName('arm-left')
-      const right = object.getObjectByName('arm-right')
-      const stride = Math.sin(kept.walk) * ARM_SWING * kept.stride
-      if (left) left.rotation.z = stride
-      if (right) right.rotation.z = player.swing !== undefined ? Math.sin(player.swing * Math.PI) * 1.6 : -stride
+      this.pose(object, player, Math.sin(kept.walk) * ARM_SWING * kept.stride, now)
+      // Lit up red while it has just been hurt.
+      const hurt = player.hurt === true
+      if (kept.hurt !== hurt) {
+        kept.hurt = hurt
+        this.tint(object, hurt)
+      }
       kept.name.set(player.name, player.local ? '#f0b04a' : '#f0e6d2')
       kept.name.fit(pxPerTile)
       kept.name.sprite.position.set(player.x, 1.25, player.y)
@@ -395,6 +520,156 @@ class World {
       kept.name.dispose()
       this.keptPlayers.delete(id)
     }
+  }
+
+  private tint(object: THREE.Object3D, hurt: boolean): void {
+    object.traverse((part) => {
+      if (!(part instanceof THREE.Mesh)) return
+      const base = (part.userData.material as THREE.Material | undefined) ?? (part.material as THREE.Material)
+      part.material = hurt ? hurtMaterial(base) : base
+    })
+  }
+
+  // Puts what a player holds in their hand: a weapon or tool's model (a bow in the left hand), or else the item's
+  // picture, small, in the right.
+  private hold(object: THREE.Object3D, item: number): void {
+    const right = object.getObjectByName('hand-right')
+    const left = object.getObjectByName('hand-left')
+    right?.clear()
+    left?.clear()
+    if (!item) return
+    const key = getItem(item as ItemId).key
+    const model = models.heldModel(key)
+    if (model) {
+      model.name = 'held'
+      ;(key === 'bow' ? left : right)?.add(model)
+      return
+    }
+    const picture = new THREE.Sprite(itemMaterial(item))
+    picture.name = 'held'
+    picture.scale.set(0.3, 0.3, 0.3)
+    picture.position.set(0.05, -0.08, 0)
+    right?.add(picture)
+  }
+
+  // Poses the arms for what the player is doing (see PlayerPose): at rest they swing as it walks (`stride`), held a
+  // little forward with something in hand; attacking, they follow the attack's path.
+  private pose(object: THREE.Object3D, player: PlayerView, stride: number, now: number): void {
+    const leftArm = object.getObjectByName('arm-left')
+    const rightArm = object.getObjectByName('arm-right')
+    const left = object.getObjectByName('arm-left-pitch')
+    const right = object.getObjectByName('arm-right-pitch')
+    const rightHand = object.getObjectByName('hand-right')
+    const leftHand = object.getObjectByName('hand-left')
+    if (!leftArm || !rightArm || !left || !right || !rightHand || !leftHand) return
+    const held = rightHand.getObjectByName('held') ?? leftHand.getObjectByName('held')
+    // Back to rest, then the pose on top.
+    for (const arm of [leftArm, rightArm]) {
+      arm.rotation.set(0, 0, 0)
+      arm.position.x = 0
+    }
+    rightHand.rotation.set(0, 0, 0)
+    leftHand.rotation.set(0, 0, 0)
+    if (held) held.visible = true
+    const carrying = (player.held ?? 0) !== 0
+    left.rotation.z = stride
+    right.rotation.z = carrying ? 0.45 - stride * 0.3 : -stride
+    const string = leftHand.getObjectByName('bow-string') as THREE.Line | undefined
+    let draw = 0
+    const pose = player.pose
+    const ease = (t: number): number => t * t * (3 - 2 * t)
+    if (pose) {
+      switch (pose.kind) {
+        case 'swing': {
+          // From the right round to the left, arm out level, the weapon following through.
+          const t = ease(Math.min(1, pose.progress / 0.75))
+          const half = Math.min(pose.arc, Math.PI * 1.6) / 2
+          right.rotation.z = Math.PI / 2 - 0.1
+          rightArm.rotation.y = -(half - 2 * half * t)
+          break
+        }
+        case 'thrust': {
+          const out = Math.sin(Math.min(1, pose.progress / 0.8) * Math.PI)
+          right.rotation.z = Math.PI / 2
+          rightArm.position.x = 0.3 * out
+          break
+        }
+        case 'strike': {
+          // Up overhead, then down hard in front.
+          const t = ease(Math.min(1, pose.progress / 0.55))
+          right.rotation.z = Math.PI - 0.25 - (Math.PI / 2 + 0.15) * t
+          break
+        }
+        case 'windup': {
+          if (pose.style === 'strike') right.rotation.z = Math.PI - 0.3 - 0.15 * pose.charge
+          else if (pose.style === 'swing') {
+            right.rotation.z = Math.PI / 2 - 0.1
+            rightArm.rotation.y = -(Math.min(pose.arc, Math.PI * 1.6) / 2 + 0.3 * pose.charge)
+          } else {
+            right.rotation.z = Math.PI / 2
+            rightArm.position.x = -0.15 * pose.charge
+          }
+          break
+        }
+        case 'draw':
+          // The bow out in the left hand; the right pulls the string back.
+          left.rotation.z = Math.PI / 2
+          right.rotation.z = Math.PI / 2
+          rightArm.position.x = -0.2 * pose.charge
+          rightArm.rotation.y = 0.35
+          draw = pose.charge
+          break
+        case 'whirl':
+          // Up over the head, the sling going round, faster as it charges.
+          right.rotation.z = Math.PI - 0.15
+          rightHand.rotation.y = (now / 1000) * (9 + 14 * pose.charge)
+          break
+        case 'aimThrow':
+          // Raised and drawn back, the spear level and pointing ahead.
+          right.rotation.z = Math.PI - 0.5 - 0.3 * pose.charge
+          rightArm.position.x = -0.18 * pose.charge
+          rightHand.rotation.z = Math.PI / 2 - right.rotation.z
+          break
+        case 'release': {
+          // The arm whips forward; a thrown spear has left the hand.
+          right.rotation.z = Math.PI / 2 + 0.3 * (1 - pose.progress)
+          if (player.held && getItem(player.held as ItemId).key === 'bow') left.rotation.z = Math.PI / 2
+          if (pose.thrown && held) held.visible = false
+          break
+        }
+      }
+    }
+    // The bow's string, drawn back as far as it is pulled.
+    if (string) {
+      const points = string.geometry.getAttribute('position') as THREE.BufferAttribute
+      points.setXYZ(1, 0, 0.3 * draw, 0)
+      points.needsUpdate = true
+    }
+  }
+
+  // The swishes in the air behind swinging weapons: pale, see-through ribbons at the height a weapon swings, tracing
+  // what each attack covers as it goes, the tail fading behind the weapon's edge.
+  private updateSwishes(frame: WorldFrame): void {
+    const swishes = frame.attacks.swishes
+    swishes.forEach((swish, i) => {
+      let mesh = this.swishMeshes[i]
+      if (!mesh) {
+        mesh = new THREE.Mesh(
+          new THREE.BufferGeometry(),
+          new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false, side: THREE.DoubleSide }),
+        )
+        mesh.renderOrder = 7
+        mesh.frustumCulled = false
+        this.swishMeshes.push(mesh)
+        this.effects.add(mesh)
+      }
+      mesh.visible = true
+      const { positions, colors } = swishGeometry(swish)
+      mesh.geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+      mesh.geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 4))
+      mesh.geometry.computeBoundingSphere()
+    })
+    for (let i = swishes.length; i < this.swishMeshes.length; i++) this.swishMeshes[i].visible = false
   }
 
   // ---- items on the ground and in flight
@@ -445,7 +720,9 @@ class World {
         this.keptShots.set(shot.id, kept)
         this.shots.add(kept.object)
       }
-      kept.object.position.set(shot.x, 0.7, shot.y)
+      // An icicle falls from high above, faster and faster; anything else flies at about head height.
+      const height = shot.fall !== undefined ? 4.5 * (1 - shot.fall * shot.fall) : 0.7
+      kept.object.position.set(shot.x, height, shot.y)
       kept.object.rotation.y = -shot.angle
     }
     for (const [id, kept] of this.keptShots) {
@@ -484,6 +761,19 @@ class World {
   }
 
   // ---- painted on the ground
+
+  // The name over a hovered chest.
+  private readonly hoverLabel = new Label({ color: '#f0e6d2', size: 15, bold: true })
+
+  private updateHoverLabel(overlay: OverlayView, pxPerTile: number): void {
+    const sprite = this.hoverLabel.sprite
+    if (!sprite.parent) this.labels.add(sprite)
+    sprite.visible = overlay.label !== undefined
+    if (!overlay.label) return
+    this.hoverLabel.set(overlay.label.text)
+    this.hoverLabel.fit(pxPerTile)
+    sprite.position.set(overlay.label.x + 0.5, 1.05, overlay.label.y + 0.5)
+  }
 
   private paintOverlay(overlay: OverlayView, pxPerTile: number): void {
     const line = 2 / pxPerTile
@@ -675,10 +965,15 @@ function buildingModel(building: BuildingView): THREE.Object3D {
       return models.feeder()
     case 'chest':
       return models.chest()
+    case 'bed':
+      return models.sleepingBag()
+    case 'door':
+      return models.iceDoor()
     case 'plot': {
       const made = models.plot(Math.round((building.water ?? 0) / 20) * 20)
       const stage = building.cropArt?.split('/')[2]
-      if (stage === 'sprout' || stage === 'mid' || stage === 'full') made.add(models.crop(stage))
+      const growth = Number(building.cropArt?.split('/')[3])
+      if (stage && Number.isFinite(growth)) made.add(models.crop(growth, building.x, building.y))
       return made
     }
     default: {
@@ -691,14 +986,21 @@ function buildingModel(building: BuildingView): THREE.Object3D {
   }
 }
 
-function animalModel(kind: string): THREE.Group {
-  if (kind === 'cow') return models.cow()
-  if (kind === 'chicken') return models.chicken()
+function animalModel(kind: string, male: boolean): THREE.Group {
+  if (kind === 'cow') return models.cow(male)
+  if (kind === 'chicken') return models.chicken(male)
+  if (kind === 'deer') return models.deer(male)
+  if (kind === 'wolf') return models.wolf(male)
+  if (kind === 'skeleton') return models.skeleton()
+  if (kind === 'skeleton-archer') return models.skeletonArcher()
+  if (kind === 'frost-lich') return models.frostLich()
   return models.machine(0xb0a080)
 }
 
-function projectileKind(item: number): 'arrow' | 'spear' | 'stone' {
+function projectileKind(item: number): 'arrow' | 'spear' | 'stone' | 'shard' | 'icicle' {
   const key = getItem(item as ItemId).key
+  if (key === 'ice-shard') return 'shard'
+  if (key === 'icicle') return 'icicle'
   if (key === 'arrow') return 'arrow'
   if (key.endsWith('spear')) return 'spear'
   return 'stone'
@@ -722,12 +1024,14 @@ const ghostMaterials = new Map<string, THREE.Material>()
 // A see-through material for what is about to be placed: in its own colours where it can go, red where it cannot.
 function ghostMaterial(base: THREE.Material, valid: boolean, opacity: number): THREE.Material {
   const color = (base as THREE.MeshStandardMaterial).color?.getHex() ?? 0xffffff
-  const key = `${color}|${valid}|${opacity}`
+  // Two-sided where the model is (an open barrel's walls), so none of it goes missing.
+  const side = base.side
+  const key = `${color}|${valid}|${opacity}|${side}`
   let made = ghostMaterials.get(key)
   if (!made) {
     const tint = new THREE.Color(color)
     if (!valid) tint.lerp(new THREE.Color(INVALID), 0.7)
-    made = new THREE.MeshStandardMaterial({ color: tint, transparent: true, opacity, depthWrite: false, flatShading: true })
+    made = new THREE.MeshStandardMaterial({ color: tint, transparent: true, opacity, depthWrite: false, flatShading: true, side })
     ghostMaterials.set(key, made)
   }
   return made
@@ -752,4 +1056,72 @@ function itemMaterial(item: number): THREE.SpriteMaterial {
 function shortestTurn(from: number, to: number): number {
   const turn = (to - from) % (Math.PI * 2)
   return turn > Math.PI ? turn - Math.PI * 2 : turn < -Math.PI ? turn + Math.PI * 2 : turn
+}
+
+// The height (tiles) a swish is drawn at: about where a weapon swings.
+const SWISH_HEIGHT = 0.55
+
+// A swish's ribbon as triangles (positions, and colours with alpha), in the world: the swept part of a swing's arc
+// (brightest at the leading edge, fading back along it), a thrust's streak growing out, or a strike's ring spreading.
+function swishGeometry(swish: Swish): { positions: number[]; colors: number[] } {
+  const positions: number[] = []
+  const colors: number[] = []
+  const fade = Math.max(0, 1 - swish.progress)
+  const at = (angle: number, distance: number): [number, number, number] => [
+    swish.x + Math.cos(angle) * distance,
+    SWISH_HEIGHT,
+    swish.y + Math.sin(angle) * distance,
+  ]
+  const tri = (a: [number, number, number], b: [number, number, number], c: [number, number, number], alphas: [number, number, number]): void => {
+    ;[a, b, c].forEach((point, i) => {
+      positions.push(...point)
+      colors.push(1, 1, 1, alphas[i])
+    })
+  }
+  if (swish.shape === 'arc') {
+    // How far round the sweep has come (eased as the arm is), and a tail behind it.
+    const sweep = Math.min(1, swish.progress / 0.75)
+    const eased = sweep * sweep * (3 - 2 * sweep)
+    const start = swish.angle + swish.arc / 2
+    const edge = start - swish.arc * eased
+    const steps = 16
+    for (let i = 0; i < steps; i++) {
+      const a0 = start + (edge - start) * (i / steps)
+      const a1 = start + (edge - start) * ((i + 1) / steps)
+      // Brighter towards the leading edge.
+      const b0 = (0.15 + 0.55 * (i / steps)) * fade
+      const b1 = (0.15 + 0.55 * ((i + 1) / steps)) * fade
+      tri(at(a0, swish.inner), at(a0, swish.outer), at(a1, swish.outer), [b0 * 0.3, b0, b1])
+      tri(at(a0, swish.inner), at(a1, swish.outer), at(a1, swish.inner), [b0 * 0.3, b1, b1 * 0.3])
+    }
+  } else if (swish.shape === 'band') {
+    // A streak straight out, as long as the thrust has reached.
+    const reach = swish.outer * Math.min(1, swish.progress / 0.5)
+    const side = swish.angle + Math.PI / 2
+    const half = Math.max(0.08, swish.width / 2)
+    const point = (along: number, across: number): [number, number, number] => [
+      swish.x + Math.cos(swish.angle) * along + Math.cos(side) * across,
+      SWISH_HEIGHT,
+      swish.y + Math.sin(swish.angle) * along + Math.sin(side) * across,
+    ]
+    const a = 0.6 * fade
+    tri(point(0, -half), point(reach, -half), point(reach, half), [0.05, a, a])
+    tri(point(0, -half), point(reach, half), point(0, half), [0.05, a, 0.05])
+  } else {
+    // A ring at the spot, spreading out to the strike's reach as it lands.
+    const middle = { x: swish.x + Math.cos(swish.angle) * swish.distance, y: swish.y + Math.sin(swish.angle) * swish.distance }
+    const grow = Math.min(1, swish.progress / 0.6)
+    const outer = swish.outer * (0.4 + 0.6 * grow)
+    const inner = outer * 0.6
+    const steps = 24
+    const ring = (angle: number, r: number): [number, number, number] => [middle.x + Math.cos(angle) * r, 0.08, middle.y + Math.sin(angle) * r]
+    const a = 0.65 * fade * (swish.progress > 0.3 ? 1 : swish.progress / 0.3)
+    for (let i = 0; i < steps; i++) {
+      const a0 = (i / steps) * Math.PI * 2
+      const a1 = ((i + 1) / steps) * Math.PI * 2
+      tri(ring(a0, inner), ring(a0, outer), ring(a1, outer), [0, a, a])
+      tri(ring(a0, inner), ring(a1, outer), ring(a1, inner), [0, a, 0])
+    }
+  }
+  return { positions, colors }
 }

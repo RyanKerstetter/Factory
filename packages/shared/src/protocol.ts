@@ -1,5 +1,6 @@
 import type { AnimalInfo, AnimalPosition } from './animals.ts'
 import type { Command, Refusal } from './commands.ts'
+import type { TerrainSettings } from './terrain.ts'
 import type { Numbered } from './reliable-stream.ts'
 import type { EntityState } from './sim/entity.ts'
 import type { ChunkSnapshot, LinkResult } from './sim/factory-world.ts'
@@ -18,14 +19,29 @@ import type { WorldEvent } from './sim/world-events.ts'
 // ---- server to page: the log
 
 export type StreamEvent =
-  // The first thing in the log: who the page is and where the world starts. Everything after it is from `tick` on.
-  | { k: 'welcome'; tick: number; playerId: number; seed: number; code: string; name?: string }
+  // The first thing in the log: who the page is and where the world starts, and how its land lies (with the seed, all
+  // the page needs to work out the biomes, the sea and the cold). Everything after it is from `tick` on.
+  | { k: 'welcome'; tick: number; playerId: number; seed: number; code: string; name?: string; terrain?: TerrainSettings }
   // Who is in the game, sent whenever it changes. Not part of the simulation, so used as soon as it arrives.
   | { k: 'roster'; players: Array<[number, string]> }
+  // Who the host is (the player who made the game, who can change its settings) and whether players can hurt each
+  // other; sent on joining and whenever it changes.
+  | { k: 'room'; host: string; pvp: boolean }
+  // A player was hurt by another (`amount`), and whether that knocked them out (back to the spawn, healed).
+  | { k: 'hurt'; id: number; amount: number; died: boolean }
+  // What a player holds (an item ID, 0 for nothing) and wears (head, body, feet: item IDs, 0 for none), for drawing
+  // them: sent to everyone when it changes, and of everyone to a player who joins.
+  | { k: 'gear'; id: number; held: number; armor: number[] }
+  // A player attacked (for drawing it on other pages): with what (the item ID, 0 for fists), whether it was the special
+  // attack, and which way (radians).
+  | { k: 'swung'; id: number; item: number; special: boolean; angle: number }
+  // A boss let out a wave of cold air (for drawing it): from a point (units), rolling out `delay` ticks from now.
+  | { k: 'wave'; x: number; y: number; delay: number }
   // What an animal near the player is, sent when it comes near and whenever that changes; and one that is gone (out of
   // range, or dead). Animals are not part of the simulation either (see animals.ts).
   | { k: 'animal'; a: AnimalInfo }
-  | { k: 'animal-'; id: number }
+  // An animal is no longer near the player; `died` (the damage of the killing blow) if it was killed.
+  | { k: 'animal-'; id: number; died?: number }
   // Before phase A of `tick`: what a command did to a chunk this page simulates.
   | { k: 'world'; tick: number; ev: WorldEvent }
   // Before phase A of `tick`: what became of one of this page's own commands (`seq` is the number it was sent with),
@@ -55,6 +71,11 @@ export function eventPhase(event: StreamEvent): EventPhase {
   switch (event.k) {
     case 'welcome':
     case 'roster':
+    case 'room':
+    case 'hurt':
+    case 'gear':
+    case 'swung':
+    case 'wave':
     case 'animal':
     case 'animal-':
       return 'now'
@@ -77,7 +98,9 @@ export function eventPhase(event: StreamEvent): EventPhase {
 // Where everyone is, once a tick: [player ID, x, y] in units. `t` is the server's tick, `s` the number of the last log
 // message sent before it (so a page that has every log message up to `s` has the whole log up to `t`), and `a` the
 // last of this page's movement inputs the server has played. `n` is where the animals near the player are, `j` the
-// arrows, stones and spears in flight near it ([id, item, x, y, 1 once it has stopped]), and `h` the player's own health.
+// arrows, stones and spears in flight near it ([id, item, x, y, 1 once it has stopped]), `h` the player's own health,
+// `b` how warm their body is, in tenths of a °C (see cold.ts), and `d` the number of the last of this page's attacks
+// that set off a dash (so the page knows which of its dashes the server's position has in it: see LocalPlayer).
 export type StateMessage = {
   t: number
   s: number
@@ -86,6 +109,8 @@ export type StateMessage = {
   n?: AnimalPosition[]
   j?: Array<[number, number, number, number, number]>
   h?: number
+  b?: number
+  d?: number
 }
 export type PongMessage = { c: number; t: number }
 export type RequestAckMessage = { s: number }
@@ -97,6 +122,9 @@ export type ErrorMessage = { message: string }
 export type Request =
   | { k: 'cmd'; tick: number; c: Command }
   | { k: 'desync'; chunk: number; tick: number; hash: number }
+  // A request the server could not read (the server puts this in its place): it is answered as a command refused, so
+  // the stream goes on past it rather than waiting for it forever.
+  | { k: 'bad' }
 
 export type RequestMessage = Numbered<{ r: Request }>
 export type InputMessage = { i: Array<[number, number]> }
@@ -105,6 +133,8 @@ export type InputMessage = { i: Array<[number, number]> }
 // seed, and who is in it. A saved world that is not running: the same, when it was last saved (ms since 1970), and
 // everyone who has played in it.
 export type GameInfo = { code: string; name: string; seed: number; players: number; playerNames: string[] }
+// What a new world is made with besides its name and seed: its size and how ragged its coasts are.
+export type NewWorldOptions = { size?: string; bumpiness?: number }
 export type SavedWorldInfo = { code: string; name: string; seed: number; savedAt: number; players: string[] }
 
 // A player's name as the server keeps it: trimmed, and something if it is empty.

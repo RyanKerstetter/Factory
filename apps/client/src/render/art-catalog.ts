@@ -48,6 +48,8 @@ const entries: Record<string, ArtEntry> = {
   'building/stump': { file: 'icons/buildings/stump.png', placeholder: draw.log },
   'building/plot': { file: 'buildings/plot.png', placeholder: draw.plot },
   'building/feeder': { file: 'buildings/feed-box.png', placeholder: draw.feeder },
+  'building/bed': { file: 'icons/buildings/bed.png', placeholder: draw.bed },
+  'building/door': { file: 'buildings/ice-door.png', placeholder: draw.item(0x9fd6ff) },
   'plant/tree': { file: 'plants/tree.png', placeholder: draw.tree },
   'plant/bush': { file: 'plants/bush.png', placeholder: draw.bush },
   'plant/sapling': { file: 'buildings/sapling.png', placeholder: draw.sapling },
@@ -100,6 +102,7 @@ for (const axis of ['h', 'v'] as const) {
     entries[`building/gate/${axis}-${state}`] = { file: `buildings/gate/gate-${axis}-${state}.png`, placeholder: draw.gate(axis === 'h', state === 'open') }
   }
 }
+// The pictures a crop is drawn with in 2D, as it grows (the 3D view has CROP_GROWTH_STAGES models: see cropStage).
 export const CROP_STAGES = ['sprout', 'mid', 'full'] as const
 for (const crop of CROPS) {
   for (const stage of CROP_STAGES) {
@@ -107,7 +110,7 @@ for (const crop of CROPS) {
   }
 }
 // The colours of the animals' placeholders.
-const ANIMAL_COLORS: Readonly<Record<string, number>> = { cow: 0x8a5a3a, chicken: 0xe8e0cf }
+const ANIMAL_COLORS: Readonly<Record<string, number>> = { cow: 0x8a5a3a, chicken: 0xe8e0cf, deer: 0x9a6a40, wolf: 0x7d828c, skeleton: 0xe6dfc8, 'skeleton-archer': 0xd8d0b8, 'frost-lich': 0x22314e }
 for (const def of ANIMALS) {
   entries[animalArt(def.kind)] = { file: `entities/${def.kind}.png`, placeholder: draw.animal(ANIMAL_COLORS[def.kind] ?? 0xb0a080) }
 }
@@ -134,13 +137,20 @@ export function animalArt(kind: string): string {
   return `animal/${kind}`
 }
 
-// The picture of a crop that has grown `growth` of the `growTicks` it takes.
-export function cropArt(cropId: number, growth: number): string | undefined {
+// The picture of a crop that has grown `growth` of the `growTicks` it takes, and its stage (0 to stages - 1; the last
+// only once it is fully grown) after the picture's name: `crop/<crop>/<picture>/<stage>`.
+export function cropArt(cropId: number, growth: number, stages = 6): string | undefined {
   const crop = getCrop(cropId)
   if (!crop) return undefined
   const needed = growthNeeded(crop.growTicks)
-  const stage = growth >= needed ? 'full' : growth * 2 >= needed ? 'mid' : 'sprout'
-  return `crop/${crop.key}/${stage}`
+  const stage = growth >= needed ? stages - 1 : Math.min(stages - 2, Math.floor((growth / needed) * (stages - 1)))
+  const picture = growth >= needed ? 'full' : growth * 2 >= needed ? 'mid' : 'sprout'
+  return `crop/${crop.key}/${picture}/${stage}`
+}
+
+// The 2D picture's name from a crop's art (without its stage).
+export function cropPicture(art: string): string {
+  return art.split('/').slice(0, 3).join('/')
 }
 
 // The picture of a building or plant: a rock's is picked by its tile, a fence's by the neighbours it joins, a gate's

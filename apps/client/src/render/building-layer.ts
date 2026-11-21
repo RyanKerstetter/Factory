@@ -2,7 +2,7 @@ import { Container, Sprite } from 'pixi.js'
 import { SAPLING_STAGES, SPROUT_STAGES } from '../../../../packages/shared/src/index.ts'
 import { TILE_PX } from '../camera.ts'
 import type { Art } from './art.ts'
-import { buildingArt, itemArt } from './art-catalog.ts'
+import { cropPicture, buildingArt, itemArt } from './art-catalog.ts'
 import type { BuildingView } from './world-renderer.ts'
 
 // How far a punched plant sways, in pixels at normal zoom, and how fast.
@@ -39,7 +39,7 @@ export class BuildingLayer {
       this.crops.set(building.id, sprite)
       this.view.addChild(sprite)
     }
-    const texture = this.art.texture(building.cropArt)
+    const texture = this.art.texture(cropPicture(building.cropArt))
     if (sprite.texture !== texture) sprite.texture = texture
     const width = TILE_PX * 0.85
     sprite.scale.set(width / texture.width, width / texture.width)
@@ -119,7 +119,7 @@ function plantSize(building: Pick<BuildingView, 'kind' | 'stage'>): { size: numb
     case 'grass':
       return { size: 0.8, lift: 0.05 }
     case 'loose':
-      return { size: 0.45, lift: 0 }
+      return { size: 0.65, lift: 0 }
     case 'rock':
       return { size: 1, lift: 0.05 }
     case 'sapling':

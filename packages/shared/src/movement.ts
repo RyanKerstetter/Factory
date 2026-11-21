@@ -8,8 +8,10 @@ export const KEY_UP = 1
 export const KEY_DOWN = 2
 export const KEY_LEFT = 4
 export const KEY_RIGHT = 8
-// Held while charging a shot or a throw: the player moves at CHARGE_SPEED_PERCENT of its speed.
+// Held while charging a shot or a throw, and for ATTACK_SLOW_TICKS after any attack: the player moves at
+// CHARGE_SPEED_PERCENT of its speed.
 export const KEY_SLOW = 16
+export const ATTACK_SLOW_TICKS = 15
 export const ALL_KEYS = KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_SLOW
 export const CHARGE_SPEED_PERCENT = 45
 
@@ -59,12 +61,14 @@ export function keysDirection(keys: number): { dx: number; dy: number } {
 // stands, say) is first pushed out to the nearest place it fits; then it moves, stopping against anything solid: along
 // x and then along y, so it slides along a wall it walks into at an angle. Only what the player is not already over can
 // stop it, so a player boxed in where it cannot be pushed out can still walk out. With `slow`, a player whose middle is
-// over a tile it says is slow (a bush) moves at BUSH_SPEED_PERCENT of its speed.
-export function stepPlayer(start: PlayerPosition, keys: number, solid?: IsSolid, slow?: IsSlow): PlayerPosition {
+// over a tile it says is slow (a bush) moves at BUSH_SPEED_PERCENT of its speed. `speedPercent` slows it further (a
+// player freezing in the cold: see cold.ts).
+export function stepPlayer(start: PlayerPosition, keys: number, solid?: IsSolid, slow?: IsSlow, speedPercent = 100): PlayerPosition {
   const position = solid ? pushOut(start, solid) : start
   const { dx, dy } = keysDirection(keys)
   if (dx === 0 && dy === 0) return position
   let speed = dx !== 0 && dy !== 0 ? PLAYER_SPEED_DIAGONAL : PLAYER_SPEED
+  if (speedPercent !== 100) speed = Math.floor((speed * speedPercent) / 100)
   if (slow && slow(floorDiv(position.x, SUB), floorDiv(position.y, SUB))) speed = Math.floor((speed * BUSH_SPEED_PERCENT) / 100)
   if (keys & KEY_SLOW) speed = Math.floor((speed * CHARGE_SPEED_PERCENT) / 100)
   let x = clampUnits(position.x + dx * speed)

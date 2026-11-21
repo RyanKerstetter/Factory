@@ -33,6 +33,11 @@ import {
   stepPlayer,
   SUB,
   type Entity,
+  terrainOf,
+  biomeAt,
+  type Terrain,
+  boundsOf,
+  type Box,
 } from '../packages/shared/src/index.ts'
 import { differingChunks, run, TestClient } from './helpers.ts'
 
@@ -61,12 +66,44 @@ function punchDown(room: GameRoom, client: TestClient, id: number, slot = 0): nu
   return punches
 }
 
+// The chunks round the middle of a world's mountains.
+function mountainChunks(terrain: Terrain, around = 2): Array<[number, number]> {
+  const mountain = terrain.sites.find((site) => site.biome.key === 'mountain')!
+  const chunks: Array<[number, number]> = []
+  const cx = Math.floor(mountain.x / 32)
+  const cy = Math.floor(mountain.y / 32)
+  for (let y = cy - around; y <= cy + around; y++) for (let x = cx - around; x <= cx + around; x++) chunks.push([x, y])
+  return chunks
+}
+
 test('the world grows no ore, keeps the spawn clear, and grows the same plants from the same seed', () => {
+  const terrain = terrainOf(7)
   for (let y = -40; y <= 40; y += 3) for (let x = -40; x <= 40; x += 3) assert.equal(oreAt(7, x, y), 0)
-  for (let y = -5; y <= 5; y++) for (let x = -5; x <= 5; x++) assert.equal(plantAt(7, x, y), undefined)
-  const plants = plantsInChunk(7, 1, 1)
-  assert.ok(plants.some((plant) => plant.kind === 'tree') || plantsInChunk(7, 2, 1).some((plant) => plant.kind === 'tree'))
-  assert.deepEqual(plantsInChunk(7, 1, 1), plants)
+  for (let y = -5; y <= 5; y++) for (let x = -5; x <= 5; x++) assert.equal(plantAt(terrain, x, y), undefined)
+  const plants = plantsInChunk(terrain, 1, 1)
+  assert.ok(plants.some((plant) => plant.kind === 'tree') || plantsInChunk(terrain, 2, 1).some((plant) => plant.kind === 'tree'))
+  assert.deepEqual(plantsInChunk(terrainOf(7), 1, 1), plants)
+})
+
+test('the forest grows trees, bushes, grass and flint and no rocks; the mountains grow rocks and nothing else', () => {
+  const terrain = terrainOf(21)
+  const forest = new Set<string>()
+  for (let cy = -2; cy <= 2; cy++) {
+    for (let cx = -2; cx <= 2; cx++) {
+      for (const plant of plantsInChunk(terrain, cx, cy)) if (biomeAt(terrain, plant.x, plant.y)?.key === 'forest') forest.add(plant.kind)
+    }
+  }
+  assert.deepEqual([...forest].sort(), ['bush', 'grass', 'tree'])
+  const mountain = new Set<string>()
+  for (const [cx, cy] of mountainChunks(terrain)) {
+    for (const plant of plantsInChunk(terrain, cx, cy)) if (biomeAt(terrain, plant.x, plant.y)?.key === 'mountain') mountain.add(plant.kind)
+  }
+  assert.deepEqual([...mountain], ['rock'])
+  let flint = 0
+  for (const [cx, cy] of mountainChunks(terrain)) {
+    for (const piece of flintInChunk(terrain, cx, cy)) if (biomeAt(terrain, Math.floor(piece.x / SUB), Math.floor(piece.y / SUB))?.key !== 'forest') flint++
+  }
+  assert.equal(flint, 0, 'no flint outside the forest')
 })
 
 test('bushes grow in patches: most bushes have another bush beside them', () => {
@@ -74,10 +111,10 @@ test('bushes grow in patches: most bushes have another bush beside them', () => 
   let together = 0
   for (let cy = -2; cy <= 2; cy++) {
     for (let cx = -2; cx <= 2; cx++) {
-      for (const plant of plantsInChunk(3, cx, cy)) {
+      for (const plant of plantsInChunk(terrainOf(3), cx, cy)) {
         if (plant.kind !== 'bush') continue
         bushes++
-        const near = [[-1, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [1, 1], [-1, 1], [1, -1]].some(([dx, dy]) => plantAt(3, plant.x + dx, plant.y + dy) === 'bush')
+        const near = [[-1, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [1, 1], [-1, 1], [1, -1]].some(([dx, dy]) => plantAt(terrainOf(3), plant.x + dx, plant.y + dy) === 'bush')
         if (near) together++
       }
     }
@@ -165,8 +202,11 @@ test('a bush drops twine as it is broken and berries when it is gone; an axe bre
 })
 
 test('a rock cannot be broken by hand; a pickaxe breaks it into stone and flint', () => {
-  const room = new GameRoom('ROCK1', 11, { dropsOnGround: false })
+  const room = new GameRoom('ROCK1', 11, { dropsOnGround: false, wildAnimals: false })
   const client = new TestClient(room, 'Mason')
+  // Rocks are in the mountains: go to their warm edge, where the forest meets them.
+  const [forest, mountain] = room.terrain.sites
+  client.player.position = center(Math.round((forest.x + mountain.x) / 2), Math.round((forest.y + mountain.y) / 2))
   run(room, [client], 5)
   const rock = besidePlant(room, client, 'rock')
   client.command({ k: 'punch', id: rock.id, slot: 0 })
@@ -186,14 +226,13 @@ test('a rock cannot be broken by hand; a pickaxe breaks it into stone and flint'
 test('rocks lie in groups', () => {
   let rocks = 0
   let together = 0
-  for (let cy = -3; cy <= 3; cy++) {
-    for (let cx = -3; cx <= 3; cx++) {
-      for (const plant of plantsInChunk(3, cx, cy)) {
-        if (plant.kind !== 'rock') continue
-        rocks++
-        const near = [[-1, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [1, 1], [-1, 1], [1, -1]].some(([dx, dy]) => plantAt(3, plant.x + dx, plant.y + dy) === 'rock')
-        if (near) together++
-      }
+  const terrain = terrainOf(3)
+  for (const [cx, cy] of mountainChunks(terrain)) {
+    for (const plant of plantsInChunk(terrain, cx, cy)) {
+      if (plant.kind !== 'rock') continue
+      rocks++
+      const near = [[-1, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [1, 1], [-1, 1], [1, -1]].some(([dx, dy]) => plantAt(terrain, plant.x + dx, plant.y + dy) === 'rock')
+      if (near) together++
     }
   }
   assert.ok(rocks > 20, `there are rocks (${rocks})`)
@@ -223,7 +262,7 @@ test('a stick, twine and flint craft a tool; tools do not stack; a recipe withou
 })
 
 test('flint lies in the ground from the start, the same from the same seed, and a hit knocks it loose', () => {
-  assert.deepEqual(flintInChunk(5, 1, 1), flintInChunk(5, 1, 1))
+  assert.deepEqual(flintInChunk(terrainOf(5), 1, 1), flintInChunk(terrainOf(5), 1, 1))
   const room = new GameRoom('FLINT', 11)
   const client = new TestClient(room, 'Finder')
   run(room, [client], 5)
@@ -327,7 +366,8 @@ test('a tree that grows on a player pushes the player out, on the server and on 
   assert.equal(room.world.entityAt(0, 0)?.kind, 'tree')
   room.receiveInputs(client.player, [[1_000_000, 0]])
   run(room, [client], 2)
-  const solid = (x: number, y: number): boolean => room.world.entityAt(x, y)?.kind === 'tree'
+  // Clear of its trunk (what of a tree's tile stands in the way: see BUILDING_BOUNDS).
+  const solid = (x: number, y: number): readonly Box[] | false => (room.world.entityAt(x, y)?.kind === 'tree' ? boundsOf('tree')! : false)
   assert.ok(!overlapsSolid(client.player.position, solid), 'the player is clear of the tree')
 })
 
@@ -413,8 +453,8 @@ test('much less grows than before, and a game can be given its own rates', () =>
   for (let cy = -3; cy <= 3; cy++) {
     for (let cx = -3; cx <= 3; cx++) {
       // Grass is ground cover, not counted here.
-      for (const plant of plantsInChunk(5, cx, cy)) if (plant.kind !== 'grass') plant.kind === 'tree' ? trees++ : bushes++
-      lush += plantsInChunk(5, cx, cy, rich).filter((plant) => plant.kind !== 'grass').length
+      for (const plant of plantsInChunk(terrainOf(5), cx, cy)) if (plant.kind !== 'grass') plant.kind === 'tree' ? trees++ : bushes++
+      lush += plantsInChunk(terrainOf(5), cx, cy, rich).filter((plant) => plant.kind !== 'grass').length
     }
   }
   const tiles = 49 * 32 * 32

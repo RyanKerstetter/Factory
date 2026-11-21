@@ -1,4 +1,5 @@
 import { SUB, type Weapon } from '../../../packages/shared/src/index.ts'
+import type { PlayerPose, Swish } from './render/world-renderer.ts'
 
 // What an attack covers on the ground, in tiles, from where the player stands, pointing the way it is aimed: what the
 // indicator shows while it is held (and flashes when it lands). It is drawn from the same numbers the server judges hits
@@ -8,7 +9,7 @@ export type AttackShape =
   | { kind: 'cone'; range: number; arc: number }
   // A straight strip `length` long and `width` wide: a shot, a throw, a lunge.
   | { kind: 'band'; length: number; width: number }
-  // A ring `radius` across, `distance` ahead: a slam.
+  // A ring `radius` across, `distance` ahead: a slam, or a pickaxe's strike.
   | { kind: 'circle'; distance: number; radius: number }
   // `count` strips `spread` (radians) apart: a volley.
   | { kind: 'fan'; length: number; width: number; count: number; spread: number }
@@ -21,6 +22,7 @@ const SHOT_WIDTH = 0.3
 export function attackShape(weapon: Weapon, special: boolean): AttackShape | undefined {
   if (!special) {
     if (weapon.basic === 'shot') return { kind: 'band', length: (weapon.speed * FLIGHT_TICKS) / SUB, width: SHOT_WIDTH }
+    if (weapon.basic === 'strike') return { kind: 'circle', distance: weapon.range / SUB, radius: weapon.radius / SUB }
     if (weapon.width > 0) return { kind: 'band', length: weapon.range / SUB, width: weapon.width / SUB }
     return { kind: 'cone', range: weapon.range / SUB, arc: weapon.arc }
   }
@@ -79,3 +81,65 @@ export function shapePolygons(shape: AttackShape, x: number, y: number, angle: n
 // when it lands.
 export const INDICATOR_COLOR = 0xf2e8a0
 export const INDICATOR_READY_COLOR = 0xffb347
+
+// ---- how an attack looks: the arms' pose, and the swish that traces what it covers
+
+// How an attack moves the arms (see PlayerPose): a swing sweeps, a jab or thrust goes straight out, a strike comes down
+// from overhead; a shot or a throw is let go.
+export type AttackStyle = 'swing' | 'thrust' | 'strike' | 'release'
+
+export function attackStyle(weapon: Weapon, special: boolean): AttackStyle {
+  if (!special) {
+    if (weapon.basic === 'shot') return 'release'
+    if (weapon.basic === 'strike') return 'strike'
+    return weapon.basic === 'swing' ? 'swing' : 'thrust'
+  }
+  switch (weapon.special?.kind) {
+    case 'chop':
+    case 'smash':
+      return 'strike'
+    case 'lunge':
+      return 'thrust'
+    case 'throw':
+    case 'volley':
+      return 'release'
+    default:
+      return 'swing'
+  }
+}
+
+// The pose of an attack `progress` of the way through (0 to 1).
+export function attackPose(weapon: Weapon, special: boolean, progress: number): PlayerPose {
+  const style = attackStyle(weapon, special)
+  if (style === 'release') return { kind: 'release', progress, thrown: special && weapon.special?.kind === 'throw' }
+  if (style === 'swing') return { kind: 'swing', progress, arc: special ? (weapon.special?.arc ?? weapon.arc) : weapon.arc }
+  return { kind: style, progress }
+}
+
+// The pose while an attack is held, `charge` of the way to full (0 to 1): a bow drawn, a sling whirled, a spear pulled
+// back, or a weapon cocked for its special.
+export function holdingPose(weapon: Weapon, special: boolean, charge: number): PlayerPose {
+  if (!special && weapon.basic === 'shot') return weapon.key === 'sling' ? { kind: 'whirl', charge } : { kind: 'draw', charge }
+  if (special && weapon.special?.kind === 'throw') return { kind: 'aimThrow', charge }
+  if (special && weapon.special?.kind === 'volley') return { kind: 'draw', charge: 1 }
+  const style = attackStyle(weapon, special)
+  return { kind: 'windup', style: style === 'release' ? 'thrust' : style, arc: weapon.special?.arc ?? weapon.arc, charge }
+}
+
+// The swish of an attack from x, y (tiles) aimed at `angle`, `progress` of the way through: exactly the shape the
+// attack covers (attackShape), traced as it goes. None for what is shot or thrown (the shot itself shows that).
+export function attackSwish(weapon: Weapon, special: boolean, x: number, y: number, angle: number, progress: number): Swish | undefined {
+  const shape = attackShape(weapon, special)
+  if (!shape || attackStyle(weapon, special) === 'release') return undefined
+  const base = { x, y, angle, progress, arc: 0, inner: 0, outer: 0, width: 0, distance: 0 }
+  switch (shape.kind) {
+    case 'cone':
+      return { ...base, shape: 'arc', arc: shape.arc, inner: Math.min(0.35, shape.range * 0.4), outer: shape.range }
+    case 'band':
+      return { ...base, shape: 'band', outer: shape.length, width: shape.width }
+    case 'circle':
+      return { ...base, shape: 'ring', outer: shape.radius, distance: shape.distance }
+    default:
+      return undefined
+  }
+}

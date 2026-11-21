@@ -10,6 +10,7 @@
     "foods": ["wheat", "hay"],
     "herd": [2, 4],
     "spawnWeight": 1,
+    "biomes": [],
     "drops": [
       { "item": "steak", "stat": "meat" },
       { "item": "hide", "min": 1, "max": 2 }
@@ -41,6 +42,7 @@
     "foods": ["#seed"],
     "herd": [3, 5],
     "spawnWeight": 1,
+    "biomes": ["forest"],
     "drops": [
       { "item": "raw-chicken", "stat": "meat" },
       { "item": "feather", "min": 1, "max": 3 }
@@ -58,6 +60,161 @@
       "meat": { "label": "Meat", "base": 1.5, "spread": 0.5, "min": 0.5, "max": 4 },
       "eggTime": { "label": "Egg lay time (s)", "base": 300, "spread": 60, "min": 60, "max": 900 },
       "growth": { "label": "Growth time (s)", "base": 600, "spread": 120, "min": 180, "max": 1800 }
+    }
+  },
+  "deer": {
+    "id": 3,
+    "name": "Deer",
+    "hp": 8,
+    "speed": 1.6,
+    "size": 1.0,
+    "halfSize": 0.32,
+    "mass": 4,
+    "foods": ["berries"],
+    "herd": [2, 4],
+    "spawnWeight": 1.5,
+    "biomes": ["forest"],
+    "temper": "skittish",
+    "fleeRadius": 7,
+    "fleePace": 4.8,
+    "drops": [
+      { "item": "steak", "stat": "meat" },
+      { "item": "hide", "min": 1, "max": 2 }
+    ],
+    "life": {
+      "hungerMinutes": 10,
+      "hungryAt": 40,
+      "grassFills": 35,
+      "grassRadius": 12,
+      "wellFedMinutes": 5,
+      "breedCooldownMinutes": 8
+    },
+    "stats": {
+      "meat": { "label": "Meat", "base": 2.5, "spread": 1, "min": 1, "max": 6 },
+      "growth": { "label": "Growth time (s)", "base": 900, "spread": 180, "min": 240, "max": 2400 }
+    }
+  },
+  "wolf": {
+    "id": 4,
+    "name": "Wolf",
+    "hp": 12,
+    "speed": 1.5,
+    "size": 0.9,
+    "halfSize": 0.3,
+    "mass": 0.5,
+    "foods": ["#meat"],
+    "herd": [3, 5],
+    "spawnWeight": 1,
+    "biomes": ["mountain"],
+    "temper": "hostile",
+    "grazes": false,
+    "hunt": { "aggroRadius": 6, "packRadius": 14, "leash": 45, "pace": 4.6, "damage": 2, "reach": 0.2, "cooldown": 1.1, "flank": true },
+    "drops": [
+      { "item": "hide", "min": 1, "max": 2 },
+      { "item": "fang", "min": 1, "max": 2 }
+    ],
+    "life": {
+      "hungerMinutes": 12,
+      "hungryAt": 40,
+      "wellFedMinutes": 5,
+      "breedCooldownMinutes": 12
+    },
+    "stats": {
+      "growth": { "label": "Growth time (s)", "base": 1200, "spread": 240, "min": 300, "max": 3600 }
+    }
+  },
+  "skeleton": {
+    "id": 5,
+    "name": "Skeleton",
+    "hp": 10,
+    "speed": 1.3,
+    "size": 1.0,
+    "halfSize": 0.3,
+    "mass": 0.8,
+    "foods": [],
+    "herd": [1, 1],
+    "spawnWeight": 0,
+    "biomes": [],
+    "temper": "hostile",
+    "grazes": false,
+    "hunt": { "aggroRadius": 7, "packRadius": 10, "leash": 36, "pace": 3.4, "damage": 2, "reach": 0.35, "cooldown": 1.3, "packOnSight": false },
+    "drops": [
+      { "item": "bone", "min": 1, "max": 3 },
+      { "item": "essence", "min": 1, "max": 1 }
+    ],
+    "life": {
+      "hungerMinutes": 60,
+      "hungryAt": 100,
+      "wellFedMinutes": 1,
+      "breedCooldownMinutes": 60
+    },
+    "stats": {
+      "growth": { "label": "Growth time (s)", "base": 1, "spread": 0, "min": 1, "max": 1 }
+    }
+  },
+  "skeleton-archer": {
+    "id": 7,
+    "name": "Skeleton archer",
+    "hp": 8,
+    "speed": 1.3,
+    "size": 1.0,
+    "halfSize": 0.3,
+    "mass": 0.8,
+    "foods": [],
+    "herd": [1, 1],
+    "spawnWeight": 0,
+    "biomes": [],
+    "temper": "hostile",
+    "grazes": false,
+    "hunt": { "aggroRadius": 9, "packRadius": 10, "leash": 36, "pace": 3.0, "damage": 1, "reach": 0.35, "cooldown": 1.6, "packOnSight": false, "shoot": { "range": 5, "aim": 1, "speed": 13, "damage": 3, "item": "arrow" } },
+    "drops": [
+      { "item": "bone", "min": 1, "max": 2 },
+      { "item": "arrow", "min": 2, "max": 4 }
+    ],
+    "life": {
+      "hungerMinutes": 60,
+      "hungryAt": 100,
+      "wellFedMinutes": 1,
+      "breedCooldownMinutes": 60
+    },
+    "stats": {
+      "growth": {
+        "label": "Growth time (s)",
+        "base": 1,
+        "spread": 0,
+        "min": 1,
+        "max": 1
+      }
+    }
+  },
+  "frost-lich": {
+    "id": 6,
+    "name": "Frost lich",
+    "hp": 400,
+    "speed": 1.1,
+    "size": 1.6,
+    "halfSize": 0.42,
+    "mass": 1000,
+    "foods": [],
+    "herd": [1, 1],
+    "spawnWeight": 0,
+    "biomes": [],
+    "temper": "hostile",
+    "grazes": false,
+    "boss": true,
+    "hunt": { "aggroRadius": 0, "packRadius": 0, "leash": 60, "pace": 1.6, "damage": 3, "reach": 0.4, "cooldown": 1.5, "packOnSight": false },
+    "drops": [
+      { "item": "essence", "min": 10, "max": 14 },
+      { "item": "bone", "min": 3, "max": 5 }
+    ],
+    "life": {
+      "hungerMinutes": 60,
+      "hungryAt": 100,
+      "wellFedMinutes": 1,
+      "breedCooldownMinutes": 60
+    },
+    "stats": {
+      "growth": { "label": "Growth time (s)", "base": 1, "spread": 0, "min": 1, "max": 1 }
     }
   }
 }

@@ -22,6 +22,8 @@ export type BuildingKind =
   | 'barrel'
   | 'rack'
   | 'loose'
+  | 'bed'
+  | 'door'
 
 export type BuildingDef = {
   kind: BuildingKind
@@ -71,6 +73,22 @@ const PLACED: Flags = { ...FACTORY, breakable: true, maxHp: 6 }
 const MACHINE: Flags = { ...PLACED, hasInventory: true, acceptsDeposits: true, solid: true, blocksAnimals: true }
 
 export const BUILDINGS: Readonly<Record<BuildingKind, BuildingDef>> = {
+  door: {
+    ...FACTORY,
+    kind: 'door',
+    code: 22,
+    name: 'Ice door',
+    description: 'Seals the frost lich in with whoever came for it, until it falls.',
+    solid: true,
+    blocksAnimals: true,
+  },
+  bed: {
+    ...PLACED,
+    kind: 'bed',
+    code: 21,
+    name: 'Sleeping bag',
+    description: 'Sleep in it to wake up here when you are knocked out.',
+  },
   miner: {
     ...FACTORY,
     kind: 'miner',
@@ -244,4 +262,22 @@ export const BUILDING_KINDS: readonly BuildingKind[] = ['miner', 'extractor', 'b
 
 export function isBuildingKind(value: unknown): value is BuildingKind {
   return typeof value === 'string' && Object.hasOwn(BUILDINGS, value)
+}
+
+// What part of its tile a solid building stands in the way with, as boxes in fractions of a tile ([left, top, right,
+// bottom], x east and y south): its trunk, its body, its posts, rather than the whole tile, so a player can walk up close
+// round it and between a drying rack's posts. A solid building not listed here fills its tile.
+export const BUILDING_BOUNDS: Partial<Record<BuildingKind, ReadonlyArray<readonly [number, number, number, number]>>> = {
+  tree: [[0.32, 0.32, 0.68, 0.68]],
+  rock: [[0.08, 0.1, 0.92, 0.9]],
+  chest: [[0.06, 0.2, 0.94, 0.8]],
+  stump: [[0.12, 0.12, 0.88, 0.88]],
+  workbench: [[0.02, 0.15, 0.98, 0.85]],
+  campfire: [[0.14, 0.14, 0.86, 0.86]],
+  barrel: [[0.18, 0.18, 0.82, 0.82]],
+  rack: [
+    [0.07, 0.42, 0.19, 0.58],
+    [0.81, 0.42, 0.93, 0.58],
+  ],
+  feeder: [[0.05, 0.22, 0.95, 0.78]],
 }

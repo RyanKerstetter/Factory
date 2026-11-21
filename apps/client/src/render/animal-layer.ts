@@ -6,6 +6,8 @@ import type { AnimalView } from './world-renderer.ts'
 
 const ROPE = 0x8a6a3c
 const HOVER = 0xf0b429
+// A hostile animal after a player is ringed in red, with a mark over it.
+const ANGRY = 0xff4a3a
 // A baby is drawn this much the size of a grown one.
 const BABY_SCALE = 0.6
 
@@ -38,18 +40,34 @@ export class AnimalLayer {
       }
       const texture = this.art.texture(animalArt(animal.kind))
       if (sprite.texture !== texture) sprite.texture = texture
-      const size = animal.size * (animal.baby ? BABY_SCALE : 1) * TILE_PX
+      // A male is drawn bigger and darker than a female, and marked with a small horn-coloured crest.
+      const size = animal.size * (animal.baby ? BABY_SCALE : 1) * (animal.male ? 1.12 : 1) * TILE_PX
       const flip = animal.facingLeft === ANIMAL_ART_FACES_LEFT ? 1 : -1
       sprite.scale.set((flip * size) / texture.width, size / texture.height)
       sprite.position.set(animal.x * TILE_PX, animal.y * TILE_PX)
       sprite.zIndex = animal.y
-      sprite.tint = animal.hurt ? 0xff8080 : 0xffffff
+      sprite.tint = animal.hurt ? 0xff8080 : animal.male ? 0xb8b0a8 : 0xffffff
+      // Killed: it tips over and fades away.
+      sprite.rotation = animal.dying !== undefined ? Math.min(1, animal.dying / 0.6) * (Math.PI / 2) * flip : 0
+      sprite.alpha = animal.dying !== undefined ? Math.max(0, 1 - Math.max(0, animal.dying - 0.6) / 0.4) : 1
+      if (animal.male && animal.dying === undefined && !animal.baby) {
+        const top = animal.y * TILE_PX - size * 0.62
+        over.poly([animal.x * TILE_PX - size * 0.18, top, animal.x * TILE_PX - size * 0.08, top - size * 0.2, animal.x * TILE_PX, top]).fill(0xe8dcc0)
+        over.poly([animal.x * TILE_PX + size * 0.18, top, animal.x * TILE_PX + size * 0.08, top - size * 0.2, animal.x * TILE_PX, top]).fill(0xe8dcc0)
+      }
       under.ellipse(animal.x * TILE_PX, (animal.y + animal.size * 0.25) * TILE_PX, size * 0.38, size * 0.14).fill({ color: 0x000000, alpha: 0.25 })
       if (animal.leader) {
         over
           .moveTo(animal.leader.x * TILE_PX, animal.leader.y * TILE_PX)
           .lineTo(animal.x * TILE_PX, animal.y * TILE_PX)
           .stroke({ width: Math.max(1.5, 2.5 / zoom), color: ROPE })
+      }
+      if (animal.angry) {
+        const x = animal.x * TILE_PX
+        const top = animal.y * TILE_PX - size * 0.85
+        under.circle(x, animal.y * TILE_PX, size * 0.55).stroke({ width: 2.5 / zoom, color: ANGRY })
+        over.rect(x - 2.5, top - 16, 5, 11).fill(ANGRY)
+        over.rect(x - 2.5, top - 3, 5, 4).fill(ANGRY)
       }
       if (animal.hovered) over.circle(animal.x * TILE_PX, animal.y * TILE_PX, size * 0.6).stroke({ width: 2 / zoom, color: HOVER })
     }

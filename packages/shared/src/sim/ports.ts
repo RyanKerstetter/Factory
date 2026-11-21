@@ -24,6 +24,8 @@ export function offered(entity: Entity): ItemId {
     case 'grass':
     case 'loose':
     case 'fence':
+    case 'bed':
+    case 'door':
     case 'gate':
     case 'plot':
     case 'stump':
@@ -56,6 +58,8 @@ export function takeOffered(entity: Entity): number {
     case 'grass':
     case 'loose':
     case 'fence':
+    case 'bed':
+    case 'door':
     case 'gate':
     case 'plot':
     case 'stump':
@@ -85,6 +89,8 @@ export function accepts(entity: Entity, item: ItemId, entry: Entry): boolean {
     case 'grass':
     case 'loose':
     case 'fence':
+    case 'bed':
+    case 'door':
     case 'gate':
     case 'plot':
     case 'stump':
@@ -116,6 +122,8 @@ export function receive(entity: Entity, item: ItemId, entry: Entry, carry: numbe
     case 'grass':
     case 'loose':
     case 'fence':
+    case 'bed':
+    case 'door':
     case 'gate':
     case 'plot':
     case 'stump':

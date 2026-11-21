@@ -18,6 +18,7 @@ export type Action =
   | 'hotbar8'
   | 'hotbar9'
   | 'hand'
+  | 'eat'
   | 'debug'
 
 export type ActionInfo = { action: Action; label: string; group: string }
@@ -39,6 +40,7 @@ export const ACTIONS: readonly ActionInfo[] = [
   { action: 'hotbar8', label: 'Hotbar slot 8', group: 'Inventory' },
   { action: 'hotbar9', label: 'Hotbar slot 9', group: 'Inventory' },
   { action: 'hand', label: 'Put away (bare hands)', group: 'Inventory' },
+  { action: 'eat', label: 'Eat what you hold', group: 'Inventory' },
   { action: 'debug', label: 'Debug view', group: 'Other' },
 ]
 
@@ -65,6 +67,7 @@ export const DEFAULT_BINDINGS: Readonly<Bindings> = {
   hotbar8: ['Digit8', null],
   hotbar9: ['Digit9', null],
   hand: ['KeyQ', null],
+  eat: ['KeyF', null],
   debug: ['F3', null],
 }
 

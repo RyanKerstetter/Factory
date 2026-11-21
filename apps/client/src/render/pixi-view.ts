@@ -21,6 +21,10 @@ export async function createPixiView(stage: HTMLElement): Promise<GameView> {
       const world = screenToWorld(camera, point)
       return { x: world.x / TILE_PX, y: world.y / TILE_PX }
     },
+    aim(point) {
+      const world = screenToWorld(camera, point)
+      return { x: world.x / TILE_PX, y: world.y / TILE_PX }
+    },
     visible(): TileBounds {
       return visibleTiles(camera)
     },

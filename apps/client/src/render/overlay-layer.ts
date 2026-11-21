@@ -1,4 +1,4 @@
-import { Container, Graphics, Sprite } from 'pixi.js'
+import { Container, Graphics, Sprite, Text } from 'pixi.js'
 import { TILE_PX } from '../camera.ts'
 import type { Art } from './art.ts'
 import { placeBuilding } from './building-layer.ts'
@@ -20,12 +20,21 @@ export class OverlayLayer {
   private readonly ghosts = new Container()
   private readonly marks = new Graphics()
   private readonly pool: Sprite[] = []
+  // The name over a hovered chest.
+  private readonly label = new Text({ text: '', style: { fill: '#f0e6d2', fontSize: 14, fontFamily: 'Arial', fontWeight: 'bold', stroke: { color: '#171915', width: 3 } }, resolution: 2 })
 
   constructor(private readonly art: Art) {
-    this.view.addChild(this.ghosts, this.marks)
+    this.label.anchor.set(0.5, 1)
+    this.view.addChild(this.ghosts, this.marks, this.label)
   }
 
   update(overlay: OverlayView, zoom: number): void {
+    this.label.visible = overlay.label !== undefined
+    if (overlay.label) {
+      if (this.label.text !== overlay.label.text) this.label.text = overlay.label.text
+      this.label.scale.set(1 / zoom)
+      this.label.position.set((overlay.label.x + 0.5) * TILE_PX, overlay.label.y * TILE_PX - 4 / zoom)
+    }
     let used = 0
     const ghost = (view: GhostView, alpha: number): void => {
       let sprite = this.pool[used]

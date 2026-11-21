@@ -18,14 +18,16 @@ import {
   entityToState,
   BARREL_CAPACITY,
   CAMPFIRE_FUEL,
-  floorDiv,
+  moveBox,
   bucketFor,
   liquidIn,
   LIQUID_NONE,
   withMachine,
   STATION_RECIPES,
   waterAt,
+  isInDungeons,
   workbenchCan,
+  workbenchHasTool,
   GATE_OPEN,
   GATE_SHUT,
   gateIsOpen,
@@ -67,8 +69,14 @@ import {
   type ItemId,
   type PlayerPosition,
   type Refusal,
+  type Terrain,
   type ToolKind,
   type WorldEvent,
+  PLAYER_MAX_HEALTH,
+  EAT_COOLDOWN_TICKS,
+  stackLimit,
+  HOTBAR_SLOTS,
+  CHEST_NAME_LENGTH,
 } from '../../../packages/shared/src/index.ts'
 import type { Animals } from './animals.ts'
 import type { Combat } from './combat.ts'
@@ -78,10 +86,24 @@ import type { Combat } from './combat.ts'
 export type CommandContext = {
   world: FactoryWorld
   seed: number
+  // The land: where the water is.
+  terrain: Terrain
   // The tick the command runs on.
   tick: number
   // Who asked, the last tick they punched on (for PUNCH_COOLDOWN_TICKS), and the work station they have open.
-  player: { id: number; position: PlayerPosition; inventory: Inventory; lastPunchTick: number; using: number; attackReadyAt: number }
+  player: {
+    id: number
+    position: PlayerPosition
+    inventory: Inventory
+    lastPunchTick: number
+    using: number
+    attackReadyAt: number
+    // Their health (for eating), the sleeping bag they last slept in, and a push carrying them over a few ticks (a dash).
+    health?: number
+    eatReadyAt?: number
+    bed?: { x: number; y: number }
+    slide?: { vx: number; vy: number; ticks: number; after?: number }
+  }
   // Where every player is, for whether a gate is open.
   players?: () => ReadonlyArray<PlayerPosition>
   // A work station has been started (it is watched, and stopped when nobody is at it).
@@ -96,6 +118,8 @@ export type CommandContext = {
   animals?: Animals
   // Attacks and what is in flight (the room's).
   combat?: Combat
+  // Whether a chest is guarded (a dungeon's, while its skeletons stand), so it cannot be opened.
+  guarded?: (id: number) => boolean
 }
 
 export type CommandOutcome = { ok: true; moved?: number } | { ok: false; why: Refusal }
@@ -134,6 +158,9 @@ export function hit(context: CommandContext, target: Entity, tool: ToolKind | un
   // A roll that is different on every hit, for what can come of any one hit.
   const rollNow = (salt: number, below: number): number => hashInts(context.seed, target.id, context.tick, salt) % below
   const fell = (): void => context.emit({ t: 'remove', id: target.id })
+  // Nothing put in a dungeon (its chest, its door) can be broken; what is stuck in the ground there (a thrown spear) is
+  // knocked loose as anywhere.
+  if (isInDungeons(target.x, target.y) && target.kind !== 'loose') return { refused: 'dungeon' }
   const damage = resourceDamage(target.kind, weapon, tool)
   switch (target.kind) {
     case 'sapling':
@@ -253,8 +280,6 @@ export function scatterAt(
   count: number,
   stack = false,
 ): number {
-  const middleTileX = floorDiv(middle.x, SUB)
-  const middleTileY = floorDiv(middle.y, SUB)
   const spots = stack ? 1 : count
   for (let n = 0; n < spots; n++) {
     let x = middle.x
@@ -263,13 +288,14 @@ export function scatterAt(
       const roll = (r: number): number => hashInts(context.seed, salt, context.tick, item, n, attempt, r) / 0x1_0000_0000
       const angle = roll(1) * Math.PI * 2
       const distance = (SCATTER_NEAR + roll(2) * (SCATTER_FAR - SCATTER_NEAR)) * SUB
-      x = Math.round(middle.x + Math.cos(angle) * distance)
-      y = Math.round(middle.y + Math.sin(angle) * distance)
-      const tileX = floorDiv(x, SUB)
-      const tileY = floorDiv(y, SUB)
-      // The middle's own tile is fine (what was there is coming down, or the item is reachable beside it); another
-      // solid one is not.
-      if ((tileX === middleTileX && tileY === middleTileY) || !drops.solid(tileX, tileY)) break
+      const aimX = Math.round(middle.x + Math.cos(angle) * distance)
+      const aimY = Math.round(middle.y + Math.sin(angle) * distance)
+      // It travels out from the middle, and stops against anything solid on the way (a fence, a wall): it never ends
+      // up on the far side of one. A spot it gets all the way to is taken; else, after the last try, where it stopped.
+      const reached = moveBox(middle, aimX - middle.x, aimY - middle.y, DROP_HALF, drops.solid)
+      x = reached.x
+      y = reached.y
+      if (x === aimX && y === aimY) break
     }
     context.emit({ t: 'drop+', d: dropToState({ id: drops.nextId(), item, count: stack ? count : 1, x, y, born: context.tick }) })
   }
@@ -299,6 +325,7 @@ function slotSide(context: CommandContext, id: number): SlotSide | { why: Refusa
   if (!hasInventory(entity)) return { why: 'noInventory' }
   if (!isWithinReach(player.position, entity.x, entity.y)) return { why: 'reach' }
   if (entity.kind === 'barrel' && entity.sealed) return { why: 'sealed' }
+  if (context.guarded?.(entity.id)) return { why: 'guarded' }
   const inv = cloneInventory(entity.inv)
   const copy = { ...entity, inv } as Entity
   return {
@@ -314,19 +341,18 @@ function dropSpot(from: { x: number; y: number }, towards: { x: number; y: numbe
   const dx = towards.x - from.x
   const dy = towards.y - from.y
   const length = Math.hypot(dx, dy) || 1
-  for (const tiles of [DROP_THROW, DROP_THROW * 0.7, DROP_THROW * 0.4]) {
-    const x = Math.round(from.x + (dx / length) * tiles * SUB)
-    const y = Math.round(from.y + (dy / length) * tiles * SUB)
-    if (!solid(floorDiv(x, SUB), floorDiv(y, SUB))) return { x, y }
-  }
-  return { x: from.x, y: from.y }
+  // Thrown out, it stops against the first thing solid on the way (never over a fence or through a wall).
+  return moveBox(from, Math.round((dx / length) * DROP_THROW * SUB), Math.round((dy / length) * DROP_THROW * SUB), DROP_HALF, solid)
 }
+
+// How far an item on the ground reaches from its middle, for what it cannot pass through as it is thrown or scattered.
+const DROP_HALF = Math.round(SUB / 8)
 
 export function runCommand(context: CommandContext, command: Command): CommandOutcome {
   const { world, player } = context
   switch (command.k) {
     case 'build': {
-      const why = checkBuild(world, context.seed, player.position, command.x, command.y, command.kind)
+      const why = checkBuild(world, context.terrain, player.position, command.x, command.y, command.kind)
       if (why) return { ok: false, why }
       const entity = createEntity(
         context.nextEntityId(),
@@ -358,6 +384,7 @@ export function runCommand(context: CommandContext, command: Command): CommandOu
       const entity = world.entity(command.id)
       if (!entity) return { ok: false, why: 'missing' }
       if (isNatural(entity)) return { ok: false, why: 'natural' }
+      if (isInDungeons(entity.x, entity.y)) return { ok: false, why: 'dungeon' }
       if (!isWithinReach(player.position, entity.x, entity.y)) return { ok: false, why: 'reach' }
       // What it held goes to the player, as much as fits.
       let moved = 0
@@ -378,6 +405,7 @@ export function runCommand(context: CommandContext, command: Command): CommandOu
       if (!isWithinReach(player.position, entity.x, entity.y)) return { ok: false, why: 'reach' }
       if (command.k === 'put' && !BUILDINGS[entity.kind].acceptsDeposits) return { ok: false, why: 'noDeposit' }
       if (entity.kind === 'barrel' && entity.sealed) return { ok: false, why: 'sealed' }
+      if (context.guarded?.(entity.id)) return { ok: false, why: 'guarded' }
       const from = command.k === 'take' ? entity.inv : player.inventory
       const items: ItemId[] = command.item === NO_ITEM ? inventoryTotals(from).map((total) => total.item) : [command.item]
       let left = command.max
@@ -399,6 +427,77 @@ export function runCommand(context: CommandContext, command: Command): CommandOu
       }
       return moved > 0 ? { ok: true, moved } : { ok: false, why: 'nothing' }
     }
+    case 'eat': {
+      const held = player.inventory.slots[command.slot]
+      const heals = held && held.count > 0 ? getItem(held.item).heals : undefined
+      if (!heals) return { ok: false, why: 'notFood' }
+      if (player.health === undefined || player.health >= PLAYER_MAX_HEALTH) return { ok: false, why: 'fullHealth' }
+      // A couple of ticks' grace, as for attacks: the page times the cooldown by its own clock.
+      if (context.tick + 2 < (player.eatReadyAt ?? 0)) return { ok: false, why: 'eatTooSoon' }
+      player.eatReadyAt = context.tick + EAT_COOLDOWN_TICKS
+      takeFromSlot(player.inventory, command.slot, 1)
+      player.health = Math.min(PLAYER_MAX_HEALTH, player.health + heals)
+      return { ok: true }
+    }
+    case 'sleep': {
+      const bed = world.entity(command.id)
+      if (!bed || bed.kind !== 'bed') return { ok: false, why: 'notBed' }
+      if (!isWithinReach(player.position, bed.x, bed.y)) return { ok: false, why: 'reach' }
+      player.bed = { x: bed.x, y: bed.y }
+      return { ok: true }
+    }
+    case 'chest': {
+      const chest = world.entity(command.id)
+      if (!chest || chest.kind !== 'chest') return { ok: false, why: 'missing' }
+      if (!isWithinReach(player.position, chest.x, chest.y)) return { ok: false, why: 'reach' }
+      if (context.guarded?.(chest.id)) return { ok: false, why: 'guarded' }
+      const inv = cloneInventory(chest.inv)
+      let moved = 0
+      if (command.action === 'sort') {
+        // Everything taken out, and put back in item order, each kind in as few stacks as it fits in.
+        const totals = inventoryTotals(inv).sort((a, b) => a.item - b.item)
+        for (const slot of inv.slots) {
+          slot.item = NO_ITEM
+          slot.count = 0
+        }
+        for (const { item, count } of totals) addItems(inv, item, count)
+      } else {
+        // Each stack it has is topped up to a full stack from the player's things (not the hotbar, nor what they wear,
+        // their ammunition or their food), and no more: nothing goes into an empty slot.
+        for (const slot of inv.slots) {
+          if (slot.count === 0) continue
+          for (let i = HOTBAR_SLOTS; i < player.inventory.slots.length; i++) {
+            const mine = player.inventory.slots[i]
+            if (mine.only !== undefined || mine.count === 0 || mine.item !== slot.item) continue
+            const want = stackLimit(slot.item, inv.stack) - slot.count
+            if (want <= 0) break
+            const taken = takeFromSlot(player.inventory, i, want)
+            slot.count += taken
+            moved += taken
+          }
+        }
+        if (moved === 0) return { ok: false, why: 'nothing' }
+      }
+      context.emit({ t: 'set', e: entityToState({ ...chest, inv }) })
+      return { ok: true, moved }
+    }
+    case 'rename': {
+      const chest = world.entity(command.id)
+      if (!chest || chest.kind !== 'chest') return { ok: false, why: 'missing' }
+      if (!isWithinReach(player.position, chest.x, chest.y)) return { ok: false, why: 'reach' }
+      const name = command.name.replace(/\s+/g, ' ').trim().slice(0, CHEST_NAME_LENGTH)
+      const state = entityToState(chest)
+      if (state.kind !== 'chest') return { ok: false, why: 'missing' }
+      const { name: _old, ...rest } = state
+      context.emit({ t: 'set', e: name ? { ...rest, name } : rest })
+      return { ok: true }
+    }
+    case 'hold':
+      // The room keeps it (see GameRoom.run).
+      return { ok: true }
+    case 'pvp':
+      // A setting of the room's: the room runs it (see GameRoom.run).
+      return { ok: false, why: 'notHost' }
     case 'move':
       return moveSlot(player.inventory, command.from, command.to) ? { ok: true } : { ok: false, why: 'nothing' }
     case 'slot': {
@@ -456,10 +555,10 @@ export function runCommand(context: CommandContext, command: Command): CommandOu
       } else {
         const recipe = STATION_RECIPES.workbench[command.recipe ?? -1]
         if (!recipe) return { ok: false, why: 'noRecipe' }
-        // A recipe that needs a tool (a knife for a spear) needs it on the player, and does not use it up.
-        if (recipe.tool && !player.inventory.slots.some((slot) => slot.count > 0 && getItem(slot.item).tool === recipe.tool)) {
-          return { ok: false, why: 'needsTool' }
-        }
+        // A recipe that needs a tool (a knife for a spear) needs it in the workbench's tool slot, and does not use it up.
+        if (!workbenchHasTool(entity.inv, recipe)) return { ok: false, why: 'needsTool' }
+        // Making something else: that carries on, and this does not start.
+        if (entity.active !== 0 && entity.recipe !== 0 && entity.recipe !== recipe.index + 1) return { ok: false, why: 'busy' }
         if (!workbenchCan(entity.inv, recipe)) return { ok: false, why: 'noWork' }
         // The same recipe again keeps how far it had got; another starts afresh.
         const same = entity.recipe === recipe.index + 1
@@ -506,7 +605,7 @@ export function runCommand(context: CommandContext, command: Command): CommandOu
       return { ok: true }
     }
     case 'place': {
-      const check = checkPlace(world, player.position, player.inventory, command.slot, command.x, command.y, context.seed)
+      const check = checkPlace(world, player.position, player.inventory, command.slot, command.x, command.y, context.terrain)
       if (!check.ok) return check
       const held = player.inventory.slots[command.slot]
       if ('sow' in check) {
@@ -547,7 +646,7 @@ function apply(context: CommandContext, x: number, y: number, slot: number): Com
     held.item = itemId(key)
     held.count = 1
   }
-  // Emptying what is held: a bucket (a tool) is left empty; anything else that holds a liquid (milk) is used up.
+  // Emptying what is held: a bucket (a tool) is left empty; anything else that holds a liquid is used up.
   const emptied = (): void => {
     if (item.category === 'tool') swap('bucket')
     else takeFromSlot(player.inventory, slot, 1)
@@ -560,7 +659,7 @@ function apply(context: CommandContext, x: number, y: number, slot: number): Com
     if (item.bucket === 'empty') {
       if (target.amount === 0) return { ok: false, why: 'barrelEmpty' }
       const filled = bucketFor(target.liquid)
-      // A liquid kept in a bucket fills it; one that is its own item (milk) comes out as that, leaving the bucket.
+      // A liquid kept in a bucket fills it; one that is its own item comes out as that, leaving the bucket.
       if (getItem(filled).category === 'tool') swap(getItem(filled).key)
       else if (addItems(player.inventory, filled, 1) === 0) return { ok: false, why: 'inventoryFull' }
       set(target.liquid, target.amount - 1)
@@ -579,12 +678,12 @@ function apply(context: CommandContext, x: number, y: number, slot: number): Com
     context.emit({ t: 'set', e: { ...state, water: 100 } })
     return { ok: true }
   }
-  if (!target && item.bucket === 'empty' && waterAt(context.seed, x, y)) {
+  if (!target && item.bucket === 'empty' && waterAt(context.terrain, x, y)) {
     swap('water-bucket')
     return { ok: true }
   }
   // A bucket of anything is emptied out on bare ground.
-  if (!target && item.bucket && item.bucket !== 'empty' && !waterAt(context.seed, x, y)) {
+  if (!target && item.bucket && item.bucket !== 'empty' && !waterAt(context.terrain, x, y)) {
     emptied()
     return { ok: true }
   }

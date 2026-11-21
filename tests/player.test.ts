@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import { GameRoom } from '../apps/server/src/game-room.ts'
 import {
   checkBuild,
+  terrainOf,
   createInventory,
   EAST,
   FactoryWorld,
@@ -15,6 +16,7 @@ import {
   stepPlayer,
   SUB,
   type PlayerPosition,
+  boundsOf,
 } from '../packages/shared/src/index.ts'
 import { run, TestClient } from './helpers.ts'
 
@@ -48,9 +50,9 @@ test('a player something was built on can walk out of it', () => {
 
 test('a solid building cannot be built where its builder stands; a belt can', () => {
   const world = new FactoryWorld()
-  assert.equal(checkBuild(world, 1, PLAYER_SPAWN, 0, 0, 'chest'), 'standing')
-  assert.equal(checkBuild(world, 1, PLAYER_SPAWN, 0, 0, 'belt'), undefined)
-  assert.equal(checkBuild(world, 1, PLAYER_SPAWN, 1, 0, 'chest'), undefined)
+  assert.equal(checkBuild(world, terrainOf(1), PLAYER_SPAWN, 0, 0, 'chest'), 'standing')
+  assert.equal(checkBuild(world, terrainOf(1), PLAYER_SPAWN, 0, 0, 'belt'), undefined)
+  assert.equal(checkBuild(world, terrainOf(1), PLAYER_SPAWN, 1, 0, 'chest'), undefined)
 })
 
 test('moving a stack swaps it with another kind and merges it with its own', () => {
@@ -78,7 +80,8 @@ test('the server stops a player at a chest, and the page agrees', () => {
     room.receiveInputs(client.player, [[seq, KEY_RIGHT]])
     run(room, [client], 1)
   }
-  assert.equal(client.player.position.x, 2 * SUB - 1 - PLAYER_HALF_SIZE)
+  // Stopped at the chest's side (see BUILDING_BOUNDS), not its tile's edge.
+  assert.equal(client.player.position.x, 2 * SUB + boundsOf('chest')![0][0] - 1 - PLAYER_HALF_SIZE)
 })
 
 test('the move command rearranges the player inventory on the server', () => {

@@ -1,5 +1,5 @@
 import { BUILDINGS, type BuildingKind } from '../buildings.ts'
-import { CHEST_SLOTS, FEEDER_SLOTS, MINER_SLOTS, SAPLING_STAGES, SPROUT_STAGES, TREE_STICK_REGROW, TREE_STICKS } from '../constants.ts'
+import { CHEST_SLOTS, FEEDER_SLOTS, MINER_SLOTS, SAPLING_STAGES, SPROUT_STAGES, TREE_STICK_REGROW, TREE_STICKS, TPS } from '../constants.ts'
 import { getCrop } from '../crops.ts'
 import type { Direction } from '../geometry.ts'
 import { addItems, createInventory, inventoryFromWire, inventoryToWire, removeItems, roomFor, type Inventory } from '../inventory.ts'
@@ -26,6 +26,7 @@ import {
   stationSlotFor,
   WORKBENCH_INPUT_SLOTS,
   WORKBENCH_SLOTS,
+  WORKBENCH_TOOL_SLOT,
   workbenchCan,
   workbenchMake,
 } from '../stations.ts'
@@ -39,9 +40,10 @@ type EntityBase = { id: number; x: number; y: number; dir: Direction }
 // `shape` follows from the links into it (see `FactoryWorld.refreshShape`), so it is not sent or hashed.
 export type BeltEntity = EntityBase & { kind: 'belt' | 'extractor'; lane: LaneItem[]; shape: BeltShape }
 export type MinerEntity = EntityBase & { kind: 'miner'; ore: ItemId; progress: number; inv: Inventory }
-export type ChestEntity = EntityBase & { kind: 'chest'; hp: number; inv: Inventory }
+// A chest, and the name a player gave it (shown when it is hovered; not part of the simulation's hash).
+export type ChestEntity = EntityBase & { kind: 'chest'; hp: number; inv: Inventory; name?: string }
 // A bush, a rock, a tuft of grass or a fence, with the hits it has left in it.
-export type PlantEntity = EntityBase & { kind: 'bush' | 'rock' | 'grass' | 'fence'; hp: number }
+export type PlantEntity = EntityBase & { kind: 'bush' | 'rock' | 'grass' | 'fence' | 'bed' | 'door'; hp: number }
 // Something stuck in the ground, to be knocked loose by a hit: a piece of flint, a thrown spear. `item` and `count` are
 // what it gives.
 export type LooseEntity = EntityBase & { kind: 'loose'; item: ItemId; count: number }
@@ -104,10 +106,13 @@ const MACHINE_FIELDS = {
 type MachineKind = keyof typeof MACHINE_FIELDS
 export type MachineEntity = WorkbenchEntity | CampfireEntity | BarrelEntity | RackEntity
 
-// A crop grows GROWTH_STEP on each random tick, and up to that much again each for being watered and being fertilised
-// (in proportion to how much). Water falls WATER_FALL a random tick and fertility FERTILITY_FALL, to nothing.
+// A crop grows GROWTH_STEP on each random tick, as much again while its plot is watered, and up to that much again for
+// being fertilised (in proportion to how much). Watering lasts a set time, WATERED_SECONDS: a plot's water (100 when
+// watered) falls a point every WATER_FALL_EVERY ticks, the same on every page (see Chunk.step). Fertility falls
+// FERTILITY_FALL a random tick, to nothing.
 export const GROWTH_STEP = 10
-const WATER_FALL = 8
+export const WATERED_SECONDS = 180
+export const WATER_FALL_EVERY = Math.round((WATERED_SECONDS * TPS) / 100)
 const FERTILITY_FALL = 4
 
 // What a young plant grows into, and how many random ticks it takes.
@@ -174,6 +179,8 @@ export function createEntity(id: number, kind: BuildingKind, x: number, y: numbe
     case 'rock':
     case 'grass':
     case 'fence':
+    case 'bed':
+    case 'door':
       return { id, kind, x, y, dir: 0, hp }
     case 'gate':
       return { id, kind, x, y, dir: 0, hp, mode: 0 }
@@ -284,6 +291,8 @@ export function stepEntity(entity: Entity): void {
     case 'grass':
     case 'loose':
     case 'fence':
+    case 'bed':
+    case 'door':
     case 'gate':
     case 'sapling':
     case 'sprout':
@@ -310,10 +319,9 @@ export function randomTick(entity: Entity): Entity | undefined {
   if (entity.kind === 'plot') {
     const crop = getCrop(entity.crop)
     if (crop && entity.growth < growthNeeded(crop.growTicks)) {
-      const step = GROWTH_STEP + Math.floor((entity.water * GROWTH_STEP) / 100) + Math.floor((entity.fertility * GROWTH_STEP) / 100)
+      const step = GROWTH_STEP + (entity.water > 0 ? GROWTH_STEP : 0) + Math.floor((entity.fertility * GROWTH_STEP) / 100)
       entity.growth = Math.min(growthNeeded(crop.growTicks), entity.growth + step)
     }
-    entity.water = Math.max(0, entity.water - WATER_FALL)
     entity.fertility = Math.max(0, entity.fertility - FERTILITY_FALL)
     return undefined
   }
@@ -346,7 +354,8 @@ function slotsFor(entity: Entity & { inv: Inventory }, item: ItemId): { slots: r
       return slot === undefined ? undefined : { slots: [slot], limit }
     }
     case 'workbench':
-      return { slots: WORKBENCH_INPUT_SLOTS, limit }
+      // A tool to its tool slot (one), anything else to the input slots.
+      return getItem(item).tool ? { slots: [WORKBENCH_TOOL_SLOT], limit: 1 } : { slots: WORKBENCH_INPUT_SLOTS, limit }
     case 'campfire': {
       const def = getItem(item)
       if (def.fuel) return { slots: [CAMPFIRE_FUEL], limit }
@@ -418,9 +427,9 @@ export function takeFromBuilding(entity: Entity, item: ItemId, count: number): n
 export type EntityState =
   | { id: number; kind: 'belt' | 'extractor'; x: number; y: number; dir: Direction; lane: number[] }
   | { id: number; kind: 'miner'; x: number; y: number; dir: Direction; ore: ItemId; progress: number; inv: number[] }
-  | { id: number; kind: 'chest'; x: number; y: number; dir: Direction; hp?: number; inv: number[] }
+  | { id: number; kind: 'chest'; x: number; y: number; dir: Direction; hp?: number; inv: number[]; name?: string }
   | { id: number; kind: 'tree'; x: number; y: number; dir: Direction; hp: number; sticks: number; punches: number; regrow: number }
-  | { id: number; kind: 'bush' | 'rock' | 'grass' | 'fence'; x: number; y: number; dir: Direction; hp: number }
+  | { id: number; kind: 'bush' | 'rock' | 'grass' | 'fence' | 'bed' | 'door'; x: number; y: number; dir: Direction; hp: number }
   | { id: number; kind: 'gate'; x: number; y: number; dir: Direction; hp: number; mode: number }
   | { id: number; kind: 'loose'; x: number; y: number; dir: Direction; item: ItemId; count: number }
   | { id: number; kind: 'sapling' | 'sprout'; x: number; y: number; dir: Direction; stage: number }
@@ -442,13 +451,15 @@ export function entityToState(entity: Entity): EntityState {
     case 'miner':
       return { id, kind: 'miner', x, y, dir, ore: entity.ore, progress: entity.progress, inv: inventoryToWire(entity.inv) }
     case 'chest':
-      return { id, kind: 'chest', x, y, dir, hp: entity.hp, inv: inventoryToWire(entity.inv) }
+      return { id, kind: 'chest', x, y, dir, hp: entity.hp, inv: inventoryToWire(entity.inv), ...(entity.name ? { name: entity.name } : {}) }
     case 'tree':
       return { id, kind: 'tree', x, y, dir, hp: entity.hp, sticks: entity.sticks, punches: entity.punches, regrow: entity.regrow }
     case 'bush':
     case 'rock':
     case 'grass':
     case 'fence':
+    case 'bed':
+    case 'door':
       return { id, kind: entity.kind, x, y, dir, hp: entity.hp }
     case 'gate':
       return { id, kind: 'gate', x, y, dir, hp: entity.hp, mode: entity.mode }
@@ -485,13 +496,15 @@ export function entityFromState(state: EntityState): Entity {
     case 'miner':
       return { id, kind: 'miner', x, y, dir, ore: state.ore, progress: state.progress, inv: inventoryFromWire(state.inv) }
     case 'chest':
-      return { id, kind: 'chest', x, y, dir, hp: state.hp ?? BUILDINGS.chest.maxHp, inv: inventoryFromWire(state.inv) }
+      return { id, kind: 'chest', x, y, dir, hp: state.hp ?? BUILDINGS.chest.maxHp, inv: inventoryFromWire(state.inv), ...(state.name ? { name: state.name } : {}) }
     case 'tree':
       return { id, kind: 'tree', x, y, dir, hp: state.hp, sticks: state.sticks, punches: state.punches, regrow: state.regrow }
     case 'bush':
     case 'rock':
     case 'grass':
     case 'fence':
+    case 'bed':
+    case 'door':
       return { id, kind: state.kind, x, y, dir, hp: state.hp }
     case 'gate':
       return { id, kind: 'gate', x, y, dir, hp: state.hp, mode: state.mode }
@@ -509,8 +522,13 @@ export function entityFromState(state: EntityState): Entity {
     case 'workbench':
     case 'campfire':
     case 'barrel':
-    case 'rack':
-      return machineFrom(state.kind, id, x, y, inventoryFromWire(state.inv), state.n)
+    case 'rack': {
+      // One saved before it had all its slots (a workbench without its tool slot) gets them, empty.
+      const size = { workbench: WORKBENCH_SLOTS, campfire: CAMPFIRE_SLOTS, barrel: BARREL_SLOTS, rack: RACK_SLOTS }[state.kind]
+      const inv = inventoryFromWire(state.inv)
+      while (inv.slots.length < size) inv.slots.push({ item: 0, count: 0 })
+      return machineFrom(state.kind, id, x, y, inv, state.n)
+    }
   }
 }
 
@@ -543,6 +561,8 @@ export function hashEntity(hasher: Hasher, entity: Entity): void {
     case 'rock':
     case 'grass':
     case 'fence':
+    case 'bed':
+    case 'door':
       hasher.int(entity.hp)
       return
     case 'gate':

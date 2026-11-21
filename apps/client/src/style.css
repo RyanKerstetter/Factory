@@ -394,13 +394,41 @@ kbd {
   color: var(--text);
 }
 
-.hotbar {
-  display: flex;
+.hotbar-panel {
+  display: grid;
   gap: 4px;
   padding: 4px;
   border: 1px solid var(--line);
   background: var(--panel);
   pointer-events: auto;
+}
+
+.hotbar {
+  display: flex;
+  gap: 4px;
+}
+
+/* The food slot, at the right end of the hotbar, apart from the rest. */
+.hotbar-gap {
+  width: 10px;
+}
+
+.food-slot {
+  overflow: hidden;
+  cursor: default;
+  border-color: #6a5a3a;
+}
+
+.food-slot.is-ready {
+  border-color: #c9a24a;
+}
+
+.food-shade {
+  position: absolute;
+  inset: 0;
+  background: rgba(10, 12, 16, 0.45);
+  transform-origin: top;
+  pointer-events: none;
 }
 
 .hotbar-slot {
@@ -448,7 +476,7 @@ kbd {
 
 .toast {
   position: absolute;
-  bottom: 7.4rem;
+  bottom: 9.8rem;
   left: 50%;
   transform: translateX(-50%);
   max-width: min(32rem, 90%);
@@ -1077,8 +1105,14 @@ kbd {
   background: var(--panel-raised);
   color: var(--text);
   font-size: 0.8rem;
+  line-height: 1.45;
   pointer-events: none;
-  white-space: nowrap;
+  white-space: pre;
+}
+
+/* The first line (the name) stands out from the stats under it. */
+.tooltip::first-line {
+  font-weight: 700;
 }
 
 .station-outputs {
@@ -1159,8 +1193,7 @@ kbd {
 .health-bar {
   position: relative;
   width: 100%;
-  height: 12px;
-  margin-bottom: 0.35rem;
+  height: 14px;
   background: var(--slot);
   border: 1px solid var(--line-strong);
 }
@@ -1176,7 +1209,7 @@ kbd {
   inset: 0;
   font-size: 0.65rem;
   font-weight: 700;
-  line-height: 10px;
+  line-height: 12px;
   text-align: center;
 }
 
@@ -1191,26 +1224,27 @@ kbd {
   grid-template-columns: 48px;
 }
 
-/* Where armour will go. */
+/* What the player wears: a slot each for the head, body and feet. */
 .armour-row {
   display: flex;
   gap: 3px;
   margin-bottom: 0.6rem;
 }
 
-.armour-slot {
-  display: grid;
-  place-items: center;
-  opacity: 0.45;
-  cursor: default;
-}
-
 .armour-label {
+  position: absolute;
+  inset: auto 0 2px;
+  text-align: center;
+  pointer-events: none;
   color: var(--muted);
   font-size: 0.6rem;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+.armour-slot:not(.is-empty) .armour-label {
+  display: none;
 }
 
 .menu-note {
@@ -1303,4 +1337,140 @@ kbd {
 
 .world-empty {
   padding: 0.5rem 0;
+}
+
+/* Making a world: its size and how ragged its coasts are. */
+.terrain-row {
+  margin-bottom: 0.9rem;
+}
+
+.field-stack {
+  flex: 1;
+  min-width: 0;
+}
+
+select.field-input {
+  color: var(--text);
+}
+
+.field-range {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--accent);
+}
+
+.field-value {
+  width: 2.2rem;
+  align-self: center;
+  color: var(--text);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The snow blowing over the world in the cold (drawn by snowstorm-view.ts). */
+.snowstorm {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.4s;
+}
+
+/* The cold: frost creeping in over the view (see frost-view.ts). */
+.frost {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* Sleeping in a sleeping bag: the view dims and comes back. */
+.sleep-fade {
+  position: absolute;
+  inset: 0;
+  background: #05070c;
+  pointer-events: none;
+  animation: sleep-fade 1.6s ease-in-out forwards;
+}
+
+@keyframes sleep-fade {
+  0% {
+    opacity: 0;
+  }
+  45% {
+    opacity: 0.92;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* A boss's health, across the top of the screen while it is being fought. */
+.boss-bar {
+  position: absolute;
+  top: 3.2rem;
+  left: 50%;
+  transform: translateX(-50%);
+  display: grid;
+  justify-items: center;
+  gap: 0.3rem;
+  width: min(36rem, 80%);
+  pointer-events: none;
+}
+
+.boss-bar[hidden] {
+  display: none;
+}
+
+.boss-name {
+  color: #cfeaff;
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-shadow: 0 1px 3px #000;
+}
+
+.boss-track {
+  position: relative;
+  width: 100%;
+  height: 18px;
+  border: 1px solid #8cc4ef;
+  background: rgba(10, 16, 28, 0.85);
+}
+
+.boss-notches {
+  position: absolute;
+  inset: 0;
+}
+
+.boss-notches i {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: rgba(8, 14, 26, 0.75);
+}
+
+.boss-hp {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 2px #000, 0 0 3px #000;
+}
+
+.boss-fill {
+  height: 100%;
+  background: linear-gradient(to bottom, #9fd6ff, #3f7fc4);
+  transform-origin: left;
+  transition: transform 0.15s;
 }

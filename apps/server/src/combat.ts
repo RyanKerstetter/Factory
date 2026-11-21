@@ -1,5 +1,11 @@
 import {
-  tilesIn,
+  attackClear,
+  dashOf,
+  getItem,
+  WEAPONS,
+  dungeonBlocks,
+  tilesHitBy,
+  strikeSpot,
   angleTo,
   BUILDINGS,
   chunkOfTile,
@@ -7,7 +13,6 @@ import {
   floorDiv,
   inSwing,
   itemByKey,
-  moveBox,
   PLAYER_HALF_SIZE,
   removeItems,
   SUB,
@@ -16,7 +21,6 @@ import {
   weaponIn,
   type Command,
   type FactoryWorld,
-  type IsSolid,
   type ItemId,
   type PlayerPosition,
   type WorldEvent,
@@ -36,6 +40,8 @@ const HIT_MARGIN = SUB / 6
 // How long something in flight lasts before it comes down, in ticks; and how far a hit from one knocks back.
 const FLIGHT_TICKS = 40
 const SHOT_KNOCKBACK = SUB / 3
+// How many ticks a dash (a lunge, a volley's hop back) takes, and how wide a lunge's stab reaches along it.
+const LUNGE_WIDTH = Math.round(0.8 * SUB)
 // How many ticks early an attack is still let through (see `attack`).
 const COOLDOWN_GRACE_TICKS = 2
 // How long something in flight that stopped is still sent, where it stopped (see `end`).
@@ -50,9 +56,16 @@ type Projectile = {
   vy: number
   ttl: number
   damage: number
+  // The player who shot or threw it, whom it never hits.
+  owner: number
   // What lands on the ground where it comes down (an arrow that missed, a spear), and whether it does when it hits.
   lands: ItemId
   landsOnHit: boolean
+  // A monster's (the frost lich's spells): it hurts any player, whether players can hurt each other or not, and passes
+  // through monsters.
+  hostile?: boolean
+  // Something that falls where it is (an icicle): when its time is up it hurts every player within `radius` units.
+  blast?: { radius: number }
 }
 
 // What flying things need from the room on a tick.
@@ -68,6 +81,17 @@ export type CombatContext = {
   dropRound: (middle: PlayerPosition, salt: number, drops: Dropped) => void
 }
 
+// The other players, for attacks to hit (the room's; with players not hurting each other, none are ever near).
+export type PlayerTargets = {
+  // The players other than `except` near a point (within `reach` and their size), where they were at the end of tick
+  // `seen` (where the attacker saw them), or where they are without it.
+  near: (point: PlayerPosition, reach: number, seen: number | undefined, except: number) => Array<{ id: number; x: number; y: number }>
+  // Hurts a player, from a point, pushing them `knockback` units away.
+  hurt: (id: number, damage: number, from: PlayerPosition, knockback: number) => void
+  // Every player near a point (within `reach` and their size), as they are now, PvP or not: for monsters' attacks.
+  everyone: (point: PlayerPosition, reach: number) => Array<{ id: number; x: number; y: number }>
+}
+
 export class Combat {
   private readonly flying = new Map<number, Projectile>()
   private readonly ended = new Map<number, { shot: Projectile; until: number }>()
@@ -76,8 +100,7 @@ export class Combat {
   constructor(
     private readonly world: FactoryWorld,
     private readonly animals: Animals | undefined,
-    // What players cannot walk into (for a lunge or a hop) and what stops what is in flight.
-    private readonly solid: IsSolid,
+    private readonly players?: PlayerTargets,
   ) {}
 
   // ---- attacking
@@ -87,6 +110,9 @@ export class Combat {
     // A couple of ticks' grace: the page times the cooldown by its own clock, and an attack sent the moment it is over
     // can land on a tick or two early here.
     if (tick + COOLDOWN_GRACE_TICKS < player.attackReadyAt) return { ok: false, why: 'tooSoon' }
+    // Only with a weapon (or a tool) or an empty hand: holding anything else, there is no attack.
+    const inHand = player.inventory.slots[command.slot]
+    if (inHand && inHand.count > 0 && !WEAPONS.has(getItem(inHand.item).key)) return { ok: false, why: 'nothing' }
     const weapon = weaponIn(player.inventory, command.slot)
     const origin = { ...player.position }
     const facing = command.x === origin.x && command.y === origin.y ? 0 : angleTo(origin, command)
@@ -103,11 +129,23 @@ export class Combat {
         removeItems(player.inventory, weapon.ammo, 1)
         // Arrows that miss can be picked up again; sling stones are lost.
         const lands = weapon.ammo === itemByKey('arrow')?.id ? weapon.ammo : 0
-        this.launch(origin, facing, weapon.ammo, Math.round(weapon.speed * (0.5 + share / 2)), weapon.damage * share, lands, false)
+        this.launch(origin, facing, weapon.ammo, Math.round(weapon.speed * (0.5 + share / 2)), weapon.damage * share, lands, false, FLIGHT_TICKS, player.id)
+      } else if (weapon.basic === 'strike') {
+        // A strike comes down on a spot in front: everything within its radius of there.
+        const spot = strikeSpot(origin, facing, weapon.range)
+        for (const { animal, x, y } of this.animals?.nearAt(spot, weapon.radius, seen) ?? []) {
+          if (this.clear(origin, { x, y })) moved += this.hurt(context, animal.id, weapon.damage, spot, {})
+        }
+        for (const other of this.players?.near(spot, weapon.radius, seen, player.id) ?? []) if (this.clear(origin, other)) this.players!.hurt(other.id, weapon.damage, spot, 0)
+        for (const target of tilesHitBy(this.world, weapon, origin, facing)) {
+          const result = hit(context, target, toolIn(player.inventory, command.slot), weapon)
+          if ('drops' in result) moved += giveDrops(context, { x: target.x * SUB + SUB / 2, y: target.y * SUB + SUB / 2 }, target.id, result.drops)
+        }
       } else {
         for (const animal of this.animalsIn(origin, facing, weapon.range, weapon.arc, seen, weapon.width)) moved += this.hurt(context, animal.id, weapon.damage, origin, {})
+        for (const other of this.playersIn(origin, facing, weapon.range, weapon.arc, seen, player.id, weapon.width)) this.players!.hurt(other.id, weapon.damage, origin, 0)
         // A basic attack also hits every plant, rock and building in its swing, so lining them up clears them faster.
-        for (const target of tilesIn(this.world, origin, facing, weapon.range, weapon.arc, weapon.width)) {
+        for (const target of tilesHitBy(this.world, weapon, origin, facing)) {
           const result = hit(context, target, toolIn(player.inventory, command.slot), weapon)
           if ('drops' in result) moved += giveDrops(context, { x: target.x * SUB + SUB / 2, y: target.y * SUB + SUB / 2 }, target.id, result.drops)
         }
@@ -128,17 +166,26 @@ export class Combat {
       case 'stun':
       case 'bash':
         for (const animal of this.animalsIn(origin, facing, special.range, special.arc, seen)) moved += this.hurt(context, animal.id, special.damage, origin, effects)
+        for (const other of this.playersIn(origin, facing, special.range, special.arc, seen, player.id)) this.players!.hurt(other.id, special.damage, origin, special.knockback)
         break
       case 'smash': {
         const middle = { x: origin.x + dir.x * special.range, y: origin.y + dir.y * special.range }
-        for (const { animal } of this.animals?.nearAt(middle, special.radius, seen) ?? []) moved += this.hurt(context, animal.id, special.damage, middle, effects)
+        for (const { animal, x, y } of this.animals?.nearAt(middle, special.radius, seen) ?? []) {
+          if (this.clear(origin, { x, y })) moved += this.hurt(context, animal.id, special.damage, middle, effects)
+        }
+        for (const other of this.players?.near(middle, special.radius, seen, player.id) ?? []) {
+          if (this.clear(origin, other)) this.players!.hurt(other.id, special.damage, middle, special.knockback)
+        }
         break
       }
       case 'lunge': {
-        player.position = moveBox(origin, Math.round(dir.x * special.dash), Math.round(dir.y * special.dash), PLAYER_HALF_SIZE, this.solid)
-        for (const animal of this.animalsIn(player.position, facing, special.range, special.arc, seen)) {
-          moved += this.hurt(context, animal.id, special.damage, player.position, effects)
-        }
+        // The player dashes forward over a few ticks, through whatever is in the way: everything along the whole way
+        // (and a stab's reach past its end) is hurt, judged along the way the dash goes.
+        const along = dashAngle(command, facing)
+        const reach = special.dash + special.range
+        player.slide = this.dash(along, special.dash, command.input)
+        for (const animal of this.animalsIn(origin, along, reach, special.arc, seen, LUNGE_WIDTH)) moved += this.hurt(context, animal.id, special.damage, origin, effects)
+        for (const other of this.playersIn(origin, along, reach, special.arc, seen, player.id, LUNGE_WIDTH)) this.players!.hurt(other.id, special.damage, origin, special.knockback)
         break
       }
       case 'throw': {
@@ -149,7 +196,7 @@ export class Combat {
         const share = Math.max(MIN_CHARGE_SHARE, Math.min(1, command.charge / Math.max(1, special.charge)))
         // It flies for as long as it takes to go `range` at full charge (less far, charged less), then lands.
         const flight = special.range > 0 ? Math.ceil(special.range / Math.max(1, special.speed)) : FLIGHT_TICKS
-        this.launch(origin, facing, spear, Math.round(special.speed * (0.5 + share / 2)), special.damage * share, spear, true, flight)
+        this.launch(origin, facing, spear, Math.round(special.speed * (0.5 + share / 2)), special.damage * share, spear, true, flight, player.id)
         break
       }
       case 'volley': {
@@ -158,13 +205,19 @@ export class Combat {
         if (count === 0) return { ok: false, why: 'noAmmo' }
         removeItems(player.inventory, weapon.ammo, count)
         for (let i = 0; i < count; i++) {
-          this.launch(origin, facing + (i - (count - 1) / 2) * special.spread, weapon.ammo, special.speed, special.damage, weapon.ammo, false)
+          this.launch(origin, facing + (i - (count - 1) / 2) * special.spread, weapon.ammo, special.speed, special.damage, weapon.ammo, false, FLIGHT_TICKS, player.id)
         }
-        player.position = moveBox(origin, -Math.round(dir.x * special.hop), -Math.round(dir.y * special.hop), PLAYER_HALF_SIZE, this.solid)
+        player.slide = this.dash(dashAngle(command, facing) + Math.PI, special.hop, command.input)
         break
       }
     }
     return { ok: true, moved }
+  }
+
+  // A dash, with the player's inputs after `input` (see dashOf); without it (an older page), a step a tick.
+  private dash(angle: number, distance: number, input: number | undefined): { vx: number; vy: number; ticks: number; after?: number } {
+    const dash = dashOf(angle, distance, input ?? 0)
+    return input === undefined ? { vx: dash.vx, vy: dash.vy, ticks: dash.ticks } : dash
   }
 
   // Hurts an animal; if that kills it, what it drops goes where the player's drops go. Gives how many items that was.
@@ -172,8 +225,23 @@ export class Combat {
     const animal = this.animals?.get(id)
     if (!animal) return 0
     const where = { x: animal.x, y: animal.y }
-    const drops = this.animals!.damage(id, damage, from, context.tick, effects)
+    const drops = this.animals!.damage(id, damage, from, context.tick, effects, context.player.id)
     return drops ? giveDrops(context, where, id, drops) : 0
+  }
+
+  // The other players an attack reaches, judged where the attacker saw them.
+  private playersIn(
+    origin: PlayerPosition,
+    facing: number,
+    range: number,
+    arc: number,
+    seen: number | undefined,
+    except: number,
+    width = 0,
+  ): Array<{ id: number; x: number; y: number }> {
+    return (this.players?.near(origin, range, seen, except) ?? []).filter(
+      (other) => inSwing(origin, facing, range, arc, other, PLAYER_HALF_SIZE, width) && this.clear(origin, other),
+    )
   }
 
   // The animals an attack reaches, judged where they were at tick `seen` (see Animals.nearAt).
@@ -181,14 +249,29 @@ export class Combat {
     if (!this.animals) return []
     return this.animals
       .nearAt(origin, range, seen)
-      .filter((spot) => inSwing(origin, facing, range, arc, spot, spot.animal.def.halfSize, width))
+      .filter((spot) => inSwing(origin, facing, range, arc, spot, spot.animal.def.halfSize, width) && this.clear(origin, spot))
       .map((spot) => spot.animal)
   }
 
-  private launch(from: PlayerPosition, angle: number, item: ItemId, speed: number, damage: number, lands: ItemId, landsOnHit: boolean, flight = FLIGHT_TICKS): void {
+  private clear(from: { x: number; y: number }, to: { x: number; y: number }): boolean {
+    return attackClear(this.world, from, to)
+  }
+
+  private launch(
+    from: PlayerPosition,
+    angle: number,
+    item: ItemId,
+    speed: number,
+    damage: number,
+    lands: ItemId,
+    landsOnHit: boolean,
+    flight = FLIGHT_TICKS,
+    owner = 0,
+  ): void {
     const id = this.nextId++
     this.flying.set(id, {
       id,
+      owner,
       item,
       x: from.x,
       y: from.y,
@@ -205,26 +288,69 @@ export class Combat {
 
   // Moves everything in flight on, in steps short enough not to pass through anything: it stops in whatever solid it
   // flies into, hurts the first animal it reaches, and otherwise comes down when its time is up.
+  // ---- monsters' spells
+
+  // A shard of ice flying from a point (units) along `angle`, at `speed` units a tick, for `ttl` ticks.
+  hostileShot(item: ItemId, x: number, y: number, angle: number, speed: number, damage: number, ttl: number): void {
+    const id = this.nextId++
+    this.flying.set(id, {
+      id,
+      owner: 0,
+      item,
+      x,
+      y,
+      vx: Math.round(Math.cos(angle) * speed),
+      vy: Math.round(Math.sin(angle) * speed),
+      ttl,
+      damage,
+      lands: 0,
+      landsOnHit: false,
+      hostile: true,
+    })
+  }
+
+  // An icicle falling on a point (units): `ttl` ticks after this (while pages show it falling, and where), it shatters,
+  // hurting every player within `radius` units.
+  icicle(item: ItemId, x: number, y: number, ttl: number, radius: number, damage: number): void {
+    const id = this.nextId++
+    this.flying.set(id, { id, owner: 0, item, x, y, vx: 0, vy: 0, ttl, damage, lands: 0, landsOnHit: false, hostile: true, blast: { radius } })
+  }
+
   step(context: CombatContext): void {
     for (const shot of [...this.flying.values()].sort((a, b) => a.id - b.id)) {
+      if (shot.blast) {
+        if (--shot.ttl > 0) continue
+        for (const player of this.players?.everyone(shot, shot.blast.radius) ?? []) this.players!.hurt(player.id, shot.damage, shot, SHOT_KNOCKBACK)
+        this.end(context, shot)
+        continue
+      }
       const steps = Math.max(1, Math.ceil(Math.hypot(shot.vx, shot.vy) / (SUB / 4)))
       let done = false
       for (let i = 0; i < steps && !done; i++) {
         const x = shot.x + Math.round(shot.vx / steps)
         const y = shot.y + Math.round(shot.vy / steps)
         const tile = this.world.entityAt(floorDiv(x, SUB), floorDiv(y, SUB))
-        if (tile && BUILDINGS[tile.kind].solid) {
+        // Into something solid, or a dungeon's wall: it stops where it was, short of it.
+        if ((tile && BUILDINGS[tile.kind].solid) || dungeonBlocks(floorDiv(x, SUB), floorDiv(y, SUB))) {
           this.land(context, shot)
           done = true
           break
         }
         shot.x = x
         shot.y = y
-        const target = this.animals?.near(shot, HIT_MARGIN)[0]
+        const struck = shot.hostile ? this.players?.everyone(shot, HIT_MARGIN)[0] : this.players?.near(shot, HIT_MARGIN, undefined, shot.owner)[0]
+        if (struck) {
+          this.players!.hurt(struck.id, shot.damage, { x: shot.x - shot.vx, y: shot.y - shot.vy }, SHOT_KNOCKBACK)
+          if (shot.landsOnHit) this.land(context, shot)
+          else this.end(context, shot)
+          done = true
+          break
+        }
+        const target = shot.hostile ? undefined : this.animals?.near(shot, HIT_MARGIN)[0]
         if (target) {
           const where = { x: target.x, y: target.y }
           const from = { x: shot.x - shot.vx, y: shot.y - shot.vy }
-          const drops = this.animals!.damage(target.id, shot.damage, from, context.tick, { knockback: SHOT_KNOCKBACK })
+          const drops = this.animals!.damage(target.id, shot.damage, from, context.tick, { knockback: SHOT_KNOCKBACK }, shot.owner)
           if (drops) context.dropRound(where, target.id, drops)
           if (shot.landsOnHit) this.land(context, shot)
           else this.end(context, shot)
@@ -265,3 +391,8 @@ export class Combat {
   }
 }
 
+// The way a dash goes: the way the page worked it out (`dir`, in thousandths of a radian), so both move the player
+// exactly alike; else the way the player faces here.
+function dashAngle(command: { dir?: number }, facing: number): number {
+  return command.dir !== undefined ? command.dir / 1000 : facing
+}

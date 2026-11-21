@@ -1,11 +1,13 @@
-import { AMMO_SLOT, PLAYER_SLOTS, STACK_SIZE } from './constants.ts'
-import { getItem, NO_ITEM, stackLimit, type ItemId } from './items.ts'
+import { AMMO_SLOT, ARMOR_SLOT, FOOD_SLOT, PLAYER_SLOTS, STACK_SIZE } from './constants.ts'
+import { ARMOR_SLOTS, getItem, NO_ITEM, stackLimit, type ArmorSlot, type ItemId } from './items.ts'
 
 // An inventory is a row of slots, each holding up to a stack of one kind of item. Every change is made the same
 // way on every machine (the same slots in the same order), since a chest's inventory is part of the simulation.
-// A slot marked `only: 'ammo'` takes only ammunition (the player's ammunition slot); it is not sent, but put back on
-// the player's inventory wherever one is made (see `playerInventory`).
-export type Slot = { item: ItemId; count: number; only?: 'ammo' }
+// A slot marked `only: 'ammo'` takes only ammunition (the player's ammunition slot), and one marked with an armour slot
+// ('head', 'body', 'feet') only armour worn there; the marks are not sent, but put back on the player's inventory
+// wherever one is made (see `playerInventory`). Nothing goes into a marked slot by itself but ammunition into the
+// ammunition slot: armour is put on by moving it there.
+export type Slot = { item: ItemId; count: number; only?: 'ammo' | 'food' | ArmorSlot }
 export type Inventory = { slots: Slot[]; stack: number }
 
 export function createInventory(size: number, stack = STACK_SIZE): Inventory {
@@ -19,7 +21,40 @@ export function isAmmo(item: ItemId): boolean {
 
 // Whether an item may go in a slot.
 export function fitsSlot(slot: Slot, item: ItemId): boolean {
-  return slot.only === undefined || isAmmo(item)
+  if (slot.only === undefined) return true
+  if (slot.only === 'ammo') return isAmmo(item)
+  if (slot.only === 'food') return isFood(item)
+  return item !== NO_ITEM && getItem(item).armor?.slot === slot.only
+}
+
+// Whether an item goes into a slot by itself (picked up, crafted, taken from a chest): a plain slot, or the ammunition
+// slot for ammunition; never an armour slot.
+// The food slot takes more of what it already holds by itself, nothing else.
+function fillsBySelf(slot: Slot, item: ItemId): boolean {
+  return slot.only === undefined || (slot.only === 'ammo' && isAmmo(item)) || (slot.only === 'food' && slot.count > 0 && slot.item === item)
+}
+
+// Whether an item can be eaten (and so go in the food slot).
+export function isFood(item: ItemId): boolean {
+  return item !== NO_ITEM && (getItem(item).heals ?? 0) > 0
+}
+
+// What a player wears: how many degrees warmer it keeps them, and how much less damage each hit does.
+export function wornArmor(inventory: Inventory): { warmth: number; defense: number } {
+  let warmth = 0
+  let defense = 0
+  for (let i = ARMOR_SLOT; i < ARMOR_SLOT + ARMOR_SLOTS.length; i++) {
+    const slot = inventory.slots[i]
+    const armor = slot && slot.count > 0 ? getItem(slot.item).armor : undefined
+    warmth += armor?.warmth ?? 0
+    defense += armor?.defense ?? 0
+  }
+  return { warmth, defense }
+}
+
+// The damage a hit does through armour: less by its defense, but never less than 1.
+export function damageAfterArmor(damage: number, defense: number): number {
+  return Math.max(1, Math.round(damage) - defense)
 }
 
 // A player's inventory: `from` (one sent, or an older one of another size) made PLAYER_SLOTS long, with its ammunition
@@ -28,6 +63,8 @@ export function playerInventory(from?: Inventory): Inventory {
   const made = createInventory(PLAYER_SLOTS, from?.stack)
   from?.slots.slice(0, PLAYER_SLOTS).forEach((slot, i) => (made.slots[i] = { item: slot.item, count: slot.count }))
   made.slots[AMMO_SLOT].only = 'ammo'
+  ARMOR_SLOTS.forEach((part, i) => (made.slots[ARMOR_SLOT + i].only = part))
+  made.slots[FOOD_SLOT].only = 'food'
   // Anything that is not ammunition in the ammunition slot (from an older save) is left where it is: it cannot be put
   // back in, only taken out.
   return made
@@ -36,8 +73,9 @@ export function playerInventory(from?: Inventory): Inventory {
 // The order slots are filled in for an item: ammunition goes to the ammunition slot first; nothing goes where it
 // does not fit.
 function fillOrder(inventory: Inventory, item: ItemId): Slot[] {
-  const fitting = inventory.slots.filter((slot) => fitsSlot(slot, item))
-  return isAmmo(item) ? [...fitting.filter((slot) => slot.only), ...fitting.filter((slot) => !slot.only)] : fitting
+  const fitting = inventory.slots.filter((slot) => fillsBySelf(slot, item))
+  // Ammunition, and more of the food in the food slot, go to their own slot first.
+  return isAmmo(item) || isFood(item) ? [...fitting.filter((slot) => slot.only), ...fitting.filter((slot) => !slot.only)] : fitting
 }
 
 export function countOf(inventory: Inventory, item: ItemId): number {
@@ -57,7 +95,7 @@ export function roomFor(inventory: Inventory, item: ItemId, wanted = Number.MAX_
   let room = 0
   const stack = stackLimit(item, inventory.stack)
   for (const slot of inventory.slots) {
-    if (!fitsSlot(slot, item)) continue
+    if (!fillsBySelf(slot, item)) continue
     if (slot.count === 0) room += stack
     else if (slot.item === item) room += Math.max(0, stack - slot.count)
     if (room >= wanted) return wanted
@@ -96,7 +134,7 @@ export function removeItems(inventory: Inventory, item: ItemId, count: number): 
   let left = count
   for (let i = inventory.slots.length - 1; i >= 0 && left > 0; i--) {
     const slot = inventory.slots[i]
-    if (slot.item !== item || slot.count === 0) continue
+    if (slot.item !== item || slot.count === 0 || (slot.only !== undefined && slot.only !== 'ammo' && slot.only !== 'food')) continue
     const moved = Math.min(left, slot.count)
     slot.count -= moved
     left -= moved
