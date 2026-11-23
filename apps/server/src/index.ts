@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomInt } from 'node:crypto'
 import geckos, { type ServerChannel } from '@geckos.io/server'
-import { cleanName, seedFromText, TICK_MS, type GameInfo, type RequestMessage, type SavedWorldInfo, type WorldSize } from '../../../packages/shared/src/index.ts'
+import { cleanName, seedFromText, TICK_MS, type ErrorMessage, type GameInfo, type RequestMessage, type SavedWorldInfo, type WorldSize } from '../../../packages/shared/src/index.ts'
 import {
   AckMessageSchema,
   InputMessageSchema,
@@ -32,6 +32,9 @@ const iceServers = (process.env.WEBRTC_ICE_SERVERS ?? 'stun:stun.l.google.com:19
 // In development the server keeps copies of chunks so a client whose hash disagrees can compare its copy with the
 // server's. Off in production (NODE_ENV=production) unless DESYNC_DUMPS=1.
 const keepDumps = process.env.DESYNC_DUMPS ? process.env.DESYNC_DUMPS === '1' : process.env.NODE_ENV !== 'production'
+// A player the server has heard nothing from for this long (no movement, acknowledgement or ping: their page has gone,
+// without saying so) is taken out of their game. A page in the background still pings, and answers every log message.
+const SILENT_MS = 12_000
 // A game with nobody in it is saved and closed after this long (it can be loaded again from the menu).
 const EMPTY_ROOM_MS = 10 * 60_000
 // Running worlds are saved this often, to the saves folder (SAVES_DIR, by default "saves" where the server is run).
@@ -83,19 +86,20 @@ async function freshCode(): Promise<string> {
   }
 }
 
-// Whether a world of that name (in any case) is running or saved.
-async function nameTaken(name: string): Promise<boolean> {
-  const key = name.toLowerCase()
-  if ([...rooms.values()].some((room) => room.name.toLowerCase() === key)) return true
-  return (await saves.list()).some((save) => save.name.toLowerCase() === key)
+// The names of every world, running or saved, in lower case (no two worlds share a name, in any case).
+async function worldNames(): Promise<Set<string>> {
+  const names = new Set([...rooms.values()].map((room) => room.name.toLowerCase()))
+  for (const save of await saves.list()) names.add(save.name.toLowerCase())
+  return names
 }
 
 // A name for an imported world that no other world has: its own, or with a number after it.
 async function freeName(name: string): Promise<string> {
-  if (!(await nameTaken(name))) return name
+  const taken = await worldNames()
+  if (!taken.has(name.toLowerCase())) return name
   for (let n = 2; ; n++) {
     const candidate = `${name.slice(0, NAME_LENGTH - 5)} (${n})`
-    if (!(await nameTaken(candidate))) return candidate
+    if (!taken.has(candidate.toLowerCase())) return candidate
   }
 }
 
@@ -119,12 +123,21 @@ function sendJson(response: ServerResponse, status: number, data: unknown): void
   response.end(JSON.stringify(data))
 }
 
-async function readJson(request: IncomingMessage, limit = 4_096): Promise<unknown> {
-  let body = ''
+// A request's body as bytes, up to a limit.
+async function readBytes(request: IncomingMessage, limit: number): Promise<Buffer> {
+  const parts: Buffer[] = []
+  let size = 0
   for await (const chunk of request) {
-    body += chunk
-    if (body.length > limit) throw new Error('The request is too large.')
+    size += (chunk as Buffer).length
+    if (size > limit) throw new Error('The request is too large.')
+    parts.push(chunk as Buffer)
   }
+  return Buffer.concat(parts)
+}
+
+async function readJson(request: IncomingMessage, limit = 4_096): Promise<unknown> {
+  // Read as bytes and decoded once, so a character split between two chunks comes through whole.
+  const body = (await readBytes(request, limit)).toString('utf8')
   return body ? JSON.parse(body) : {}
 }
 
@@ -137,18 +150,6 @@ function sendSave(response: ServerResponse, save: WorldSave): void {
     'Access-Control-Allow-Origin': '*',
   })
   response.end(toBytes(save))
-}
-
-// A request's body as bytes, up to a limit.
-async function readBytes(request: IncomingMessage, limit: number): Promise<Buffer> {
-  const parts: Buffer[] = []
-  let size = 0
-  for await (const chunk of request) {
-    size += (chunk as Buffer).length
-    if (size > limit) throw new Error('The request is too large.')
-    parts.push(chunk as Buffer)
-  }
-  return Buffer.concat(parts)
 }
 
 const api = createServer(async (request, response) => {
@@ -173,10 +174,10 @@ const api = createServer(async (request, response) => {
       if (!parsed.success) return sendJson(response, 400, { error: 'That is not a valid new game.' })
       const name = parsed.data.name.replace(/\s+/g, ' ').trim().slice(0, NAME_LENGTH)
       if (!name) return sendJson(response, 400, { error: 'Give the world a name.' })
-      if (await nameTaken(name)) return sendJson(response, 409, { error: 'There is already a world of that name.' })
+      if ((await worldNames()).has(name.toLowerCase())) return sendJson(response, 409, { error: 'There is already a world of that name.' })
       const seedText = parsed.data.seed?.trim()
       const seed = seedText ? seedFromText(seedText) : randomInt(1, 1_000_000_000)
-      const terrain = { ...(parsed.data.size ? { size: parsed.data.size as WorldSize } : {}), ...(parsed.data.bumpiness !== undefined ? { bumpiness: parsed.data.bumpiness } : {}) }
+      const terrain = parsed.data.size ? { size: parsed.data.size as WorldSize } : {}
       const room = new GameRoom(await freshCode(), seed, { keepDumps, name, terrain })
       rooms.set(room.code, room)
       await saveRoom(room)
@@ -242,28 +243,55 @@ const io = geckos({ portRange: { min: webrtcPortMin, max: webrtcPortMax }, iceSe
 
 io.onConnection((channel: ServerChannel) => {
   let joined: { room: GameRoom; player: ServerPlayer } | undefined
+  // Set once the player has left (or the connection has gone): nothing more is sent on it.
+  let gone = false
+  let heardAt = Date.now()
+  const heard = (): void => {
+    heardAt = Date.now()
+  }
+  const send = (event: string, message: unknown): void => {
+    if (!gone) channel.emit(event, message as never)
+  }
+  // The player is out of the game: everyone else is told at once (and stops seeing them).
+  const leave = (reason: string): void => {
+    if (gone) return
+    gone = true
+    clearInterval(watch)
+    if (!joined) return
+    joined.room.leave(joined.player)
+    log.info('player left', { game: joined.room.code, player: joined.player.id, reason, players: joined.room.playerCount })
+    joined = undefined
+  }
+  const watch = setInterval(() => {
+    if (Date.now() - heardAt <= SILENT_MS) return
+    leave('silent')
+    void channel.close().catch(() => undefined)
+  }, 2_000)
+
+  // Why the page cannot join, for it to show.
+  const refuse = (message: string): void => void channel.emit('error', { message } satisfies ErrorMessage, { reliable: true })
 
   // A client sends `join` until it hears back, so a second one on the same connection is the same player.
   channel.on('join', (data) => {
-    if (joined) return
+    heard()
+    if (joined || gone) return
     const parsed = JoinMessageSchema.safeParse(data)
-    if (!parsed.success) return channel.emit('error', { message: 'A game code and a name are needed.' }, { reliable: true })
+    if (!parsed.success) return refuse('A game code and a name are needed.')
     const room = rooms.get(parsed.data.code.toUpperCase())
-    if (!room) return channel.emit('error', { message: 'There is no game with that code.' }, { reliable: true })
+    if (!room) return refuse('There is no game with that code.')
     const name = cleanName(parsed.data.name)
     // A name is what links a player to what they had in a world, so two players in one game cannot share one.
-    if (room.hasPlayerNamed(name)) {
-      return channel.emit('error', { message: `Someone called ${name} is already playing in this world. Pick another name.` }, { reliable: true })
-    }
+    if (room.hasPlayerNamed(name)) return refuse(`Someone called ${name} is already playing in this world. Pick another name.`)
     const player = room.join(name, {
-      sendLog: (message) => channel.emit('log', message),
-      sendState: (message) => channel.emit('state', message),
+      sendLog: (message) => send('log', message),
+      sendState: (message) => send('state', message),
     })
     joined = { room, player }
     log.info('player joined', { game: room.code, player: player.id, name, players: room.playerCount })
   })
 
   channel.on('req', (data) => {
+    heard()
     if (!joined) return
     const parsed = RequestMessageSchema.safeParse(data)
     let request = parsed.success ? (parsed.data as RequestMessage) : undefined
@@ -280,28 +308,32 @@ io.onConnection((channel: ServerChannel) => {
   })
 
   channel.on('input', (data) => {
+    heard()
     if (!joined) return
     const parsed = InputMessageSchema.safeParse(data)
     if (parsed.success) joined.room.receiveInputs(joined.player, parsed.data.i as Array<[number, number]>)
   })
 
   channel.on('ack', (data) => {
+    heard()
     if (!joined) return
     const parsed = AckMessageSchema.safeParse(data)
     if (parsed.success) joined.room.receiveLogAck(joined.player, parsed.data.s)
   })
 
   channel.on('ping', (data) => {
+    heard()
     const parsed = PingMessageSchema.safeParse(data)
     if (parsed.success) channel.emit('pong', { c: parsed.data.c, t: joined?.room.tick ?? 0 })
   })
 
-  channel.onDisconnect(() => {
-    if (!joined) return
-    joined.room.leave(joined.player)
-    log.info('player left', { game: joined.room.code, player: joined.player.id, players: joined.room.playerCount })
-    joined = undefined
+  // The page says it is leaving (going back to the menu, or being closed).
+  channel.on('leave', () => {
+    leave('left')
+    void channel.close().catch(() => undefined)
   })
+
+  channel.onDisconnect(() => leave('disconnected'))
 })
 io.listen(geckosPort)
 log.info('game server listening', { port: geckosPort, webrtcUdp: `${webrtcPortMin}-${webrtcPortMax}`, desyncDumps: keepDumps })

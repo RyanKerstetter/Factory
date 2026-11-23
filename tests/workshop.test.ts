@@ -3,6 +3,7 @@ import test from 'node:test'
 import { GameRoom } from '../apps/server/src/game-room.ts'
 import {
   AMMO_SLOT,
+  FOOD_SLOT,
   barrelPlan,
   BARREL_RECIPES,
   BUILDINGS,
@@ -22,10 +23,15 @@ import {
   TPS,
   WATERED_SECONDS,
   WATER_FALL_EVERY,
-  waterAt,
   terrainOf,
   isSeaAt,
   type Entity,
+  BARREL_OUTPUT,
+  BARREL_SOLIDS,
+  STATION_LAYOUT,
+  oneKindEach,
+  stepEntity,
+  type BarrelEntity,
 } from '../packages/shared/src/index.ts'
 import { differingChunks, run, TestClient } from './helpers.ts'
 
@@ -51,8 +57,8 @@ function place(room: GameRoom, client: TestClient, slot: number, x: number, y: n
 const at = (room: GameRoom, id: number): Record<string, unknown> & { inv: { slots: Array<{ item: number; count: number }> } } =>
   room.world.entity(id) as never
 
-test('a workbench is crafted by hand from planks and stone, and makes buildings again and again while it has enough and you are at it', () => {
-  const workbench = RECIPES.find((recipe) => recipe.output === itemId('workbench'))!
+test('a workbench is made at the stump from planks and stone, and makes buildings again and again while it has enough and you are at it', () => {
+  const workbench = STATION_RECIPES.stump.find((recipe) => recipe.output === itemId('workbench'))!
   assert.deepEqual(
     workbench.inputs.map(([item, count]) => [item, count]),
     [
@@ -61,10 +67,17 @@ test('a workbench is crafted by hand from planks and stone, and makes buildings 
     ],
   )
   assert.ok(!RECIPES.some((recipe) => recipe.output === itemId('fence')), 'fences are made at the workbench now')
-  const { room, client } = workshop('BENCH', { plank: 40, stone: 10, rope: 3 })
-  client.command({ k: 'craft', recipe: workbench.id })
+  const { room, client } = workshop('BENCH', { plank: 40, stone: 10, rope: 3, stump: 1 })
+  const stumpSlot = client.player.inventory.slots.findIndex((candidate) => candidate.item === itemId('stump'))
+  const stump = place(room, client, stumpSlot, -2, 2)
+  client.command({ k: 'put', id: stump.id, item: itemId('plank'), max: 20 })
+  client.command({ k: 'put', id: stump.id, item: itemId('stone'), max: 10 })
+  client.command({ k: 'work', id: stump.id, recipe: workbench.index })
+  run(room, [client], workbench.ticks + 10)
+  client.command({ k: 'take', id: stump.id, item: itemId('workbench'), max: 1 })
   run(room, [client], 5)
   const slot = client.player.inventory.slots.findIndex((candidate) => candidate.item === itemId('workbench'))
+  assert.ok(slot >= 0, 'the stump made it')
   const bench = place(room, client, slot, 2, 2)
   const fence = STATION_RECIPES.workbench.find((recipe) => recipe.output === itemId('fence'))!
   const need = (key: string): number => fence.inputs.find(([item]) => item === itemId(key))![1]
@@ -88,7 +101,7 @@ test('a workbench is crafted by hand from planks and stone, and makes buildings 
   run(room, [client], 5)
   client.player.inventory.slots[10] = { item: itemId('rope'), count: 1 }
   client.command({ k: 'put', id: bench.id, item: itemId('rope'), max: 1 })
-  client.command({ k: 'work', id: bench.id, recipe: fence.index, repeat: true })
+  client.command({ k: 'work', id: bench.id, recipe: fence.index })
   client.command({ k: 'use', id: 0 })
   run(room, [client], fence.ticks + 10)
   assert.equal(at(room, bench.id).inv.slots[3].count, 0, 'nothing while nobody was at it')
@@ -140,24 +153,14 @@ test('a drying rack dries a hide, much faster beside a lit campfire', () => {
   assert.ok(warm > 0 && warm < cold / 4, `much faster by the fire (${warm / TPS} s)`)
 })
 
-test('a bucket fills at a pond and empties into a barrel; bark and water, sealed and boiled, make tannin; a full barrel of it tans a hide', () => {
-  const terrain = terrainOf(11)
-  let pond: { x: number; y: number } | undefined
-  for (let r = 0; r < 200 && !pond; r++) {
-    for (let x = -r; x <= r && !pond; x++) for (const y of [-r, r]) if (!pond && waterAt(terrain, x, y) && !isSeaAt(terrain, x, y)) pond = { x, y }
-  }
-  assert.ok(pond, 'there is a pond')
-  const { room, client } = workshop('BARREL', { barrel: 1, bucket: 1, bark: 1, campfire: 1, charcoal: 20 })
-  client.player.position = center(pond.x, pond.y + 3)
-  run(room, [client], 1)
-  // Find a dry spot beside the player for the barrel, and one beside that for the fire.
-  const spot = { x: pond.x + 0, y: pond.y + 5 }
-  while (waterAt(terrain, spot.x, spot.y) || waterAt(terrain, spot.x + 1, spot.y)) spot.y++
-  client.player.position = center(spot.x, spot.y + 2)
+test('a bucket fills at a well and empties into a barrel; bark and water, sealed and boiled, make tannin; a full barrel of it tans a hide', () => {
+  const { room, client } = workshop('BARREL', { barrel: 1, bucket: 1, bark: 1, campfire: 1, charcoal: 20, well: 1 })
+  // The well, and beside it a spot for the barrel, and one beside that for the fire.
+  const well = place(room, client, 5, 2, 0)
+  const spot = { x: 2, y: 3 }
   const barrel = place(room, client, 0, spot.x, spot.y)
-  client.player.position = center(pond.x, pond.y + 2)
   const fill = (): void => {
-    client.command({ k: 'apply', x: pond!.x, y: pond!.y, slot: 1 })
+    client.command({ k: 'apply', x: well.x, y: well.y, slot: 1 })
     client.command({ k: 'apply', x: spot.x, y: spot.y, slot: 1 })
     run(room, [client], 3)
   }
@@ -193,29 +196,30 @@ test('a bucket fills at a pond and empties into a barrel; bark and water, sealed
   world.addEntity(vat)
   const leather = BARREL_RECIPES.find((recipe) => recipe.output === itemId('leather'))!
   for (let tick = 1; tick <= leather.ticks + 1; tick++) world.stepInterior(tick, 1)
-  assert.equal(vat.inv.slots[3].count, 0, 'three hides and two buckets: nothing')
+  assert.equal(vat.inv.slots[BARREL_OUTPUT].count, 0, 'three hides and two buckets: nothing')
   vat.amount = 4
   for (let tick = 1; tick <= leather.ticks / 2; tick++) world.stepInterior(tick, 1)
   // Opened, another hide put in, and sealed again: it starts again.
   vat.inv.slots[0].count = 4
   for (let tick = 1; tick <= leather.ticks / 2 + 2; tick++) world.stepInterior(tick, 1)
-  assert.equal(vat.inv.slots[3].count, 0, 'more hides start it again')
+  assert.equal(vat.inv.slots[BARREL_OUTPUT].count, 0, 'more hides start it again')
   for (let tick = 1; tick <= leather.ticks; tick++) world.stepInterior(tick, 1)
-  assert.equal(vat.inv.slots[3].item, itemId('leather'))
-  assert.equal(vat.inv.slots[3].count, 4, 'four hides, four leather')
+  assert.equal(vat.inv.slots[BARREL_OUTPUT].item, itemId('leather'))
+  assert.equal(vat.inv.slots[BARREL_OUTPUT].count, 4, 'four hides, four leather')
   assert.equal(vat.amount, 0, 'a bucket of tannin each')
 })
 
 test('organic things rot to compost in an open, dry barrel; water makes a plot grow faster, and dries out', () => {
   const world = new FactoryWorld()
   const vat = createEntity(1, 'barrel', 0, 0, 0, 0) as Entity & Record<string, number> & { inv: { slots: Array<{ item: number; count: number }> } }
-  vat.inv.slots[0] = { item: itemId('leaves'), count: BARREL_RECIPES[2].solids[0][1] - 2 }
-  vat.inv.slots[1] = { item: itemId('acorn'), count: 2 }
+  // One slot of solids: a stack of one organic thing.
+  assert.deepEqual(BARREL_SOLIDS, [0])
+  vat.inv.slots[0] = { item: itemId('leaves'), count: BARREL_RECIPES[2].solids[0][1] }
   vat.sealed = 1
   world.addEntity(vat)
   for (let tick = 1; tick <= BARREL_RECIPES[2].ticks + 1; tick++) world.stepInterior(tick, 1)
-  assert.equal(vat.inv.slots[3].item, itemId('compost'))
-  assert.equal(vat.inv.slots[0].count + vat.inv.slots[1].count, 0)
+  assert.equal(vat.inv.slots[BARREL_OUTPUT].item, itemId('compost'))
+  assert.equal(vat.inv.slots[0].count, 0)
 
   const wheat = CROPS[0]
   const grow = (water: number, fertility: number): number => {
@@ -318,4 +322,214 @@ test('stacks move between any two slots: onto their kind up to a stack (the rest
   assert.equal(slots[5].count, 0)
   assert.ok(room.world.allDrops().some((drop) => drop.item === itemId('log') && drop.count === 25), 'the logs lie on the ground')
   assert.deepEqual(differingChunks(room, client), [])
+})
+
+test('the workbench includes the stump: everything the stump makes, the workbench makes too, after its own recipes', () => {
+  const bench = STATION_RECIPES.workbench
+  for (const recipe of STATION_RECIPES.stump) assert.ok(bench.some((mine) => mine.output === recipe.output), `the workbench makes ${recipe.output}`)
+  // Its own recipes keep their places; the stump's come after, numbered on.
+  bench.forEach((recipe, i) => assert.equal(recipe.index, i))
+  assert.equal(new Set(bench.map((recipe) => recipe.output)).size, bench.length)
+})
+
+test('an empty bucket fills with salt water at the sea (fresh water at a pond); salt water boiled in an open barrel leaves salt', () => {
+  const terrain = terrainOf(11)
+  // The first sea east of the spawn, and the land just before it.
+  let shore = 0
+  while (!isSeaAt(terrain, shore + 1, 0)) shore++
+  const { room, client } = workshop('SALT', { barrel: 1, bucket: 1, campfire: 1, charcoal: 20 })
+  client.player.position = center(shore - 1, 0)
+  run(room, [client], 1)
+  const barrel = place(room, client, 0, shore - 2, 1)
+  const fire = place(room, client, 2, shore - 3, 1)
+  const fill = (): void => {
+    client.command({ k: 'apply', x: shore + 1, y: 0, slot: 1 })
+    run(room, [client], 3)
+    assert.equal(client.player.inventory.slots[1].item, itemId('salt-water-bucket'), 'the sea fills it with salt water')
+    client.command({ k: 'apply', x: barrel.x, y: barrel.y, slot: 1 })
+    run(room, [client], 3)
+  }
+  fill()
+  fill()
+  const salty = at(room, barrel.id)
+  assert.equal(salty.amount, 2)
+  assert.notEqual(salty.liquid, LIQUID_WATER, 'salt water is not fresh water')
+  client.command({ k: 'put', id: fire.id, item: itemId('charcoal'), max: 20 })
+  client.command({ k: 'machine', id: fire.id, action: 'light' })
+  const recipe = BARREL_RECIPES.find((one) => one.output === itemId('salt'))!
+  run(room, [client], recipe.heat / 2 + 2 * recipe.ticks + 60)
+  const boiled = at(room, barrel.id)
+  assert.equal(boiled.inv.slots[BARREL_OUTPUT].item, itemId('salt'))
+  assert.equal(boiled.inv.slots[BARREL_OUTPUT].count, 2, 'a salt for each bucket boiled away')
+  assert.equal(boiled.amount, 0)
+  assert.deepEqual(differingChunks(room, client), [])
+})
+
+test('an egg fries on a campfire', () => {
+  const { room, client } = workshop('EGG', { campfire: 1, log: 5, egg: 1 })
+  const fire = place(room, client, 0, 2, 2)
+  client.command({ k: 'put', id: fire.id, item: itemId('log'), max: 5 })
+  client.command({ k: 'put', id: fire.id, item: itemId('egg'), max: 1 })
+  client.command({ k: 'machine', id: fire.id, action: 'light' })
+  run(room, [client], 20 * TPS)
+  assert.equal(at(room, fire.id).inv.slots[2].item, itemId('fried-egg'))
+})
+
+// A station recipe's place in its list, by what it makes.
+const stationRecipe = (kind: 'stump' | 'workbench', output: string): number => STATION_RECIPES[kind].findIndex((recipe) => recipe.output === itemId(output))
+
+test('the workbench (not the stump) makes a mortar and pestle from stone with a pickaxe, and with it grinds wheat into flour; and makes the oven', () => {
+  for (const key of ['mortar', 'flour', 'oven']) assert.equal(stationRecipe('stump', key), -1, `no ${key} at the stump`)
+  assert.ok(stationRecipe('workbench', 'oven') >= 0, 'the oven at the workbench')
+  const { room, client } = workshop('MORTAR', { workbench: 1, pickaxe: 1, stone: 4, wheat: 3 })
+  const stump = place(room, client, 0, 2, 2)
+  const out = STATION_LAYOUT.workbench.output
+  const stumpRecipe = (key: string): number => stationRecipe('workbench', key)
+  client.command({ k: 'put', id: stump.id, item: itemId('stone'), max: 4 })
+  client.command({ k: 'work', id: stump.id, recipe: stumpRecipe('mortar') })
+  run(room, [client], 4 * TPS + 10)
+  assert.equal(at(room, stump.id).inv.slots[out].item, itemId('mortar'), 'a mortar and pestle')
+  client.command({ k: 'take', id: stump.id, item: itemId('mortar'), max: 1 })
+  client.command({ k: 'put', id: stump.id, item: itemId('wheat'), max: 3 })
+  client.command({ k: 'work', id: stump.id, recipe: stumpRecipe('flour') })
+  run(room, [client], 3 * 2 * TPS + 10)
+  const done = at(room, stump.id)
+  assert.equal(done.inv.slots[STATION_LAYOUT.workbench.tool].item, itemId('mortar'), 'the mortar went in as the tool')
+  assert.equal(countOf(client.player.inventory, itemId('pickaxe')), 1, 'and the pickaxe came back out')
+  assert.deepEqual([done.inv.slots[out].item, done.inv.slots[out].count], [itemId('flour'), 3])
+  assert.deepEqual(differingChunks(room, client), [])
+})
+
+test('flour and water mix into dough in an open barrel: four flour and a bucket for each', () => {
+  const barrel = createEntity(1, 'barrel', 0, 0, 0, 0) as BarrelEntity
+  barrel.liquid = LIQUID_WATER
+  barrel.amount = 2
+  barrel.inv.slots[BARREL_SOLIDS[0]] = { item: itemId('flour'), count: 10 }
+  assert.equal(barrelPlan(barrel).ready, true, 'it does not have to be sealed')
+  const recipe = BARREL_RECIPES.find((one) => one.output === itemId('dough'))!
+  for (let i = 0; i < 3 * recipe.ticks; i++) stepEntity(barrel)
+  assert.deepEqual([barrel.inv.slots[BARREL_OUTPUT].item, barrel.inv.slots[BARREL_OUTPUT].count], [itemId('dough'), 2])
+  assert.equal(barrel.inv.slots[BARREL_SOLIDS[0]].count, 2, 'four flour went into each')
+  assert.equal(barrel.amount, 0, 'and a bucket of water')
+})
+
+test('an oven bakes dough into bread, and cooks twice as fast as a campfire; a campfire will not take dough', () => {
+  const { room, client } = workshop('OVEN', { oven: 1, campfire: 1, charcoal: 10, dough: 1, steak: 1 })
+  const oven = place(room, client, 0, 2, 2)
+  const fire = place(room, client, 1, 5, 2)
+  client.command({ k: 'put', id: fire.id, item: itemId('dough'), max: 1 })
+  run(room, [client], 3)
+  assert.equal(countOf(client.player.inventory, itemId('dough')), 1, 'the campfire did not take the dough')
+  client.command({ k: 'put', id: oven.id, item: itemId('charcoal'), max: 10 })
+  client.command({ k: 'put', id: oven.id, item: itemId('dough'), max: 1 })
+  client.command({ k: 'machine', id: oven.id, action: 'light' })
+  run(room, [client], 20 * TPS)
+  assert.equal(at(room, oven.id).inv.slots[2].item, itemId('bread'), 'bread')
+  // A steak: 8 s at 200 on a campfire, so well under that in a hot oven.
+  client.command({ k: 'take', id: oven.id, item: itemId('bread'), max: 1 })
+  client.command({ k: 'put', id: oven.id, item: itemId('steak'), max: 1 })
+  run(room, [client], 4 * TPS)
+  assert.equal(at(room, oven.id).inv.slots[2].item, itemId('cooked-steak'))
+  assert.deepEqual(differingChunks(room, client), [])
+})
+
+test('a breakfast sandwich is made at the stump from bread, salt, any cooked meat and a fried egg, all four in at once', () => {
+  const { room, client } = workshop('SANDWICH', { stump: 1, bread: 2, salt: 2, 'cooked-chicken': 1, 'cooked-steak': 1, 'fried-egg': 2 })
+  const stump = place(room, client, 0, 2, 2)
+  const index = stationRecipe('stump', 'breakfast-sandwich')
+  for (const key of ['bread', 'salt', 'cooked-chicken', 'fried-egg']) client.command({ k: 'put', id: stump.id, item: itemId(key), max: 1 })
+  client.command({ k: 'work', id: stump.id, recipe: index })
+  run(room, [client], 3 * TPS + 10)
+  const out = at(room, stump.id).inv.slots[STATION_LAYOUT.stump.output]
+  assert.deepEqual([out.item, out.count], [itemId('breakfast-sandwich'), 1], 'with chicken')
+  for (const key of ['bread', 'salt', 'cooked-steak', 'fried-egg']) client.command({ k: 'put', id: stump.id, item: itemId(key), max: 1 })
+  client.command({ k: 'work', id: stump.id, recipe: index })
+  run(room, [client], 3 * TPS + 10)
+  assert.equal(at(room, stump.id).inv.slots[STATION_LAYOUT.stump.output].count, 2, 'and with steak')
+  assert.deepEqual(differingChunks(room, client), [])
+})
+
+test('a well, made at the workbench from stone, rope, a bucket and planks with no tool, fills an empty bucket with fresh water', () => {
+  const recipe = STATION_RECIPES.workbench.find((candidate) => candidate.output === itemId('well'))!
+  assert.ok(recipe, 'the workbench makes a well')
+  assert.equal(recipe.tool, undefined, 'with no tool')
+  assert.deepEqual(new Set(recipe.inputs.map(([item]) => item)), new Set(['stone', 'rope', 'bucket', 'plank'].map(itemId)))
+  const { room, client } = workshop('WELL', { well: 1, bucket: 1 })
+  const tile = { x: Math.floor(client.player.position.x / 256) + 2, y: Math.floor(client.player.position.y / 256) }
+  const well = place(room, client, 0, tile.x, tile.y)
+  assert.equal(well.kind, 'well')
+  client.command({ k: 'apply', x: tile.x, y: tile.y, slot: 1 })
+  run(room, [client], 3)
+  assert.equal(client.player.inventory.slots[1].item, itemId('water-bucket'))
+  // A full bucket does nothing there.
+  client.command({ k: 'apply', x: tile.x, y: tile.y, slot: 1 })
+  run(room, [client], 3)
+  assert.equal(client.player.inventory.slots[1].item, itemId('water-bucket'))
+})
+
+test('a station makes what it includes faster by its speed, but its own recipes take their own time; hand recipes are the "player" station', () => {
+  const at = (kind: 'stump' | 'workbench', key: string): number => STATION_RECIPES[kind].find((recipe) => recipe.output === itemId(key))!.ticks
+  const hand = RECIPES.find((recipe) => recipe.output === itemId('knife'))!
+  assert.equal(hand.ticks, 4 * TPS, 'the knife: 4 s at the player speed of 1')
+  assert.equal(at('stump', 'knife'), 2 * TPS, 'at the stump (speed 2): half that')
+  assert.equal(at('workbench', 'knife'), Math.round((4 * TPS) / 3), 'at the workbench (speed 3): a third')
+  assert.equal(at('stump', 'plank'), 2 * TPS, 'the stump’s own planks take their own 2 s')
+  assert.equal(at('workbench', 'plank'), Math.round((2 * TPS * 2) / 3), 'and 2 s × 2 / 3 at the workbench')
+  assert.equal(at('stump', 'fence'), 2 * TPS, 'the stump’s own fences take their own 2 s')
+  assert.equal(at('workbench', 'fence'), Math.round((2 * TPS * 2) / 3), 'and 2 s × 2 / 3 at the workbench')
+  // Nothing is declared twice: each output once in each station's list.
+  for (const kind of ['stump', 'workbench'] as const) {
+    const outputs = STATION_RECIPES[kind].map((recipe) => recipe.output)
+    assert.equal(new Set(outputs).size, outputs.length, `${kind} has each output once`)
+  }
+})
+
+test('putting a kind into a chest takes it from the ordinary slots, never the food (or ammunition, armour, trash) slot, unless that is the slot clicked', () => {
+  const room = new GameRoom('PUTFOOD', 11, { animals: false, plants: false })
+  const client = new TestClient(room, 'Stasher')
+  run(room, [client], 5)
+  const slots = client.player.inventory.slots
+  Object.assign(slots[0], { item: itemId('chest'), count: 1 })
+  Object.assign(slots[1], { item: itemId('berries'), count: 6 })
+  Object.assign(slots[FOOD_SLOT], { item: itemId('berries'), count: 4 })
+  const chest = place(room, client, 0, 2, 2)
+  // A click on the berries in the inventory: all of that kind, but the food slot is left alone.
+  client.command({ k: 'put', id: chest.id, item: itemId('berries'), max: 100, slot: 1 })
+  run(room, [client], 3)
+  assert.equal(slots[1].count, 0)
+  assert.equal(slots[FOOD_SLOT].count, 4, 'the food slot keeps its berries')
+  assert.equal(at(room, chest.id).inv.slots.reduce((sum, slot) => sum + (slot.item === itemId('berries') ? slot.count : 0), 0), 6)
+  // Store all leaves it too.
+  client.command({ k: 'put', id: chest.id, item: 0, max: 100_000 })
+  run(room, [client], 3)
+  assert.equal(slots[FOOD_SLOT].count, 4)
+  // A click on the food slot itself puts those in.
+  client.command({ k: 'put', id: chest.id, item: itemId('berries'), max: 4, slot: FOOD_SLOT })
+  run(room, [client], 3)
+  assert.equal(slots[FOOD_SLOT].count, 0)
+  assert.equal(at(room, chest.id).inv.slots.reduce((sum, slot) => sum + (slot.item === itemId('berries') ? slot.count : 0), 0), 10)
+})
+
+test('a recipe that takes any of a kind (a breakfast sandwich, any cooked meat) puts in one kind only, so its other ingredients still fit', () => {
+  const sandwich = STATION_RECIPES.stump.find((recipe) => recipe.output === itemId('breakfast-sandwich'))!
+  // Two of each meat: both kinds would take two of the stump's four input slots, and the egg would not fit.
+  const { room, client } = workshop('SANDWICH', { stump: 1, bread: 4, salt: 4, 'cooked-steak': 2, 'cooked-chicken': 3, 'fried-egg': 4 })
+  const stump = place(room, client, 0, 2, 2)
+  const inputs = oneKindEach('stump', at(room, stump.id).inv as never, client.player.inventory, sandwich.inputs)
+  assert.deepEqual(
+    inputs.map(([item]) => item),
+    [itemId('bread'), itemId('salt'), itemId('cooked-chicken'), itemId('fried-egg')],
+    'the meat the player has most of',
+  )
+  // As the page does for "Craft all": as many as each (one kind) allows, put in, then work.
+  const more = Math.min(...inputs.map(([item, need]) => Math.floor(countOf(client.player.inventory, item as number) / need)))
+  assert.equal(more, 3)
+  for (const [item, need] of inputs) client.command({ k: 'put', id: stump.id, item: item as number, max: need * more })
+  client.command({ k: 'work', id: stump.id, recipe: sandwich.index })
+  run(room, [client], 3 * sandwich.ticks + 10)
+  assert.ok(client.results.every((result) => result.ok), `all went in (${client.results.map((result) => result.why ?? 'ok').join(', ')})`)
+  assert.equal(at(room, stump.id).inv.slots[STATION_LAYOUT.stump.output].count, 3, 'three sandwiches')
+  // With some of a kind already in the stump, that kind is kept on (if the player has it).
+  const left = oneKindEach('stump', { slots: [{ item: 0, count: 0 }, { item: itemId('cooked-steak'), count: 1 }, { item: 0, count: 0 }, { item: 0, count: 0 }, { item: 0, count: 0 }, { item: 0, count: 0 }] } as never, client.player.inventory, sandwich.inputs)
+  assert.equal(left[2][0], itemId('cooked-steak'), 'the steak already in it')
 })

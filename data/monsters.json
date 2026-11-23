@@ -1,0 +1,81 @@
+{
+  "skeleton": {
+    "id": 1,
+    "name": "Skeleton",
+    "hp": 80,
+    "armor": 5,
+    "speed": 4.4,
+    "size": 1.0,
+    "halfSize": 0.3,
+    "aggroRadius": 6,
+    "leash": 36,
+    "attack": {
+      "kind": "blade",
+      "swing": { "reach": 1.5, "arc": 150, "windup": 0.7, "damage": 23, "knockback": 1 },
+      "charge": { "from": 5, "near": 2.5, "windup": 1, "lead": 0.2, "distance": 5.5, "speed": 18, "width": 0.7, "damage": 30, "knockback": 1.4, "cooldown": 4, "chance": 0.5 },
+      "recover": 0.7,
+      "cooldown": 0.5
+    },
+    "drops": [
+      { "item": "bone", "min": 1, "max": 3 },
+      { "item": "essence", "min": 1, "max": 1 }
+    ]
+  },
+  "skeleton-archer": {
+    "id": 2,
+    "name": "Skeleton archer",
+    "hp": 60,
+    "armor": 3,
+    "speed": 3.9,
+    "size": 1.0,
+    "halfSize": 0.3,
+    "aggroRadius": 8,
+    "leash": 36,
+    "attack": { "kind": "bow", "range": 7.5, "aim": 0.7, "lead": 0.2, "cooldown": 1.15, "speed": 14, "damage": 25, "item": "arrow" },
+    "drops": [
+      { "item": "bone", "min": 1, "max": 2 },
+      { "item": "arrow", "min": 2, "max": 4 }
+    ]
+  },
+  "frost-lich": {
+    "id": 3,
+    "name": "Frost lich",
+    "hp": 800,
+    "armor": 10,
+    "speed": 0,
+    "size": 1.6,
+    "halfSize": 0.42,
+    "aggroRadius": 0,
+    "leash": 0,
+    "boss": true,
+    "attack": {
+      "kind": "spells",
+      "castEvery": 3.2,
+      "castTime": 1,
+      "firstCast": 2,
+      "closeRange": 5.5,
+      "blizzard": { "radius": 5.5, "duration": 4, "every": 0.5, "damage": 8 },
+      "wisps": { "perPlayer": 4, "over": 6, "clear": 5, "apart": 1.5 },
+      "icicles": { "warning": 0.75, "radius": 0.9, "damage": 40, "extra": 4, "spread": 2 },
+      "shards": { "count": 8, "arc": 70, "speed": 10, "duration": 2, "damage": 25 },
+      "summon": { "chance": 0.25, "afterCasts": 10, "perPlayer": 3 }
+    },
+    "drops": [
+      { "item": "essence", "min": 10, "max": 14 },
+      { "item": "bone", "min": 3, "max": 5 }
+    ]
+  },
+  "frost-wisp": {
+    "id": 4,
+    "name": "Frozen wisp",
+    "hp": 25,
+    "armor": 0,
+    "speed": 2.0,
+    "size": 0.6,
+    "halfSize": 0.22,
+    "aggroRadius": 0,
+    "leash": 0,
+    "attack": { "kind": "touch", "damage": 30, "lifetime": 9 },
+    "drops": []
+  }
+}

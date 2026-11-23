@@ -1,0 +1,5 @@
+{
+  "leather-armor": { "slot": "body", "warmth": 12, "defense": 5 },
+  "leather-boots": { "slot": "feet", "warmth": 6, "defense": 3 },
+  "wolf-helmet": { "slot": "head", "warmth": 22, "defense": 7 }
+}

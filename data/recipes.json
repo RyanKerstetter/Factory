@@ -1,9 +1,0 @@
-[
-  { "id": 1, "category": "Tools", "output": "pickaxe", "count": 1, "inputs": { "stick": 5, "twine": 3, "flint": 3 } },
-  { "id": 2, "category": "Tools", "output": "axe", "count": 1, "inputs": { "stick": 5, "twine": 3, "flint": 2 } },
-  { "id": 3, "category": "Tools", "output": "knife", "count": 1, "inputs": { "stick": 1, "twine": 1, "flint": 1 } },
-  { "id": 5, "category": "Stations", "output": "stump", "count": 1, "inputs": { "log": 3 } },
-  { "id": 10, "category": "Stations", "output": "workbench", "count": 1, "inputs": { "plank": 20, "stone": 10 } },
-  { "id": 11, "category": "Stations", "output": "campfire", "count": 1, "inputs": { "log": 3, "stone": 5 } },
-  { "id": 12, "category": "Stations", "output": "sleeping-bag", "count": 1, "inputs": { "leather": 3 } }
-]

@@ -1,107 +1,113 @@
 import {
   BARREL_CAPACITY,
+  CAMPFIRE_CHARCOAL,
+  CAMPFIRE_COOK,
+  CAMPFIRE_COOKED,
+  CAMPFIRE_FUEL,
+  countIn,
+  RACK_INPUT,
+  RACK_OUTPUT,
+  BARREL_OUTPUT,
   BARREL_SOLIDS,
   barrelFraction,
+  burnFraction,
   BARREL_RECIPES,
+  barrelHow,
+  barrelPlan,
+  type Barrel,
+  matchName,
   bucketFor,
   LIQUIDS,
   matches,
   RACK_RECIPES,
   type Match,
   cookFraction,
+  cookingOf,
+  fireRecipes,
   countOf,
+  OVEN_COOK_SPEED,
+  type FireKind,
   getItem,
   HEAT_MAX,
   haveForStation,
   ITEMS,
-  itemId,
-  LIQUID_TANNIN,
   rackFraction,
-  STATION_INPUT_SLOT,
+  STATION_LAYOUT,
   STATION_RECIPES,
-  STATION_TOOL_SLOT,
-  stationRecipe,
   TPS,
-  WORKBENCH_INPUT_SLOTS,
-  WORKBENCH_OUTPUT_SLOT,
-  WORKBENCH_TOOL_SLOT,
+  type StationKind,
   type Entity,
   type Inventory,
   type ItemId,
 } from '../../../packages/shared/src/index.ts'
+import { liquidLook } from './liquids.ts'
 import type { MachineView } from './ui/inventory-view.ts'
-import type { BookEntry } from './ui/recipe-book.ts'
+import type { BookEntry, BookLiquid } from './ui/recipe-book.ts'
+
+// A machine's heat, as a gauge.
+const heatGauge = (heat: number): MachineView['gauges'][number] => ({ label: 'Heat', fraction: heat / HEAT_MAX, text: `${heat}°`, tone: 'heat' })
 
 // What each machine's panel shows (see MachineView): its slots, gauges, what it is doing, its buttons, and its recipes
 // at the side. `player` is the player's inventory and `inv` the machine's, both as they will be once what has been
 // asked for is done. What it is doing shows in its progress arrow and gauges, not in words.
 export function machineView(entity: Entity, player: Inventory, inv: Inventory): MachineView | undefined {
   switch (entity.kind) {
-    case 'stump': {
-      return {
-        inputs: [
-          { index: STATION_TOOL_SLOT, label: 'Tool' },
-          { index: STATION_INPUT_SLOT, label: 'Input' },
-        ],
-        outputs: [{ index: 2, label: 'Output' }],
-        gauges: [],
-        buttons: [],
-        recipes: { title: 'Stump recipes', action: 'Craft', entries: stumpBook(player, inv) },
-      }
-    }
+    case 'stump':
     case 'workbench': {
+      // The tool slot first (marked as one), then what it works from, then what comes out.
+      const layout = STATION_LAYOUT[entity.kind]
       return {
-        inputs: [{ index: WORKBENCH_TOOL_SLOT, label: 'Tool' }, ...WORKBENCH_INPUT_SLOTS.map((index) => ({ index, label: 'Input' }))],
-        outputs: [{ index: WORKBENCH_OUTPUT_SLOT, label: 'Output' }],
+        inputs: [{ index: layout.tool, tool: true }, ...layout.inputs.map((index) => ({ index }))],
+        outputs: [{ index: layout.output }],
         gauges: [],
         buttons: [],
-        recipes: { title: 'Workbench recipes', action: 'Craft', entries: workbenchBook(player, inv) },
+        recipes: { title: entity.kind === 'stump' ? 'Stump recipes' : 'Workbench recipes', action: 'Craft', entries: stationBook(entity.kind, player, inv) },
+        status: stationStatus(entity.kind, entity.recipe, entity.active),
       }
     }
     case 'campfire':
+    case 'oven':
       return {
-        // What cooks above, the fuel under it.
-        inputs: [
-          { index: 1, label: 'Cook' },
-          { index: 0, label: 'Fuel' },
-        ],
-        outputs: [
-          { index: 2, label: 'Cooked' },
-          { index: 3, label: 'Charcoal' },
-        ],
-        gauges: [{ label: 'Heat', fraction: entity.heat / HEAT_MAX, text: `${entity.heat}°`, tone: 'heat' }],
+        // What cooks above, the flame, the fuel under it.
+        inputs: [{ index: CAMPFIRE_COOK }, { index: CAMPFIRE_FUEL }],
+        outputs: [{ index: CAMPFIRE_COOKED }, { index: CAMPFIRE_CHARCOAL }],
+        flame: entity.lit ? burnFraction(entity) : 0,
+        gauges: [heatGauge(entity.heat)],
         buttons: [{ id: entity.lit ? 'douse' : 'light', label: entity.lit ? 'Put out' : 'Light', disabled: false, primary: !entity.lit }],
-        recipes: { title: 'Cooking and fuel', action: '', entries: campfireBook(player, inv) },
+        recipes: { title: entity.kind === 'oven' ? 'Oven' : 'Campfire', action: '', entries: fireBook(entity.kind, player, inv, entity.heat) },
+        status: fireStatus(entity.kind, entity.inv, entity.heat),
       }
     case 'barrel': {
       const liquid = LIQUIDS[entity.liquid] || 'nothing'
       return {
-        inputs: BARREL_SOLIDS.map((index) => ({ index, label: 'In' })),
-        outputs: [{ index: 3, label: 'Out' }],
+        inputs: BARREL_SOLIDS.map((index) => ({ index })),
+        outputs: [{ index: BARREL_OUTPUT }],
         gauges: [
           {
             label: 'Liquid',
             fraction: entity.amount / BARREL_CAPACITY,
             text: entity.amount === 0 ? 'empty' : `${entity.amount}/${BARREL_CAPACITY} ${liquid}`,
-            tone: entity.liquid === LIQUID_TANNIN ? 'tannin' : LIQUIDS[entity.liquid] === 'milk' ? 'milk' : 'water',
+            tone: liquidLook(LIQUIDS[entity.liquid]).tone,
           },
-          { label: 'Heat', fraction: entity.heat / HEAT_MAX, text: `${entity.heat}°`, tone: 'heat' },
+          heatGauge(entity.heat),
         ],
         buttons: [{ id: entity.sealed ? 'unseal' : 'seal', label: entity.sealed ? 'Unseal' : 'Seal', disabled: false, primary: !entity.sealed }],
-        recipes: { title: 'Barrel', action: '', entries: barrelBook(player, inv, entity.liquid, entity.amount) },
+        recipes: { title: 'Barrel', action: '', entries: barrelBook(player, inv, entity.liquid, entity.amount, entity.heat) },
+        status: barrelStatus(entity),
       }
     }
     case 'rack': {
       return {
-        inputs: [{ index: 0, label: 'Hide' }],
-        outputs: [{ index: 1, label: 'Dried' }],
-        gauges: [{ label: 'Heat', fraction: entity.heat / HEAT_MAX, text: `${entity.heat}°`, tone: 'heat' }],
+        inputs: [{ index: RACK_INPUT }],
+        outputs: [{ index: RACK_OUTPUT }],
+        gauges: [heatGauge(entity.heat)],
         buttons: [],
+        status: entity.inv.slots[RACK_INPUT].count > 0 ? `Drying ${matchName(entity.inv.slots[RACK_INPUT].item).toLowerCase()}` : 'Not drying',
         recipes: {
           title: 'Drying rack',
           action: '',
           entries: RACK_RECIPES.map((recipe) =>
-            entry(recipe.index, 'Drying (faster by a fire)', recipe.output, 1, [[recipe.input, 1, haveForStation(player, inv, recipe.input, [0])]], recipe.ticks / TPS),
+            entry(recipe.index, 'Drying', recipe.output, 1, [ingredient(recipe.input, 1, haveForStation(player, inv, recipe.input, [RACK_INPUT]))], recipe.ticks / TPS),
           ),
         },
       }
@@ -111,18 +117,36 @@ export function machineView(entity: Entity, player: Inventory, inv: Inventory): 
   }
 }
 
+// What a machine is doing now, in a few words for the foot of its panel ("Crafting planks"; "Not crafting" while it is
+// idle).
+function stationStatus(kind: StationKind, recipe: number, active: boolean | number): string {
+  const making = active ? STATION_RECIPES[kind][recipe - 1] : undefined
+  return making ? `Crafting ${matchName(making.output, making.count > 1).toLowerCase()}` : 'Not crafting'
+}
+function fireStatus(kind: FireKind, inv: Inventory, heat: number): string {
+  const raw = inv.slots[CAMPFIRE_COOK]
+  const cooks = raw.count > 0 ? cookingOf(raw.item, kind) : undefined
+  if (!cooks) return kind === 'oven' ? 'Not baking' : 'Not cooking'
+  const what = matchName(raw.item).toLowerCase()
+  return heat >= cooks.heat ? `${cooks.oven ? 'Baking' : 'Cooking'} ${what}` : `Waiting for ${cooks.heat}° to cook ${what}`
+}
+function barrelStatus(barrel: Barrel): string {
+  const plan = barrelPlan(barrel, false)
+  if (!plan.recipe || !plan.ready) return 'Not making anything'
+  const made = plan.recipe.output ? matchName(plan.recipe.output, true) : LIQUIDS[plan.recipe.liquidInto]
+  return `Making ${made.toLowerCase()}`
+}
+
 // How far a machine is through what it is doing, 0 to 1, drawn between the factory's last tick and the next.
 export function machineProgress(entity: Entity, alpha: number): number | undefined {
   switch (entity.kind) {
-    case 'stump': {
-      const recipe = stationRecipe('stump', entity.inv)
-      return recipe && entity.active ? (entity.progress + alpha) / recipe.ticks : 0
-    }
+    case 'stump':
     case 'workbench': {
-      const recipe = STATION_RECIPES.workbench[entity.recipe - 1]
+      const recipe = STATION_RECIPES[entity.kind][entity.recipe - 1]
       return recipe && entity.active ? (entity.progress + alpha) / recipe.ticks : 0
     }
     case 'campfire':
+    case 'oven':
       return cookFraction(entity)
     case 'barrel':
       return barrelFraction(entity)
@@ -138,7 +162,7 @@ function entry(
   category: string,
   output: ItemId,
   count: number,
-  inputs: ReadonlyArray<readonly [ItemId, number, number]>,
+  inputs: BookEntry['inputs'],
   seconds?: number,
   tool?: { name: string; have: boolean },
 ): BookEntry {
@@ -147,29 +171,31 @@ function entry(
     category,
     output,
     count,
-    inputs: inputs.map(([item, need, have]) => ({ item, need, have })),
+    inputs,
     ...(tool ? { tool } : {}),
     ...(seconds !== undefined ? { seconds } : {}),
-    ready: inputs.every(([, need, have]) => have >= need) && (tool?.have ?? true),
+    ready: inputs.every((input) => input.have >= input.need) && (tool?.have ?? true),
   }
 }
 
-// The stump's recipes. What the player has counts what is already in the stump.
-function stumpBook(player: Inventory, inv: Inventory): BookEntry[] {
-  return STATION_RECIPES.stump.map((recipe) => {
-    const [input, need] = recipe.inputs[0]
-    const toolHere =
-      recipe.tool === undefined ||
-      [...player.slots, inv.slots[STATION_TOOL_SLOT]].some((slot) => slot && slot.count > 0 && getItem(slot.item).tool === recipe.tool)
-    const tool = recipe.tool ? { name: recipe.tool[0].toUpperCase() + recipe.tool.slice(1), have: toolHere } : undefined
-    return entry(recipe.index, recipe.category, recipe.output, recipe.count, [[input, need, haveForStation(player, inv, input, [STATION_INPUT_SLOT])]], recipe.ticks / TPS, tool)
-  })
+// How often (ms) an "any of a kind" ingredient shows the next item of the kind.
+const CYCLE_MS = 1_000
+
+// An ingredient in a book, `have` of it to hand: an item as itself; "#tag" (any item with the tag) named for the kind,
+// its picture going through every item of it, one a second.
+function ingredient(match: Match, need: number, have: number): BookEntry['inputs'][number] {
+  if (typeof match !== 'string') return { item: match, need, have }
+  const kind = ITEMS.filter((item) => matches(match, item.id))
+  const shown = kind[Math.floor(Date.now() / CYCLE_MS) % Math.max(1, kind.length)]?.id ?? 0
+  return { item: shown, need, have, label: `Any ${match.slice(1)} (${shown ? getItem(shown).name : '…'})` }
 }
 
-// The workbench's recipes, in the order their categories first come. What the player has counts what is already in
-// the workbench.
-function workbenchBook(player: Inventory, inv: Inventory): BookEntry[] {
-  const recipes = STATION_RECIPES.workbench
+// A station's recipes (the stump's, the workbench's), in the order their categories first come. What the player has
+// counts what is already in the station, and a tool it needs counts whether it is on the player or in the station's tool
+// slot (it goes in when Craft is pressed, and is not used up).
+function stationBook(kind: StationKind, player: Inventory, inv: Inventory): BookEntry[] {
+  const layout = STATION_LAYOUT[kind]
+  const recipes = STATION_RECIPES[kind]
   const categories = [...new Set(recipes.map((recipe) => recipe.category))]
   return [...recipes]
     .sort((a, b) => categories.indexOf(a.category) - categories.indexOf(b.category))
@@ -179,48 +205,75 @@ function workbenchBook(player: Inventory, inv: Inventory): BookEntry[] {
         recipe.category,
         recipe.output,
         recipe.count,
-        recipe.inputs.map(([item, need]) => [item, need, haveForStation(player, inv, item, WORKBENCH_INPUT_SLOTS)] as const),
+        recipe.inputs.map(([match, need]) => ingredient(match, need, haveForStation(player, inv, match, layout.inputs))),
         recipe.ticks / TPS,
-        // A tool it needs (a knife for a spear) has to be on the player, and is not used up.
         recipe.tool
           ? {
               name: `${recipe.tool[0].toUpperCase()}${recipe.tool.slice(1)} (kept)`,
-              have: player.slots.some((slot) => slot.count > 0 && getItem(slot.item).tool === recipe.tool),
+              have: [...player.slots, inv.slots[layout.tool]].some((slot) => slot !== undefined && slot.count > 0 && getItem(slot.item).tool === recipe.tool),
             }
           : undefined,
       ),
     )
 }
 
-// What a campfire cooks, and what it burns (each fuel as the thing it is, "taking" as long as it burns).
-function campfireBook(player: Inventory, inv: Inventory): BookEntry[] {
-  const cooking = ITEMS.filter((item) => item.cooks).map((item) =>
-    entry(item.id, 'Cooking', itemId(item.cooks!.into), 1, [[item.id, 1, haveForStation(player, inv, item.id, [1])]], item.cooks!.ticks / TPS),
-  )
-  const fuels = ITEMS.filter((item) => item.fuel).map((item) =>
-    entry(1000 + item.id, `Fuel (heat it reaches)`, item.id, item.fuel!.heat, [[item.id, 1, haveForStation(player, inv, item.id, [0])]], item.fuel!.ticks / TPS),
-  )
-  return [...cooking, ...fuels]
+// What a campfire or an oven cooks (and how hot it has to be: it is `heat` now; an oven quicker, and what only an oven
+// can).
+function fireBook(kind: FireKind, player: Inventory, inv: Inventory, heat: number): BookEntry[] {
+  const speed = kind === 'oven' ? OVEN_COOK_SPEED : 1
+  return fireRecipes(kind).map((recipe) => ({
+    ...entry(recipe.index, recipe.oven ? 'Baking' : 'Cooking', recipe.into, 1, [ingredient(recipe.input, 1, haveForStation(player, inv, recipe.input, [CAMPFIRE_COOK]))], recipe.ticks / TPS / speed),
+    heat: { need: recipe.heat, now: heat },
+  }))
 }
 
-// What a barrel makes (see "barrel" in stations.json). A liquid shows as a bucket of it, and a "#tag" ingredient as the
-// first item with that tag. What the player has counts what is in the barrel, and the buckets of it they carry.
-function barrelBook(player: Inventory, inv: Inventory, liquid: number, amount: number): BookEntry[] {
+// How a liquid looks in a book.
+function bookLiquid(liquid: number): BookLiquid {
+  const name = LIQUIDS[liquid] || 'water'
+  return { name, tone: liquidLook(name).tone }
+}
+
+// What a barrel makes (see "barrel" in stations.json). A liquid shows as itself (what the player has counts what is in
+// the barrel and the buckets of it they carry); a "#tag" ingredient as the kind, its picture going through every item of
+// it, one a second; and the heat a recipe needs, against how hot the barrel is (`heat`).
+function barrelBook(player: Inventory, inv: Inventory, liquid: number, amount: number, heat: number): BookEntry[] {
+  const everySlot = [...player.slots.keys()]
   const solid = (match: Match): number =>
-    player.slots.reduce((sum, slot) => sum + (slot.count > 0 && matches(match, slot.item) ? slot.count : 0), 0) +
-    BARREL_SOLIDS.reduce((sum, i) => sum + (inv.slots[i].count > 0 && matches(match, inv.slots[i].item) ? inv.slots[i].count : 0), 0)
-  const shown = (match: Match): ItemId => (typeof match === 'string' ? (ITEMS.find((item) => matches(match, item.id))?.id ?? 0) : match)
+    countIn(player, everySlot, (item) => matches(match, item)) + countIn(inv, BARREL_SOLIDS, (item) => matches(match, item))
   return BARREL_RECIPES.map((recipe) => {
-    const inputs: Array<readonly [ItemId, number, number]> = []
+    const inputs: Array<BookEntry['inputs'][number]> = []
     if (recipe.liquid) {
       const bucket = bucketFor(recipe.liquid)
-      inputs.push([bucket, recipe.liquidMin, (liquid === recipe.liquid ? amount : 0) + countOf(player, bucket)])
+      const each = recipe.liquidPerSolid > 0 ? ` (${recipe.liquidPerSolid} per ${matchName(recipe.solids[0][0])})` : ''
+      const name = LIQUIDS[recipe.liquid][0].toUpperCase() + LIQUIDS[recipe.liquid].slice(1)
+      inputs.push({
+        item: bucket,
+        need: recipe.liquidPerSolid || recipe.liquidMin,
+        have: (liquid === recipe.liquid ? amount : 0) + countOf(player, bucket),
+        liquid: bookLiquid(recipe.liquid),
+        ...(each ? { label: name + each } : {}),
+      })
     }
-    for (const [match, need] of recipe.solids) inputs.push([shown(match), need, solid(match)])
-    for (const [match, per] of recipe.perBucket) inputs.push([shown(match), per, solid(match)])
-    const output = recipe.output || bucketFor(recipe.liquidInto)
-    const tagged = [...recipe.solids, ...recipe.perBucket].some(([match]) => typeof match === 'string')
-    const category = recipe.category + (tagged ? ' (any of the kind)' : '') + (recipe.perBucket.length ? ', per bucket' : '') + (recipe.heat ? `, at ${recipe.heat}°` : '')
-    return entry(recipe.index, category, output, recipe.output ? recipe.count : 1, inputs, recipe.ticks / TPS)
+    for (const [match, need] of recipe.solids) inputs.push(ingredient(match, need, solid(match)))
+    for (const [match, per] of recipe.perBucket) {
+      const input = ingredient(match, per, solid(match))
+      inputs.push({ ...input, label: `${input.label ?? getItem(input.item).name} (${per} per bucket)` })
+    }
+    const how = barrelHow(recipe)
+    // A dry recipe: nothing liquid may be in the barrel.
+    const dry = recipe.dry ? { ok: amount === 0 } : undefined
+    return {
+      id: recipe.index,
+      category: recipe.sealed ? 'Sealed' : 'Open',
+      output: recipe.output || bucketFor(recipe.liquidInto),
+      ...(recipe.output ? {} : { outputLiquid: bookLiquid(recipe.liquidInto) }),
+      count: recipe.output ? recipe.count : 1,
+      inputs,
+      ...(recipe.heat ? { heat: { need: recipe.heat, now: heat } } : {}),
+      ...(dry ? { dry } : {}),
+      seconds: recipe.ticks / TPS,
+      how: how.text,
+      ready: inputs.every((input) => input.have >= input.need) && heat >= recipe.heat && (dry?.ok ?? true),
+    }
   })
 }

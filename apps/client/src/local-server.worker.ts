@@ -1,4 +1,4 @@
-import { TICK_MS, type RequestMessage, type TerrainSettings } from '../../../packages/shared/src/index.ts'
+import { TICK_MS, type InputMessage, type LogMessage, type RequestMessage, type StateMessage, type TerrainSettings } from '../../../packages/shared/src/index.ts'
 import { GameRoom, type ServerPlayer } from '../../server/src/game-room.ts'
 
 // Singleplayer: the game server, run in a Web Worker in the player's own browser. It is the very GameRoom the hosted
@@ -10,7 +10,7 @@ import { GameRoom, type ServerPlayer } from '../../server/src/game-room.ts'
 export type ToLocalServer =
   | { t: 'start'; seed: number; name: string; terrain?: Partial<TerrainSettings> }
   | { t: 'req'; message: RequestMessage }
-  | { t: 'input'; i: Array<[number, number]> }
+  | { t: 'input'; i: InputMessage['i'] }
   | { t: 'ack'; s: number }
   | { t: 'ping'; c: number }
   // Stop ticking (the page terminates the worker when the game ends; tests, which cannot, send this).
@@ -18,8 +18,8 @@ export type ToLocalServer =
 
 // What it sends back: the log and the state (as a server would), answers to requests and pings, and a failure.
 export type FromLocalServer =
-  | { t: 'log'; message: unknown }
-  | { t: 'state'; message: unknown }
+  | { t: 'log'; message: LogMessage }
+  | { t: 'state'; message: StateMessage }
   | { t: 'req-ack'; s: number }
   | { t: 'pong'; c: number; tick: number }
   | { t: 'error'; message: string }

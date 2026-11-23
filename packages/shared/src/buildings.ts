@@ -1,6 +1,6 @@
 // Everything that stands on a tile: the factory's buildings; what is found in the world (trees, bushes, rocks, grass,
-// and the saplings and berry sprouts planted from acorns and berries); and what players put up (fences, gates, the
-// chopping stump, garden plots, feed boxes). Each takes one tile.
+// flint, and the saplings and berry sprouts planted from acorns and berries); what players put up (fences, gates, the
+// stations and machines, garden plots, feed boxes, sleeping bags); and the dungeon's ice door. Each takes one tile.
 export type BuildingKind =
   | 'miner'
   | 'extractor'
@@ -19,18 +19,20 @@ export type BuildingKind =
   | 'feeder'
   | 'workbench'
   | 'campfire'
+  | 'oven'
   | 'barrel'
   | 'rack'
   | 'loose'
   | 'bed'
   | 'door'
+  | 'well'
 
 export type BuildingDef = {
   kind: BuildingKind
   // Its number in a chunk's hash, so a kind never hashes the same as another.
   code: number
   name: string
-  // One line on what it does, for the build bar.
+  // One line on what it does.
   description: string
   // Whether the way it faces matters (belts and extractors carry items that way).
   rotatable: boolean
@@ -49,7 +51,8 @@ export type BuildingDef = {
   // Something a player put down from an item (see `places` in items.json): hitting it with an axe takes it down, and
   // gives the item back, with whatever was in it. A fist does nothing to it.
   breakable: boolean
-  // How much hitting it takes to break (see `hitDamage` in tools.ts for how much each hit does; 0 for buildings).
+  // How much hitting it takes to break (see `resourceDamage` in weapons.ts for how much each hit does; 0 for the
+  // factory's buildings, which are not hit).
   maxHp: number
 }
 
@@ -66,8 +69,8 @@ const FACTORY: Flags = {
   maxHp: 0,
 }
 const NATURAL: Flags = { ...FACTORY, natural: true, maxHp: 1 }
-// Hit points are counted in weapon damage (see weapons.json): an axe does 3, so what a player put down takes two hits
-// with one, a tree ten, and a rock four with a pickaxe.
+// Hit points are counted in a weapon's `harvest` (see weapons.json): an axe's is 3, so what a player put down takes two
+// hits with one, a tree ten, and a rock four with a pickaxe.
 const PLACED: Flags = { ...FACTORY, breakable: true, maxHp: 6 }
 // A building a player puts down and uses: it has slots to open, takes items by hand, and stands in the way.
 const MACHINE: Flags = { ...PLACED, hasInventory: true, acceptsDeposits: true, solid: true, blocksAnimals: true }
@@ -88,6 +91,15 @@ export const BUILDINGS: Readonly<Record<BuildingKind, BuildingDef>> = {
     code: 21,
     name: 'Sleeping bag',
     description: 'Sleep in it to wake up here when you are knocked out.',
+  },
+  well: {
+    ...PLACED,
+    kind: 'well',
+    code: 24,
+    name: 'Well',
+    description: 'Fresh water, like a pond: right click it with an empty bucket to fill it.',
+    solid: true,
+    blocksAnimals: true,
   },
   miner: {
     ...FACTORY,
@@ -137,7 +149,7 @@ export const BUILDINGS: Readonly<Record<BuildingKind, BuildingDef>> = {
     kind: 'bush',
     code: 6,
     name: 'Bush',
-    description: 'Punch it for twine; when it is gone it drops berries. Walking through it is slow.',
+    description: 'Break it for fiber and berries. Walking through it is slow.',
     slowsPlayers: true,
     maxHp: 10,
   },
@@ -170,7 +182,7 @@ export const BUILDINGS: Readonly<Record<BuildingKind, BuildingDef>> = {
     kind: 'loose',
     code: 20,
     name: 'Loose item',
-    description: 'Something lying in the ground (a piece of flint, a thrown spear): hit it to knock it loose.',
+    description: 'Something lying in the ground (a piece of flint): hit it to knock it loose.',
   },
   grass: {
     ...NATURAL,
@@ -197,15 +209,11 @@ export const BUILDINGS: Readonly<Record<BuildingKind, BuildingDef>> = {
     blocksAnimals: true,
   },
   stump: {
-    ...PLACED,
+    ...MACHINE,
     kind: 'stump',
     code: 13,
     name: 'Stump',
-    description: 'Put a tool and what it works on in, and press Craft. It works while you stay at it.',
-    hasInventory: true,
-    acceptsDeposits: true,
-    solid: true,
-    blocksAnimals: true,
+    description: 'Pick a recipe at the side and press Craft: its tool goes in, and it works while you stay at it.',
   },
   plot: {
     ...PLACED,
@@ -229,12 +237,19 @@ export const BUILDINGS: Readonly<Record<BuildingKind, BuildingDef>> = {
     name: 'Campfire',
     description: 'Burns fuel for heat, which cooks food and warms what is beside it. Logs sometimes leave charcoal, which burns hotter.',
   },
+  oven: {
+    ...MACHINE,
+    kind: 'oven',
+    code: 23,
+    name: 'Makeshift oven',
+    description: 'A stone oven: burns fuel like a campfire, but cooks twice as fast, and bakes dough into bread, which a campfire cannot.',
+  },
   barrel: {
     ...MACHINE,
     kind: 'barrel',
     code: 18,
     name: 'Barrel',
-    description: 'Holds eight buckets of liquid. Sealed, it composts, boils bark into tannin, or tans hides into leather.',
+    description: 'Holds eight buckets of liquid. It composts, boils bark and water into tannin and salt water into salt, and tans hides into leather.',
   },
   rack: {
     ...MACHINE,
@@ -244,16 +259,19 @@ export const BUILDINGS: Readonly<Record<BuildingKind, BuildingDef>> = {
     description: 'Dries a hide, one at a time; quicker the hotter it is beside a campfire.',
   },
   feeder: {
-    ...PLACED,
+    ...MACHINE,
     kind: 'feeder',
     code: 15,
     name: 'Feed box',
     description: 'Animals nearby eat what they like from it, which leaves them well fed and ready to breed.',
-    hasInventory: true,
-    acceptsDeposits: true,
-    solid: true,
-    blocksAnimals: true,
   },
+}
+
+// The fires: the campfire and the oven, which burn fuel alike (see machines.ts), warm players, and heat what is beside
+// them.
+export type FireKind = 'campfire' | 'oven'
+export function isFireKind(kind: string): kind is FireKind {
+  return kind === 'campfire' || kind === 'oven'
 }
 
 // The factory's buildings, which are what a `build` command can make. The factory is put away for now (nothing in the
@@ -264,20 +282,34 @@ export function isBuildingKind(value: unknown): value is BuildingKind {
   return typeof value === 'string' && Object.hasOwn(BUILDINGS, value)
 }
 
-// What part of its tile a solid building stands in the way with, as boxes in fractions of a tile ([left, top, right,
-// bottom], x east and y south): its trunk, its body, its posts, rather than the whole tile, so a player can walk up close
-// round it and between a drying rack's posts. A solid building not listed here fills its tile.
+// The standard sizes a solid building stands in the way with, in fractions of its tile ([left, top, right, bottom]).
+// Every building uses one of these rather than a size of its own, so two side by side line up exactly, with no small
+// lip between them to catch on (a stump a hair wider than the workbench beside it). Pick the nearest one to the model
+// and fit the model to it. (Players also slip round a corner they only just catch: CORNER_SLIP in movement.ts.)
+export const FOOTPRINT = {
+  // Most things put down: the stations, fires, chests, feed boxes, the well; and rocks.
+  block: [0.1, 0.1, 0.9, 0.9],
+  // Small round things: a barrel.
+  small: [0.17, 0.17, 0.83, 0.83],
+  // A tree's trunk: wide enough that the gap between two trees side by side (0.56 tiles) is narrower than a player
+  // (0.6), with room to spare, so nobody slips between them.
+  trunk: [0.28, 0.28, 0.72, 0.72],
+  // A thin frame across the tile, post to post (the drying rack: nobody walks through under the hide).
+  frame: [0.07, 0.42, 0.93, 0.58],
+} as const satisfies Record<string, readonly [number, number, number, number]>
+
+// What part of its tile a solid building stands in the way with: its trunk, its body, its frame, rather than the whole
+// tile, so a player can walk up close round it. A solid building not listed here fills its tile.
 export const BUILDING_BOUNDS: Partial<Record<BuildingKind, ReadonlyArray<readonly [number, number, number, number]>>> = {
-  tree: [[0.32, 0.32, 0.68, 0.68]],
-  rock: [[0.08, 0.1, 0.92, 0.9]],
-  chest: [[0.06, 0.2, 0.94, 0.8]],
-  stump: [[0.12, 0.12, 0.88, 0.88]],
-  workbench: [[0.02, 0.15, 0.98, 0.85]],
-  campfire: [[0.14, 0.14, 0.86, 0.86]],
-  barrel: [[0.18, 0.18, 0.82, 0.82]],
-  rack: [
-    [0.07, 0.42, 0.19, 0.58],
-    [0.81, 0.42, 0.93, 0.58],
-  ],
-  feeder: [[0.05, 0.22, 0.95, 0.78]],
+  tree: [FOOTPRINT.trunk],
+  rock: [FOOTPRINT.block],
+  chest: [FOOTPRINT.block],
+  stump: [FOOTPRINT.block],
+  workbench: [FOOTPRINT.block],
+  campfire: [FOOTPRINT.block],
+  oven: [FOOTPRINT.block],
+  well: [FOOTPRINT.block],
+  barrel: [FOOTPRINT.small],
+  rack: [FOOTPRINT.frame],
+  feeder: [FOOTPRINT.block],
 }

@@ -9,8 +9,9 @@ import {
   BUILDINGS,
   checkBuild,
   checkPlace,
-  countOf,
+  canAfford,
   craftIn,
+  PLAYER_CRAFT_SPEED,
   createEntity,
   cropIsGrown,
   cropOfSeed,
@@ -25,16 +26,19 @@ import {
   withMachine,
   STATION_RECIPES,
   waterAt,
+  isSeaAt,
   isInDungeons,
-  workbenchCan,
-  workbenchHasTool,
+  stationCan,
+  stationHasTool,
+  STATION_LAYOUT,
   GATE_OPEN,
   GATE_SHUT,
   gateIsOpen,
   getCrop,
   getItem,
   getRecipe,
-  GRASS_SEED_CHANCE,
+  DROP_TABLES,
+  type DropList,
   hashInts,
   hasInventory,
   resourceDamage,
@@ -44,21 +48,19 @@ import {
   isBeltLike,
   isHittable,
   isNatural,
+  isRaftItem,
   isWithinReach,
+  isStation,
   ITEMS,
   itemId,
   linkSpecsFor,
   linkToState,
-  moveSlot,
   NO_ITEM,
   oreAt,
   PUNCH_COOLDOWN_TICKS,
-  removeItems,
-  roomFor,
-  roomInBuilding,
-  stationRecipe,
   SUB,
   takeFromSlot,
+  transferItems,
   toolIn,
   type BuildingKind,
   type Command,
@@ -77,6 +79,7 @@ import {
   stackLimit,
   HOTBAR_SLOTS,
   CHEST_NAME_LENGTH,
+  tileMiddle,
 } from '../../../packages/shared/src/index.ts'
 import type { Animals } from './animals.ts'
 import type { Combat } from './combat.ts'
@@ -90,7 +93,8 @@ export type CommandContext = {
   terrain: Terrain
   // The tick the command runs on.
   tick: number
-  // Who asked, the last tick they punched on (for PUNCH_COOLDOWN_TICKS), and the work station they have open.
+  // Who asked: the last tick they punched on (for PUNCH_COOLDOWN_TICKS), the work station they have open, when they can
+  // attack again, their health and when they can eat again (for eating), and the sleeping bag they last slept in.
   player: {
     id: number
     position: PlayerPosition
@@ -98,11 +102,16 @@ export type CommandContext = {
     lastPunchTick: number
     using: number
     attackReadyAt: number
-    // Their health (for eating), the sleeping bag they last slept in, and a push carrying them over a few ticks (a dash).
+    // When they started holding the attack button down to charge an attack (see `charge`).
+    chargeFrom?: number
     health?: number
     eatReadyAt?: number
     bed?: { x: number; y: number }
-    slide?: { vx: number; vy: number; ticks: number; after?: number }
+    // Hand crafting: the recipes waiting to be made, the one being made first, how many ticks have gone into it, and
+    // whether their inventory is open (with nothing else), which it only goes on while.
+    crafting?: number[]
+    craftingTicks?: number
+    handOpen?: boolean
   }
   // Where every player is, for whether a gate is open.
   players?: () => ReadonlyArray<PlayerPosition>
@@ -120,36 +129,47 @@ export type CommandContext = {
   combat?: Combat
   // Whether a chest is guarded (a dungeon's, while its skeletons stand), so it cannot be opened.
   guarded?: (id: number) => boolean
+  // The rafts (the room's): putting one down on a tile, on the rope of the player who asked (false if it does not fit
+  // there: see `raftFits`); an oar's stroke by the player who asked, pushing the raft they are aboard (if any) the way
+  // `angle` points; a rope on a raft's post (or off it again); tying one to a fence, whether one is tied to a fence,
+  // and untying it.
+  rafts?: {
+    place(x: number, y: number): boolean
+    row(angle: number): void
+    rope(raft: number, slot: number): CommandOutcome
+    tie(raft: number, fence: { id: number; x: number; y: number }): CommandOutcome
+    tiedTo(fence: number): boolean
+    untie(fence: number): boolean
+  }
 }
 
 export type CommandOutcome = { ok: true; moved?: number } | { ok: false; why: Refusal }
 
-// What hitting things drops, and when. How many logs, acorns, berries, stone and flint are a hash of the seed and the
-// plant or rock, so the same one always drops the same.
+// What hitting things drops, and when (what each plant and rock drops is in data/drops.json: see DROP_TABLES). How
+// many is a hash of the seed and the plant or rock, so the same one always drops the same.
 //
 // - A tree: a bare-handed punch does not hurt it, but every STICK_EVERY punches knock one of its sticks loose, with a
 //   leaf (it has TREE_STICKS, and grows them back slowly; see constants.ts). A knife does the same but strips bark
 //   instead of a stick. Only an axe chops it, and when it falls it drops its logs, acorns and leaves and whatever
 //   sticks are still on it.
-// - A bush: every hit breaks it a little (an axe twice as much), dropping twine each time TWINE_EVERY of its hp has
-//   gone, and berries when it is gone.
+// - A bush: every hit breaks it a little (an axe twice as much); when it is gone it drops its fiber and berries.
 // - A rock: only a pickaxe breaks it, a little each hit, and when it is gone it drops stone and flint.
-// - Grass: pulled up by hand, it gives a seed GRASS_SEED_CHANCE percent of the time; cut with a knife, it gives hay.
+// - Grass: pulled up by hand, it now and then gives a seed; cut with a knife, it gives hay.
 // - A garden plot with a grown crop gives the crop's produce and seeds (see crops.json), and stays, empty, unhurt; one
 //   with a crop still growing gives the seed back; an empty one is taken down with an axe and given back.
 // - Anything else a player put down (fences, gates, the stump, feed boxes) only comes down to an axe, and is given
 //   back, with whatever was in it.
 // - A sapling or berry sprout is dug back up as its acorn or berries.
-export const STICK_EVERY = 6
-export const TWINE_EVERY = 4
+export const STICK_EVERY = DROP_TABLES.tree.punchesPerBranch
 
 // What a hit drops: by item key and count, `stack` for a pile that lands as one (what was in a broken box).
 export type Dropped = Array<[string, number] | [string, number, 'stack']>
 export type Hit = { drops: Dropped } | { refused: Refusal }
 
-// The item that puts a kind of building down (a fence item puts up a fence).
+// The item that puts a kind of building down (a fence item puts up a fence), by kind.
+const PLACED_BY = new Map(ITEMS.flatMap((item) => (item.places ? [[item.places, item.key] as const] : [])))
 function itemPlacing(kind: BuildingKind): string | undefined {
-  return ITEMS.find((item) => item.places === kind)?.key
+  return PLACED_BY.get(kind)
 }
 
 // A hit on a plant, a rock or a building with a weapon (see `resourceDamage` in weapons.ts for how much it does).
@@ -158,17 +178,25 @@ export function hit(context: CommandContext, target: Entity, tool: ToolKind | un
   // A roll that is different on every hit, for what can come of any one hit.
   const rollNow = (salt: number, below: number): number => hashInts(context.seed, target.id, context.tick, salt) % below
   const fell = (): void => context.emit({ t: 'remove', id: target.id })
-  // Nothing put in a dungeon (its chest, its door) can be broken; what is stuck in the ground there (a thrown spear) is
-  // knocked loose as anywhere.
+  // Nothing put in a dungeon (its chest, its door) can be broken; what lies loose in the ground there is knocked loose
+  // as anywhere.
   if (isInDungeons(target.x, target.y) && target.kind !== 'loose') return { refused: 'dungeon' }
   const damage = resourceDamage(target.kind, weapon, tool)
+  // What a list in drops.json comes to for this plant or rock: how many of each by a roll kept for it, any `chance`
+  // rolled afresh.
+  const from = (list: DropList, salt: number): Dropped =>
+    list.flatMap((entry, i): Dropped => {
+      if (entry.chance < 100 && rollNow(salt + i * 2 + 1, 100) >= entry.chance) return []
+      const count = entry.min + roll(salt + i * 2, entry.max - entry.min + 1)
+      return count > 0 ? [[getItem(entry.item).key, count]] : []
+    })
   switch (target.kind) {
     case 'sapling':
       fell()
-      return { drops: [['acorn', 1]] }
+      return { drops: from(DROP_TABLES.sapling.dug, 100) }
     case 'sprout':
       fell()
-      return { drops: [['berries', 1]] }
+      return { drops: from(DROP_TABLES.sprout.dug, 120) }
     case 'tree': {
       if (damage === 0) {
         if (target.sticks === 0) return { refused: 'bare' }
@@ -178,7 +206,7 @@ export function hit(context: CommandContext, target: Entity, tool: ToolKind | un
           return { drops: [] }
         }
         context.emit({ t: 'sticks', id: target.id, sticks: target.sticks - 1, punches: 0 })
-        return { drops: [[tool === 'knife' ? 'bark' : 'stick', 1], ['leaves', 1]] }
+        return { drops: tool === 'knife' ? from(DROP_TABLES.tree.branchWithKnife, 160) : from(DROP_TABLES.tree.branch, 140) }
       }
       const hp = target.hp - damage
       if (hp > 0) {
@@ -187,20 +215,16 @@ export function hit(context: CommandContext, target: Entity, tool: ToolKind | un
       }
       const sticks = target.sticks
       fell()
-      return { drops: [['log', 2 + roll(1, 3)], ['acorn', 1 + roll(2, 2)], ['stick', sticks], ['leaves', 2 + roll(9, 3)]] }
+      return { drops: [...from(DROP_TABLES.tree.felled, 180), ['stick', sticks]] }
     }
     case 'bush': {
       const hp = target.hp - damage
       if (hp > 0) {
-        // Twine for each multiple of TWINE_EVERY the bush's lost hp has passed with this hit. (Worked out before the
-        // event, which changes `target` as it is applied.)
-        const max = BUILDINGS.bush.maxHp
-        const twine = Math.floor((max - hp) / TWINE_EVERY) - Math.floor((max - target.hp) / TWINE_EVERY)
         context.emit({ t: 'hp', id: target.id, hp })
-        return { drops: [['twine', twine]] }
+        return { drops: [] }
       }
       fell()
-      return { drops: [['berries', 2 + roll(3, 1)]] }
+      return { drops: from(DROP_TABLES.bush.broken, 200) }
     }
     case 'rock': {
       if (damage === 0) return { refused: 'needsPickaxe' }
@@ -210,7 +234,7 @@ export function hit(context: CommandContext, target: Entity, tool: ToolKind | un
         return { drops: [] }
       }
       fell()
-      return { drops: [['stone', 2 + roll(4, 3)], ['flint', 1 + roll(5, 2)]] }
+      return { drops: from(DROP_TABLES.rock.broken, 220) }
     }
     case 'loose':
       // Knocked loose by any hit.
@@ -218,8 +242,7 @@ export function hit(context: CommandContext, target: Entity, tool: ToolKind | un
       return { drops: [[getItem(target.item).key, target.count]] }
     case 'grass':
       fell()
-      if (tool === 'knife') return { drops: [['hay', 1]] }
-      return { drops: rollNow(6, 100) < GRASS_SEED_CHANCE ? [['wheat-seed', 1]] : [] }
+      return { drops: tool === 'knife' ? from(DROP_TABLES.grass.cut, 260) : from(DROP_TABLES.grass.pulled, 240) }
     case 'plot': {
       const crop = getCrop(target.crop)
       if (crop) {
@@ -228,7 +251,7 @@ export function hit(context: CommandContext, target: Entity, tool: ToolKind | un
         if (!grown && !tool) return { refused: 'unripe' }
         const emptied = entityToState(target)
         if (emptied.kind === 'plot') context.emit({ t: 'set', e: { ...emptied, crop: 0, growth: 0 } })
-        const key = (id: ItemId): string => ITEMS.find((item) => item.id === id)!.key
+        const key = (id: ItemId): string => getItem(id).key
         if (!grown) return { drops: [[key(crop.seed), 1]] }
         const produce = crop.produceMin + rollNow(7, crop.produceMax - crop.produceMin + 1)
         const seeds = crop.seedsMin + rollNow(8, crop.seedsMax - crop.seedsMin + 1)
@@ -255,7 +278,7 @@ function breakStructure(context: CommandContext, target: Entity, damage: number)
   const item = itemPlacing(target.kind)
   if (item) drops.push([item, 1])
   if (hasInventory(target)) {
-    for (const { item: id, count } of inventoryTotals(target.inv)) drops.push([ITEMS.find((def) => def.id === id)!.key, count, 'stack'])
+    for (const { item: id, count } of inventoryTotals(target.inv)) drops.push([getItem(id).key, count, 'stack'])
   }
   context.emit({ t: 'remove', id: target.id })
   return { drops }
@@ -406,23 +429,12 @@ export function runCommand(context: CommandContext, command: Command): CommandOu
       if (command.k === 'put' && !BUILDINGS[entity.kind].acceptsDeposits) return { ok: false, why: 'noDeposit' }
       if (entity.kind === 'barrel' && entity.sealed) return { ok: false, why: 'sealed' }
       if (context.guarded?.(entity.id)) return { ok: false, why: 'guarded' }
-      const from = command.k === 'take' ? entity.inv : player.inventory
-      const items: ItemId[] = command.item === NO_ITEM ? inventoryTotals(from).map((total) => total.item) : [command.item]
-      let left = command.max
+      // Worked out on a copy of the building; the moves are sent, and change the real one the same way.
+      const from = command.k === 'put' ? command.slot : undefined
+      const moves = transferItems(player.inventory, { ...entity, inv: cloneInventory(entity.inv) }, command.item, command.max, command.k, from)
       let moved = 0
-      for (const item of items) {
-        if (left === 0) break
-        const room = command.k === 'take' ? roomFor(player.inventory, item, left) : roomInBuilding(entity, item, left)
-        const count = Math.min(left, countOf(from, item), room)
-        if (count <= 0) continue
-        if (command.k === 'take') {
-          context.emit({ t: 'inv', id: entity.id, item, delta: -count })
-          addItems(player.inventory, item, count)
-        } else {
-          removeItems(player.inventory, item, count)
-          context.emit({ t: 'inv', id: entity.id, item, delta: count })
-        }
-        left -= count
+      for (const [item, count] of moves) {
+        context.emit({ t: 'inv', id: entity.id, item, delta: command.k === 'take' ? -count : count })
         moved += count
       }
       return moved > 0 ? { ok: true, moved } : { ok: false, why: 'nothing' }
@@ -498,8 +510,9 @@ export function runCommand(context: CommandContext, command: Command): CommandOu
     case 'pvp':
       // A setting of the room's: the room runs it (see GameRoom.run).
       return { ok: false, why: 'notHost' }
-    case 'move':
-      return moveSlot(player.inventory, command.from, command.to) ? { ok: true } : { ok: false, why: 'nothing' }
+    case 'respawn':
+      // The room runs it (see GameRoom.run): it moves the player.
+      return { ok: false, why: 'nothing' }
     case 'slot': {
       const from = slotSide(context, command.from.id)
       if ('why' in from) return { ok: false, why: from.why }
@@ -534,39 +547,48 @@ export function runCommand(context: CommandContext, command: Command): CommandOu
       const result = hit(context, entity, toolIn(player.inventory, command.slot), weaponIn(player.inventory, command.slot))
       if ('refused' in result) return { ok: false, why: result.refused }
       if (!harvest) player.lastPunchTick = context.tick
-      const middle = { x: entity.x * SUB + SUB / 2, y: entity.y * SUB + SUB / 2 }
+      const middle = tileMiddle(entity.x, entity.y)
       return { ok: true, moved: giveDrops(context, middle, entity.id, result.drops) }
     }
     case 'craft': {
+      // Made by hand, it takes the recipe's time (see `handCraft`): it waits its turn behind any others asked for.
       const recipe = getRecipe(command.recipe)
       if (!recipe) return { ok: false, why: 'noRecipe' }
-      const why = craftIn(player.inventory, recipe)
-      return why ? { ok: false, why } : { ok: true, moved: recipe.count }
+      if (!canAfford(player.inventory, recipe)) return { ok: false, why: 'lacking' }
+      const queue = (player.crafting ??= [])
+      if (queue.length >= HAND_CRAFT_QUEUE) return { ok: false, why: 'busy' }
+      if (queue.length === 0) player.craftingTicks = 0
+      queue.push(recipe.id)
+      return { ok: true }
     }
     case 'work': {
+      // The stump and the workbench work alike (see stations.ts): the recipe picked, with the tool it needs.
       const entity = world.entity(command.id)
       if (!entity) return { ok: false, why: 'missing' }
-      if (entity.kind !== 'stump' && entity.kind !== 'workbench') return { ok: false, why: 'noInventory' }
+      if (!isStation(entity)) return { ok: false, why: 'noInventory' }
       if (!isWithinReach(player.position, entity.x, entity.y)) return { ok: false, why: 'reach' }
-      if (entity.kind === 'stump') {
-        if (!stationRecipe(entity.kind, entity.inv)) return { ok: false, why: 'noWork' }
-        const state = entityToState(entity)
-        if (state.kind === 'stump' && state.active === 0) context.emit({ t: 'set', e: { ...state, active: 1 } })
-      } else {
-        const recipe = STATION_RECIPES.workbench[command.recipe ?? -1]
-        if (!recipe) return { ok: false, why: 'noRecipe' }
-        // A recipe that needs a tool (a knife for a spear) needs it in the workbench's tool slot, and does not use it up.
-        if (!workbenchHasTool(entity.inv, recipe)) return { ok: false, why: 'needsTool' }
-        // Making something else: that carries on, and this does not start.
-        if (entity.active !== 0 && entity.recipe !== 0 && entity.recipe !== recipe.index + 1) return { ok: false, why: 'busy' }
-        if (!workbenchCan(entity.inv, recipe)) return { ok: false, why: 'noWork' }
-        // The same recipe again keeps how far it had got; another starts afresh.
-        const same = entity.recipe === recipe.index + 1
-        context.emit({
-          t: 'set',
-          e: withMachine(entity, { recipe: recipe.index + 1, repeat: command.repeat ? 1 : 0, progress: same ? entity.progress : 0, active: 1 }),
-        })
+      const recipe = STATION_RECIPES[entity.kind][command.recipe]
+      if (!recipe) return { ok: false, why: 'noRecipe' }
+      // Making something else: that carries on, and this does not start.
+      if (entity.active !== 0 && entity.recipe !== 0 && entity.recipe !== recipe.index + 1) return { ok: false, why: 'busy' }
+      const inv = cloneInventory(entity.inv)
+      const mine = cloneInventory(player.inventory)
+      // The tool it needs goes into the tool slot from the player's things (not used up), and whatever tool was there
+      // goes back to the player: a knife there and planks picked, the knife comes out and an axe goes in.
+      if (!stationHasTool(entity.kind, inv, recipe)) {
+        const toolSlot = STATION_LAYOUT[entity.kind].tool
+        const from = mine.slots.findIndex((slot) => slot.count > 0 && getItem(slot.item).tool === recipe.tool)
+        if (from < 0) return { ok: false, why: 'needsTool' }
+        const old = inv.slots[toolSlot]
+        if (old.count > 0 && addItems(mine, old.item, old.count) < old.count) return { ok: false, why: 'full' }
+        inv.slots[toolSlot] = { item: mine.slots[from].item, count: 1 }
+        takeFromSlot(mine, from, 1)
       }
+      if (!stationCan(entity.kind, inv, recipe)) return { ok: false, why: 'noWork' }
+      player.inventory.slots = mine.slots
+      // The same recipe again keeps how far it had got; another starts afresh.
+      const same = entity.recipe === recipe.index + 1
+      context.emit({ t: 'set', e: withMachine({ ...entity, inv }, { recipe: recipe.index + 1, progress: same ? entity.progress : 0, active: 1 }) })
       // Pressing Craft is being at it.
       player.using = entity.id
       context.onWork?.(entity.id)
@@ -576,7 +598,7 @@ export function runCommand(context: CommandContext, command: Command): CommandOu
       const entity = world.entity(command.id)
       if (!entity) return { ok: false, why: 'missing' }
       if (!isWithinReach(player.position, entity.x, entity.y)) return { ok: false, why: 'reach' }
-      if (entity.kind === 'campfire' && (command.action === 'light' || command.action === 'douse')) {
+      if ((entity.kind === 'campfire' || entity.kind === 'oven') && (command.action === 'light' || command.action === 'douse')) {
         const fuel = entity.inv.slots[CAMPFIRE_FUEL]
         if (command.action === 'light' && (fuel.count === 0 || !getItem(fuel.item).fuel) && entity.burn <= 0) return { ok: false, why: 'noFuel' }
         const lit = command.action === 'light' ? 1 : 0
@@ -593,6 +615,12 @@ export function runCommand(context: CommandContext, command: Command): CommandOu
       return apply(context, command.x, command.y, command.slot)
     case 'use':
       player.using = command.id
+      player.handOpen = command.hand === true
+      // Closing the inventory (or opening something else in its place) calls off everything being made by hand.
+      if (!player.handOpen && player.crafting) {
+        player.crafting.length = 0
+        player.craftingTicks = 0
+      }
       return { ok: true }
     case 'toggle': {
       const gate = world.entity(command.id)
@@ -605,6 +633,14 @@ export function runCommand(context: CommandContext, command: Command): CommandOu
       return { ok: true }
     }
     case 'place': {
+      // A raft goes on water, its middle on the tile's middle, if it fits there, on the player's rope.
+      const holding = player.inventory.slots[command.slot]
+      if (holding && holding.count > 0 && isRaftItem(holding.item)) {
+        if (!isWithinReach(player.position, command.x, command.y)) return { ok: false, why: 'reach' }
+        if (!context.rafts?.place(command.x, command.y)) return { ok: false, why: 'raftWater' }
+        takeFromSlot(player.inventory, command.slot, 1)
+        return { ok: true }
+      }
       const check = checkPlace(world, player.position, player.inventory, command.slot, command.x, command.y, context.terrain)
       if (!check.ok) return check
       const held = player.inventory.slots[command.slot]
@@ -624,15 +660,58 @@ export function runCommand(context: CommandContext, command: Command): CommandOu
     case 'attack':
       if (!context.combat) return { ok: false, why: 'nothing' }
       return context.combat.attack(context, command)
-    case 'strike':
+    case 'charge':
+      context.player.chargeFrom = context.tick
+      return { ok: true }
     case 'interact':
       if (!context.animals) return { ok: false, why: 'animalGone' }
-      return command.k === 'strike' ? context.animals.strike(context, command.animal, command.slot) : context.animals.interact(context, command.animal, command.slot)
+      return context.animals.interact(context, command.animal, command.slot)
+    case 'raftRope':
+      if (!context.rafts) return { ok: false, why: 'raftGone' }
+      return context.rafts.rope(command.raft, command.slot)
+    case 'tie':
+    case 'untie': {
+      // A fence holds one animal or raft on a rope (see `fencePost`): tied from the fence, untied at it.
+      const fence = world.entity(command.fence)
+      if (!fence || fence.kind !== 'fence') return { ok: false, why: 'missing' }
+      if (!isWithinReach(player.position, fence.x, fence.y)) return { ok: false, why: 'reach' }
+      if (command.k === 'untie') {
+        if (context.animals?.untie(context, fence.id) || context.rafts?.untie(fence.id)) return { ok: true }
+        return { ok: false, why: 'notTied' }
+      }
+      if (context.animals?.tiedTo(fence.id) || context.rafts?.tiedTo(fence.id)) return { ok: false, why: 'postTaken' }
+      if (command.animal !== undefined) return context.animals ? context.animals.tie(context, command.animal, fence) : { ok: false, why: 'animalGone' }
+      if (command.raft !== undefined) return context.rafts ? context.rafts.tie(command.raft, fence) : { ok: false, why: 'raftGone' }
+      return { ok: false, why: 'nothing' }
+    }
   }
 }
 
+// How many hand recipes a player can have waiting at once.
+const HAND_CRAFT_QUEUE = 100
+
+// A tick of a player's hand crafting, which only goes on while their inventory is open (`handOpen`; closing it calls
+// the lot off: see 'use'): the first recipe waiting is made once its time (`ticks`, at PLAYER_CRAFT_SPEED) has gone into it, from
+// what they have then, and the next is started. If they no longer have what it needs, or room for it, the rest is let
+// go. Gives what went wrong, if anything did.
+export function handCraft(player: CommandContext['player']): 'lacking' | 'full' | undefined {
+  const queue = player.crafting
+  if (!queue || queue.length === 0 || !player.handOpen) return undefined
+  const recipe = getRecipe(queue[0])
+  player.craftingTicks = (player.craftingTicks ?? 0) + 1
+  if (recipe && player.craftingTicks < Math.ceil(recipe.ticks / PLAYER_CRAFT_SPEED)) return undefined
+  const why = recipe ? craftIn(player.inventory, recipe) : undefined
+  if (why) {
+    queue.length = 0
+    return why
+  }
+  queue.shift()
+  player.craftingTicks = 0
+  return undefined
+}
+
 // Using what is in a slot on a tile (a right click with it):
-// - an empty bucket at a pond fills with water; at a barrel, with a bucket of what the barrel holds;
+// - an empty bucket at a pond or a well fills with water; at a barrel, with a bucket of what the barrel holds;
 // - a full bucket empties into a barrel (of the same liquid, or empty, with room); a bucket of water waters a plot.
 // A sealed barrel can be neither filled nor emptied.
 function apply(context: CommandContext, x: number, y: number, slot: number): CommandOutcome {
@@ -678,8 +757,15 @@ function apply(context: CommandContext, x: number, y: number, slot: number): Com
     context.emit({ t: 'set', e: { ...state, water: 100 } })
     return { ok: true }
   }
-  if (!target && item.bucket === 'empty' && waterAt(context.terrain, x, y)) {
+  // An empty bucket fills at a well with fresh water, as at a pond.
+  if (target?.kind === 'well') {
+    if (item.bucket !== 'empty') return { ok: false, why: 'cannotApply' }
     swap('water-bucket')
+    return { ok: true }
+  }
+  // An empty bucket fills at a pond with fresh water, and at the sea with salt water.
+  if (!target && item.bucket === 'empty' && waterAt(context.terrain, x, y)) {
+    swap(isSeaAt(context.terrain, x, y) ? 'salt-water-bucket' : 'water-bucket')
     return { ok: true }
   }
   // A bucket of anything is emptied out on bare ground.

@@ -8,6 +8,8 @@ import {
   playerInventory,
   NO_ITEM,
   type AnimalInfo,
+  type LichSpell,
+  type MonsterInfo,
   type ChunkSnapshot,
   type Inventory,
   type ItemId,
@@ -33,8 +35,13 @@ export type MirrorCallbacks = {
   onAnimal?: (info: AnimalInfo) => void
   onAnimalGone?: (id: number, died?: number) => void
   onGear?: (gear: { id: number; held: number; armor: number[] }) => void
-  onSwung?: (swing: { id: number; item: number; special: boolean; angle: number }) => void
-  onWave?: (wave: { x: number; y: number; delay: number }) => void
+  onSwung?: (swing: { id: number; item: number; angle: number; charged?: 1 }) => void
+  // What a monster near the player is, whenever it changes; and one that is gone.
+  onMonster?: (info: MonsterInfo) => void
+  onMonsterGone?: (id: number, died?: number) => void
+  // A spike trap in the dungeon was set off; the frost lich cast a spell the page draws.
+  onTrap?: (trap: { slot: number; trap: number; delay: number }) => void
+  onSpell?: (spell: { spell: LichSpell; x: number; y: number; radius: number; ticks: number }) => void
   // One of this page's commands has run (or been turned down), on the tick just simulated.
   onResult?: (result: CommandResult) => void
   // The player's inventory, as of the tick just simulated.
@@ -186,8 +193,14 @@ export class FactoryMirror {
       this.callbacks.onGear?.(event)
     } else if (event.k === 'swung') {
       this.callbacks.onSwung?.(event)
-    } else if (event.k === 'wave') {
-      this.callbacks.onWave?.(event)
+    } else if (event.k === 'monster') {
+      this.callbacks.onMonster?.(event.m)
+    } else if (event.k === 'monster-') {
+      this.callbacks.onMonsterGone?.(event.id, event.died)
+    } else if (event.k === 'trap') {
+      this.callbacks.onTrap?.(event)
+    } else if (event.k === 'spell') {
+      this.callbacks.onSpell?.(event)
     } else if (event.k === 'animal-') {
       this.callbacks.onAnimalGone?.(event.id, event.died)
     }

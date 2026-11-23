@@ -1,14 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { GameRoom } from '../apps/server/src/game-room.ts'
-import { STICK_EVERY, TWINE_EVERY } from '../apps/server/src/commands.ts'
+import { STICK_EVERY } from '../apps/server/src/commands.ts'
 import { Settings } from '../apps/client/src/settings.ts'
 import {
   BUILDINGS,
   BUSH_SPEED_PERCENT,
-  DROP_LIFETIME_TICKS,
   flintInChunk,
-  HASH_INTERVAL,
   NATURAL_DROP_BORN,
   RECIPES,
   WEAPONS,
@@ -16,6 +14,7 @@ import {
   TREE_STICKS,
   countOf,
   DEFAULT_PLANT_GENERATION,
+  DROP_TABLES,
   KEY_RIGHT,
   PLAYER_SPEED,
   createEntity,
@@ -159,7 +158,7 @@ test('an axe chops a tree down, dropping its logs, acorns and the sticks still o
   run(room, [client], 5)
   const tree = besidePlant(room, client, 'tree')
   client.player.inventory.slots[1] = { item: itemId('axe'), count: 1 }
-  assert.equal(punchDown(room, client, tree.id, 1), Math.ceil(BUILDINGS.tree.maxHp / WEAPONS.get('axe')!.damage))
+  assert.equal(punchDown(room, client, tree.id, 1), Math.ceil(BUILDINGS.tree.maxHp / WEAPONS.get('axe')!.harvest))
   const inventory = client.player.inventory
   assert.equal(countOf(inventory, itemId('stick')), TREE_STICKS)
   assert.ok(countOf(inventory, itemId('log')) >= 2 && countOf(inventory, itemId('log')) <= 4)
@@ -186,18 +185,18 @@ test('a tree grows its sticks back on its random ticks, the same way everywhere'
   assert.equal(regrow(), first)
 })
 
-test('a bush drops twine as it is broken and berries when it is gone; an axe breaks it twice as fast', () => {
+test('a bush drops its fiber and its berries when it is gone, nothing before; an axe breaks it twice as fast', () => {
   const room = new GameRoom('PLANT3', 11, { dropsOnGround: false })
   const client = new TestClient(room, 'Forager')
   run(room, [client], 5)
   const max = BUILDINGS.bush.maxHp
   const bush = besidePlant(room, client, 'bush')
   assert.equal(punchDown(room, client, bush.id), max)
-  assert.equal(countOf(client.player.inventory, itemId('twine')), Math.floor((max - 1) / TWINE_EVERY))
+  assert.equal(countOf(client.player.inventory, itemId('fiber')), DROP_TABLES.bush.broken[0].min)
   assert.ok(countOf(client.player.inventory, itemId('berries')) >= 2)
   const other = besidePlant(room, client, 'bush', [bush.id])
   client.player.inventory.slots[1] = { item: itemId('axe'), count: 1 }
-  assert.equal(punchDown(room, client, other.id, 1), Math.ceil(max / WEAPONS.get('axe')!.damage))
+  assert.equal(punchDown(room, client, other.id, 1), Math.ceil(max / WEAPONS.get('axe')!.harvest))
   assert.deepEqual(differingChunks(room, client), [])
 })
 
@@ -214,7 +213,7 @@ test('a rock cannot be broken by hand; a pickaxe breaks it into stone and flint'
   assert.equal(client.results.at(-1)?.why, 'needsPickaxe')
   assert.equal(hpOf(room.world.entity(rock.id)!), BUILDINGS.rock.maxHp)
   client.player.inventory.slots[1] = { item: itemId('pickaxe'), count: 1 }
-  assert.equal(punchDown(room, client, rock.id, 1), Math.ceil(BUILDINGS.rock.maxHp / WEAPONS.get('pickaxe')!.damage))
+  assert.equal(punchDown(room, client, rock.id, 1), Math.ceil(BUILDINGS.rock.maxHp / WEAPONS.get('pickaxe')!.harvest))
   const stone = countOf(client.player.inventory, itemId('stone'))
   const flint = countOf(client.player.inventory, itemId('flint'))
   assert.ok(stone >= 2 && stone <= 4, `${stone} stone`)
@@ -239,7 +238,7 @@ test('rocks lie in groups', () => {
   assert.ok(together / rocks > 0.8, `${together} of ${rocks} rocks have a neighbour`)
 })
 
-test('a stick, twine and flint craft a tool; tools do not stack; a recipe without its inputs is turned down', () => {
+test('a stick, fiber and flint craft a tool, only while the inventory is open; tools do not stack; a recipe without its inputs is turned down', () => {
   const room = new GameRoom('CRAFT', 11)
   const client = new TestClient(room, 'Smith')
   run(room, [client], 5)
@@ -249,7 +248,16 @@ test('a stick, twine and flint craft a tool; tools do not stack; a recipe withou
   axe.inputs.forEach(([item, count], slot) => (inventory.slots[slot] = { item, count: count * 2 + 1 }))
   client.command({ k: 'craft', recipe: axe.id })
   client.command({ k: 'craft', recipe: axe.id })
+  // With the inventory shut, nothing is made.
+  run(room, [client], axe.ticks * 2)
+  assert.equal(countOf(client.player.inventory, itemId('axe')), 0, 'not made with the inventory shut')
+  client.command({ k: 'use', id: 0, hand: true })
   run(room, [client], 5)
+  // Made by hand, each takes the recipe's time, one after the other.
+  assert.equal(countOf(client.player.inventory, itemId('axe')), 0, 'not made yet')
+  run(room, [client], axe.ticks + 2)
+  assert.equal(countOf(client.player.inventory, itemId('axe')), 1, 'the first is made after its time')
+  run(room, [client], axe.ticks)
   const after = client.player.inventory
   assert.equal(countOf(after, itemId('axe')), 2)
   assert.equal(after.slots.filter((slot) => slot.item === itemId('axe')).length, 2, 'each axe has a slot of its own')
@@ -257,7 +265,16 @@ test('a stick, twine and flint craft a tool; tools do not stack; a recipe withou
   after.slots[0] = { item: 0, count: 0 }
   client.command({ k: 'craft', recipe: axe.id })
   run(room, [client], 5)
-  assert.deepEqual(client.results.map((result) => result.why ?? 'ok'), ['ok', 'ok', 'lacking'])
+  assert.deepEqual(client.results.map((result) => result.why ?? 'ok'), ['ok', 'ok', 'ok', 'lacking'])
+  // Closing the inventory calls off what is being made.
+  axe.inputs.forEach(([item, count], slot) => (after.slots[slot] = { item, count: count * 3 }))
+  client.command({ k: 'craft', recipe: axe.id })
+  client.command({ k: 'craft', recipe: axe.id })
+  run(room, [client], 5)
+  client.command({ k: 'use', id: 0 })
+  client.command({ k: 'use', id: 0, hand: true })
+  run(room, [client], axe.ticks * 3)
+  assert.equal(countOf(after, itemId('axe')), 2, 'none made after the inventory was closed')
   assert.equal(countOf(client.inventory!, itemId('axe')), 2, 'the page was told')
 })
 
@@ -376,7 +393,9 @@ test('binding a key takes it from whatever had it, and Escape cannot be bound', 
   assert.equal(settings.actionOf('KeyE'), 'inventory')
   settings.bind('up', 0, 'KeyE')
   assert.equal(settings.actionOf('KeyE'), 'up')
-  assert.deepEqual(settings.binding('inventory'), [null, 'Tab'])
+  assert.deepEqual(settings.binding('inventory'), [null, null])
+  assert.equal(settings.actionOf('Tab'), 'players', 'Tab shows who is playing')
+  assert.equal(settings.actionOf('KeyM'), 'map')
   settings.bind('debug', 0, 'Escape')
   assert.equal(settings.actionOf('Escape'), undefined)
   settings.resetControls()
@@ -394,8 +413,8 @@ test('what a punch knocks loose lands on the ground round the plant, the page se
   punchDown(room, client, bush.id)
   // What the bush dropped (not the flint that was lying about already).
   const drops = room.world.chunkIds.flatMap((id) => room.world.dropsInChunk(id)).filter((drop) => drop.born !== NATURAL_DROP_BORN)
-  assert.equal(countOf(client.player.inventory, itemId('twine')), 0, 'nothing went straight into the inventory')
-  assert.ok(drops.some((drop) => drop.item === itemId('twine')) && drops.some((drop) => drop.item === itemId('berries')))
+  assert.equal(countOf(client.player.inventory, itemId('fiber')), 0, 'nothing went straight into the inventory')
+  assert.ok(drops.some((drop) => drop.item === itemId('fiber')) && drops.some((drop) => drop.item === itemId('berries')))
   for (const drop of drops) {
     const distance = Math.hypot(drop.x - (bush.x * SUB + SUB / 2), drop.y - (bush.y * SUB + SUB / 2)) / SUB
     assert.ok(distance >= 0.4 && distance <= 1.1, `an item landed ${distance.toFixed(2)} tiles away`)
@@ -407,12 +426,12 @@ test('what a punch knocks loose lands on the ground round the plant, the page se
     run(room, [client], 2)
   }
   run(room, [client], 5)
-  const twine = Math.floor((BUILDINGS.bush.maxHp - 1) / TWINE_EVERY)
-  assert.equal(countOf(client.player.inventory, itemId('twine')), twine)
+  const fiber = DROP_TABLES.bush.broken[0].min
+  assert.equal(countOf(client.player.inventory, itemId('fiber')), fiber)
   assert.ok(countOf(client.player.inventory, itemId('berries')) >= 2)
   assert.equal(room.world.allDrops().filter((drop) => drop.item !== itemId('flint')).length, 0)
   assert.equal(client.mirror.world.allDrops().filter((drop) => drop.item !== itemId('flint')).length, 0)
-  assert.equal(countOf(client.inventory!, itemId('twine')), twine, 'the page was told what it picked up')
+  assert.equal(countOf(client.inventory!, itemId('fiber')), fiber, 'the page was told what it picked up')
   assert.deepEqual(differingChunks(room, client), [])
 })
 

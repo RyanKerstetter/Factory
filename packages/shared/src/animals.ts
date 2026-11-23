@@ -1,27 +1,35 @@
 import animalsData from '../../../data/animals.json' with { type: 'json' }
-import { LEAD_LENGTH, PLAYER_MASS, SUB, TPS } from './constants.ts'
-import { ITEMS, itemByKey, type ItemId } from './items.ts'
+import { LEAD_LENGTH, ROPE_FRICTION, ROPE_MAX_SPEED, ROPE_MIN_MASS, ROPE_PULL, SUB, TPS } from './constants.ts'
+import { failIn, fieldsOf, numberField, onlyFields, secondsField, speedField, textField, tilesField, wholeField, type Fail, type Fields } from './data-check.ts'
+import { ITEMS, itemFromKey, type ItemId } from './items.ts'
 
 // The animals, from data/animals.json. Animals are not part of the factory's simulation: they wander across chunk
 // edges, so the server runs them (apps/server/src/animals.ts) and sends where they are with the players, and what
 // they are (kind, sex, stats, hunger) on the log whenever it changes.
 //
+// The skeletons and the frost lich are monsters, not animals: see monsters.ts.
+//
 // In the file, for each kind:
-// - `hp`: hits it takes (a fist does 1, a knife 2); `speed` in tiles a second; `size`: how big it is drawn, in tiles;
+// - `hp`, and `armor`: how much it takes off every hit on it (see damageAfterArmor; never all of it); `speed` in tiles
+//   a second; `size`: how big it is drawn, in tiles;
 //   `halfSize`: how far it reaches from its middle to each side, in tiles, for walking into things; `mass`: how hard
 //   it pulls on a rope, against a player's 1.
 // - `foods`: what it eats from a feed box, by item key, or "#tag" for every item with that tag.
-// - `herd`: how many come together when a herd is spawned; `spawnWeight`: how often this kind is picked; `biomes`: the
-//   biomes its wild herds turn up in (see terrain.ts; none: it is never spawned by itself).
+// - `herd`: how many come together when a herd is spawned; `biomes`: the biomes its wild herds live in (see
+//   terrain.ts; none: it is never spawned by itself); `population`: how many wild ones each of those biomes keeps, for
+//   every 10,000 tiles of it (its area, as a circle of its radius), topped up with herds as they are killed (see the
+//   server's `populate` in animals.ts).
 // - `temper`: "calm" (the default: it runs only from a hit), "skittish" (it runs from any player within `fleeRadius`
 //   tiles, and from a hit, at `fleePace` times its speed, and its herd runs with it) or "hostile" (see `hunt`).
-// - `hunt`, for a hostile one: it keeps to its ground, and goes for a player who comes within `aggroRadius` tiles or
-//   hurts it, and so does every one of its pack within `packRadius` tiles of it. It chases at `pace` times its speed,
-//   bites for `damage` when within `reach` tiles, every `cooldown` seconds, and gives up on a player more than `leash`
-//   tiles from where it lives. With `flank`, the pack spreads out round its prey and darts in from different sides,
-//   falling back between bites, rather than all running straight at it. With `packOnSight` false, one that sees a
-//   player goes for them alone; its pack is only called when it is hurt. It only notices a player it can see (dungeon
-//   walls hide them).
+// - `hunt`, for a hostile one (a wolf): it keeps to its ground, and goes for a player who comes within `aggroRadius`
+//   tiles or hurts it, and so does every one of its pack within `packRadius` tiles of it. It chases at `pace` times its
+//   speed, bites for `damage` when within `reach` tiles, every `cooldown` seconds, and gives up on a player more than
+//   `leash` tiles from where it lives. With `flank`, the pack spreads out round its prey and darts in from different
+//   sides, falling back between bites, rather than all running straight at it. It only notices a player it can see.
+//   A pack has its ground: they all live at one spot, and no new pack turns up within `territory` tiles of another's
+//   (so packs keep apart instead of clumping together); and each wolf wanders back if it strays more than half of
+//   that from home. Hit, a hunter backs off and does not bite again for `recoil` seconds (1 if not given), so a
+//   player who lands a blow is not bitten straight back.
 // - `grazes`: whether it eats grass (true unless false).
 // - `drops`: what an adult drops when killed: a fixed `min` to `max`, or about as many as its `stat` (meat).
 // - `milk`: the item a cow is milked for (as many as its milk stat, built up over time); `lays`: the item a chicken
@@ -60,13 +68,9 @@ export type Hunt = {
   reach: number
   cooldown: number
   flank: boolean
-  packOnSight: boolean
-  // Units it keeps from its prey (a caster); 0 for one that closes in.
-  keepAway: number
-  // An archer: instead of biting, it comes within `range` (units) of its prey where it has a clear shot, aims for `aim`
-  // ticks (standing still, turning to follow), then looses an arrow (`item`) at `speed` units a tick for `damage`; then
-  // waits `cooldown` (the bite's) before it aims again.
-  shoot?: { range: number; aim: number; speed: number; damage: number; item: ItemId }
+  territory: number
+  // Ticks: hit, it backs off (out to the flanking ring round its prey) and does not bite again for this long.
+  recoil: number
 }
 
 export type AnimalDef = {
@@ -74,6 +78,8 @@ export type AnimalDef = {
   id: number
   name: string
   hp: number
+  // How much it takes off every hit on it (see damageAfterArmor).
+  armor: number
   // Units a tick.
   speed: number
   size: number
@@ -82,16 +88,14 @@ export type AnimalDef = {
   mass: number
   foods: ReadonlySet<ItemId>
   herd: readonly [number, number]
-  spawnWeight: number
   biomes: readonly string[]
+  population: number
   temper: Temper
   // Units; 0 for an animal that only runs from a hit.
   fleeRadius: number
   fleePace: number
   hunt?: Hunt
   grazes: boolean
-  // A boss: fought in its own hall (see dungeons.ts), with its health over the top of the screen.
-  boss: boolean
   drops: readonly AnimalDrop[]
   milk?: ItemId
   lays?: ItemId
@@ -99,21 +103,19 @@ export type AnimalDef = {
   stats: readonly StatDef[]
 }
 
+const ANIMAL_FIELDS = ['id', 'name', 'hp', 'armor', 'speed', 'size', 'halfSize', 'mass', 'foods', 'herd', 'population', 'biomes', 'temper', 'fleeRadius', 'fleePace', 'hunt', 'grazes', 'drops', 'milk', 'lays', 'life', 'stats']
+const LIFE_FIELDS = ['hungerMinutes', 'hungryAt', 'grassFills', 'grassRadius', 'wellFedMinutes', 'breedCooldownMinutes', 'milkMinutes']
+const HUNT_FIELDS = ['aggroRadius', 'packRadius', 'leash', 'pace', 'damage', 'reach', 'cooldown', 'flank', 'territory', 'recoil']
+
 export const ANIMALS: readonly AnimalDef[] = parseAnimals(animalsData)
+const BY_KIND = new Map(ANIMALS.map((def) => [def.kind, def]))
 
 function parseAnimals(data: unknown): AnimalDef[] {
   if (typeof data !== 'object' || data === null) throw new Error('data/animals.json must be an object of animals.')
-  return Object.entries(data).map(([kind, raw]: [string, Record<string, unknown>]): AnimalDef => {
-    const fail = (problem: string): never => {
-      throw new Error(`data/animals.json, ${kind}: ${problem}`)
-    }
-    const num = (value: unknown, name: string, min = 0): number =>
-      typeof value === 'number' && Number.isFinite(value) && value >= min ? value : fail(`"${name}" must be a number, ${min} or more`)
-    const item = (key: unknown): ItemId => {
-      const found = typeof key === 'string' ? itemByKey(key) : undefined
-      return found ? found.id : fail(`there is no item "${String(key)}"`)
-    }
-    if (typeof raw.name !== 'string') fail('"name" must be text')
+  return Object.entries(data).map(([kind, entry]): AnimalDef => {
+    const fail: Fail = failIn(`data/animals.json, ${kind}`)
+    const raw = fieldsOf(entry, 'it', fail)
+    onlyFields(raw, ANIMAL_FIELDS, fail)
     const foods = new Set<ItemId>()
     if (!Array.isArray(raw.foods)) fail('"foods" must be a list')
     for (const food of raw.foods as unknown[]) {
@@ -121,92 +123,75 @@ function parseAnimals(data: unknown): AnimalDef[] {
         const tag = food.slice(1)
         // Every item with the tag (see `tags` in items.json).
         for (const candidate of ITEMS) if (candidate.tags.includes(tag)) foods.add(candidate.id)
-      } else foods.add(item(food))
+      } else foods.add(itemFromKey(food, fail))
     }
     const herd = raw.herd as number[]
     if (!Array.isArray(herd) || herd.length !== 2 || !(herd[0] >= 1) || !(herd[1] >= herd[0])) fail('"herd" must be [fewest, most]')
-    const stats = Object.entries((raw.stats ?? {}) as Record<string, Record<string, unknown>>).map(([key, stat]) => ({
-      key,
-      label: typeof stat.label === 'string' ? stat.label : key,
-      base: num(stat.base, `stats.${key}.base`),
-      spread: num(stat.spread, `stats.${key}.spread`),
-      min: num(stat.min, `stats.${key}.min`),
-      max: num(stat.max, `stats.${key}.max`),
-    }))
+    const stats = Object.entries(fieldsOf(raw.stats ?? {}, '"stats"', fail)).map(([key, value]) => {
+      const stat = fieldsOf(value, `"stats.${key}"`, fail)
+      onlyFields(stat, ['label', 'base', 'spread', 'min', 'max'], fail, `"stats.${key}": `)
+      return {
+        key,
+        label: textField(stat, 'label', fail, key),
+        base: numberField(stat, 'base', fail),
+        spread: numberField(stat, 'spread', fail),
+        min: numberField(stat, 'min', fail),
+        max: numberField(stat, 'max', fail),
+      }
+    })
     if (!stats.some((stat) => stat.key === 'growth')) fail('every animal needs a "growth" stat')
     const statIndex = (key: unknown): number => {
       const index = stats.findIndex((stat) => stat.key === key)
       return index >= 0 ? index : fail(`there is no stat "${String(key)}"`)
     }
-    const drops = ((raw.drops ?? []) as Array<Record<string, unknown>>).map((drop) => ({
-      item: item(drop.item),
-      ...(drop.stat !== undefined ? { stat: statIndex(drop.stat) } : {}),
-      min: drop.min === undefined ? 1 : num(drop.min, 'drops.min'),
-      max: drop.max === undefined ? 1 : num(drop.max, 'drops.max'),
-    }))
-    const life = (raw.life ?? {}) as Record<string, unknown>
-    const minutes = (name: string, fallback: number): number => Math.max(1, Math.round(num(life[name] ?? fallback, `life.${name}`) * 60 * TPS))
-    const percent = (name: string, fallback: number): number => Math.round((num(life[name] ?? fallback, `life.${name}`) * HUNGER_MAX) / 100)
+    const drops = ((raw.drops ?? []) as unknown[]).map((value) => {
+      const drop = fieldsOf(value, 'a drop', fail)
+      onlyFields(drop, ['item', 'stat', 'min', 'max'], fail, '"drops": ')
+      return {
+        item: itemFromKey(drop.item, fail),
+        ...(drop.stat !== undefined ? { stat: statIndex(drop.stat) } : {}),
+        min: numberField(drop, 'min', fail, 0, 1),
+        max: numberField(drop, 'max', fail, 0, 1),
+      }
+    })
+    const life = fieldsOf(raw.life ?? {}, '"life"', fail)
+    onlyFields(life, LIFE_FIELDS, fail, '"life": ')
+    const minutes = (name: string, fallback: number): number => Math.max(1, Math.round(numberField(life, name, fail, 0, fallback) * 60 * TPS))
+    const percent = (name: string, fallback: number): number => Math.round((numberField(life, name, fail, 0, fallback) * HUNGER_MAX) / 100)
     if (raw.milk !== undefined) statIndex('milk')
+    if (raw.lays !== undefined) statIndex('eggTime')
     const temper = (raw.temper ?? 'calm') as Temper
     if (temper !== 'calm' && temper !== 'skittish' && temper !== 'hostile') fail('"temper" must be calm, skittish or hostile')
     const biomes = (raw.biomes ?? []) as unknown[]
     if (!Array.isArray(biomes) || !biomes.every((biome) => typeof biome === 'string')) fail('"biomes" must be a list of biome keys')
-    const huntRaw = raw.hunt as Record<string, unknown> | undefined
-    if (temper === 'hostile' && !huntRaw) fail('a hostile animal needs "hunt"')
-    const tiles = (value: unknown, name: string): number => Math.round(num(value, name) * SUB)
-    const hunt = huntRaw
-      ? {
-          aggroRadius: tiles(huntRaw.aggroRadius, 'hunt.aggroRadius'),
-          packRadius: tiles(huntRaw.packRadius, 'hunt.packRadius'),
-          leash: tiles(huntRaw.leash, 'hunt.leash'),
-          pace: num(huntRaw.pace, 'hunt.pace'),
-          damage: num(huntRaw.damage, 'hunt.damage', 1),
-          reach: tiles(huntRaw.reach, 'hunt.reach'),
-          cooldown: Math.max(1, Math.round(num(huntRaw.cooldown, 'hunt.cooldown') * TPS)),
-          flank: huntRaw.flank === true,
-          packOnSight: huntRaw.packOnSight !== false,
-          keepAway: huntRaw.keepAway === undefined ? 0 : tiles(huntRaw.keepAway, 'hunt.keepAway'),
-          ...(huntRaw.shoot !== undefined ? { shoot: shootOf(huntRaw.shoot as Record<string, unknown>) } : {}),
-        }
-      : undefined
-    function shootOf(shoot: Record<string, unknown>): NonNullable<Hunt['shoot']> {
-      return {
-        range: tiles(shoot.range, 'hunt.shoot.range'),
-        aim: Math.max(1, Math.round(num(shoot.aim, 'hunt.shoot.aim') * TPS)),
-        speed: Math.max(1, Math.round((num(shoot.speed, 'hunt.shoot.speed') * SUB) / TPS)),
-        damage: num(shoot.damage, 'hunt.shoot.damage', 1),
-        item: item(shoot.item ?? 'arrow'),
-      }
-    }
-    if (raw.lays !== undefined) statIndex('eggTime')
+    if (temper === 'hostile' && raw.hunt === undefined) fail('a hostile animal needs "hunt"')
     return {
       kind,
-      id: num(raw.id, 'id', 1),
-      name: raw.name as string,
-      hp: num(raw.hp, 'hp', 1),
-      speed: Math.max(1, Math.round((num(raw.speed, 'speed') * SUB) / TPS)),
-      size: num(raw.size, 'size'),
-      halfSize: Math.round(num(raw.halfSize, 'halfSize') * SUB),
-      mass: num(raw.mass, 'mass'),
+      id: wholeField(raw, 'id', fail, 1),
+      name: textField(raw, 'name', fail),
+      hp: numberField(raw, 'hp', fail, 1),
+      armor: numberField(raw, 'armor', fail, 0, 0),
+      speed: Math.max(1, speedField(raw, 'speed', fail)),
+      size: numberField(raw, 'size', fail),
+      halfSize: tilesField(raw, 'halfSize', fail),
+      mass: numberField(raw, 'mass', fail),
       foods,
       herd: [herd[0], herd[1]] as const,
-      spawnWeight: num(raw.spawnWeight ?? 1, 'spawnWeight'),
       biomes: biomes as string[],
+      population: numberField(raw, 'population', fail, 0, 0),
       temper,
-      fleeRadius: tiles(raw.fleeRadius ?? 0, 'fleeRadius'),
-      fleePace: num(raw.fleePace ?? 1.8, 'fleePace'),
-      ...(hunt ? { hunt } : {}),
+      fleeRadius: tilesField(raw, 'fleeRadius', fail, 0),
+      fleePace: numberField(raw, 'fleePace', fail, 0, 1.8),
+      ...(raw.hunt !== undefined ? { hunt: huntOf(fieldsOf(raw.hunt, '"hunt"', fail), fail) } : {}),
       grazes: raw.grazes !== false,
-      boss: raw.boss === true,
       drops,
-      ...(raw.milk !== undefined ? { milk: item(raw.milk) } : {}),
-      ...(raw.lays !== undefined ? { lays: item(raw.lays) } : {}),
+      ...(raw.milk !== undefined ? { milk: itemFromKey(raw.milk, fail) } : {}),
+      ...(raw.lays !== undefined ? { lays: itemFromKey(raw.lays, fail) } : {}),
       life: {
         hungerEvery: Math.max(1, Math.round(minutes('hungerMinutes', 10) / HUNGER_MAX)),
         hungryAt: percent('hungryAt', 40),
         grassFills: percent('grassFills', 35),
-        grassRadius: num(life.grassRadius ?? 12, 'life.grassRadius'),
+        grassRadius: numberField(life, 'grassRadius', fail, 0, 12),
         wellFed: minutes('wellFedMinutes', 5),
         breedCooldown: minutes('breedCooldownMinutes', 10),
         milkEvery: minutes('milkMinutes', 3),
@@ -216,8 +201,24 @@ function parseAnimals(data: unknown): AnimalDef[] {
   })
 }
 
+function huntOf(hunt: Fields, fail: Fail): Hunt {
+  onlyFields(hunt, HUNT_FIELDS, fail, '"hunt": ')
+  return {
+    aggroRadius: tilesField(hunt, 'aggroRadius', fail),
+    packRadius: tilesField(hunt, 'packRadius', fail),
+    leash: tilesField(hunt, 'leash', fail),
+    pace: numberField(hunt, 'pace', fail),
+    damage: numberField(hunt, 'damage', fail, 1),
+    reach: tilesField(hunt, 'reach', fail),
+    cooldown: secondsField(hunt, 'cooldown', fail),
+    flank: hunt.flank === true,
+    territory: tilesField(hunt, 'territory', fail),
+    recoil: secondsField(hunt, 'recoil', fail, 1),
+  }
+}
+
 export function animalDef(kind: string): AnimalDef {
-  const def = ANIMALS.find((candidate) => candidate.kind === kind)
+  const def = BY_KIND.get(kind)
   if (!def) throw new Error(`There is no animal ${kind}.`)
   return def
 }
@@ -229,7 +230,7 @@ export function statIndex(def: AnimalDef, key: string): number {
 
 // What a page is told about an animal, on the log, whenever any of it changes. `stats` are in the order of the kind's
 // stats in animals.json. `growth` is how grown up it is, in percent (100 is an adult); `hunger` in percent too.
-// `leader` is the player leading it on a rope, or 0.
+// `leader` is the player leading it on a rope, or 0; `post`, the fence it is tied to, if it is.
 export type AnimalInfo = {
   id: number
   kind: string
@@ -240,38 +241,62 @@ export type AnimalInfo = {
   hunger: number
   fed: boolean
   leader: number
+  post?: number
   milk: number
   // What it is doing, in a few words (for the debug view).
   doing: string
   // A hostile one that is after a player.
   angry?: boolean
-  // An archer drawing its bow: which way it aims (radians).
-  aim?: number
+}
+
+// Tying to a fence (an animal or a raft, on a rope: see the server's commands.ts): the rope goes from the fence's post
+// (`fencePost`, units: the middle of its tile), and can only be tied to something within TIE_REACH of it. Tied, it is
+// pulled in to the post as if led there (see `ropeForce`), and the fence does not give.
+export const TIE_REACH = 5 * SUB
+export function fencePost(fence: { x: number; y: number }): { x: number; y: number } {
+  return { x: fence.x * SUB + SUB / 2, y: fence.y * SUB + SUB / 2 }
 }
 
 // Where an animal is, in units, as it is sent with the players' positions: [id, x, y].
 export type AnimalPosition = [number, number, number]
 
-// How a rope between a player and an animal pulls them, when it is stretched past LEAD_LENGTH: each moves towards the
-// other by its share of the stretch, the lighter one more. Gives how far each moves, in units (undefined while it is
-// slack).
-export function ropePull(
-  player: { x: number; y: number },
-  animal: { x: number; y: number },
-  animalMass: number,
-): { player: { dx: number; dy: number }; animal: { dx: number; dy: number } } | undefined {
-  const dx = animal.x - player.x
-  const dy = animal.y - player.y
+// How hard a rope from `from` to `to` pulls `from` towards `to` (what pulls `to` back is the same the other way):
+// ROPE_PULL for each unit it is stretched past LEAD_LENGTH, nothing while it is slack (see LEAD_LENGTH in constants.ts).
+export function ropeForce(from: { x: number; y: number }, to: { x: number; y: number }): { x: number; y: number } {
+  const dx = to.x - from.x
+  const dy = to.y - from.y
   const distance = Math.hypot(dx, dy)
-  if (distance <= LEAD_LENGTH || distance === 0) return undefined
-  const stretch = distance - LEAD_LENGTH
-  const total = PLAYER_MASS + animalMass
-  const ux = dx / distance
-  const uy = dy / distance
-  const playerShare = (stretch * animalMass) / total
-  const animalShare = (stretch * PLAYER_MASS) / total
-  return {
-    player: { dx: Math.round(ux * playerShare), dy: Math.round(uy * playerShare) },
-    animal: { dx: -Math.round(ux * animalShare), dy: -Math.round(uy * animalShare) },
+  if (distance <= LEAD_LENGTH) return { x: 0, y: 0 }
+  const pull = ((distance - LEAD_LENGTH) * ROPE_PULL) / distance
+  return { x: dx * pull, y: dy * pull }
+}
+
+// How fast something on a rope goes on it a tick later (units a tick, besides its own walking): its rope speed
+// (`velocity`), sped up by the rope's pull (`force`) over its weight (`mass`, at least ROPE_MIN_MASS), less
+// ROPE_FRICTION of it, and at most ROPE_MAX_SPEED.
+export function ropeStep(velocity: { x: number; y: number }, force: { x: number; y: number }, mass: number): { x: number; y: number } {
+  const weight = Math.max(mass, ROPE_MIN_MASS)
+  let x = (velocity.x + force.x / weight) * (1 - ROPE_FRICTION)
+  let y = (velocity.y + force.y / weight) * (1 - ROPE_FRICTION)
+  const speed = Math.hypot(x, y)
+  if (speed < 0.05) return { x: 0, y: 0 }
+  if (speed > ROPE_MAX_SPEED) {
+    x *= ROPE_MAX_SPEED / speed
+    y *= ROPE_MAX_SPEED / speed
   }
+  return { x, y }
+}
+
+// Moves something at `at` on by its rope speed (`move`: how it moves, stopping against what is in its way). Gives
+// where it got to, and its rope speed after: none along a way it was stopped (so it does not shoot off once free).
+export function ropeMove(
+  at: { x: number; y: number },
+  speed: { x: number; y: number },
+  move: (dx: number, dy: number) => { x: number; y: number },
+): { position: { x: number; y: number }; speed: { x: number; y: number } } {
+  const dx = Math.round(speed.x)
+  const dy = Math.round(speed.y)
+  if (dx === 0 && dy === 0) return { position: { x: at.x, y: at.y }, speed }
+  const moved = move(dx, dy)
+  return { position: moved, speed: { x: moved.x - at.x === dx ? speed.x : 0, y: moved.y - at.y === dy ? speed.y : 0 } }
 }

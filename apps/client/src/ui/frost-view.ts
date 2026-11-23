@@ -1,3 +1,5 @@
+import { createOverlayCanvas, easeToward, type OverlaySize } from './overlay-canvas.ts'
+
 // The cold, seen: frost creeping in over the edges of the view as the player's body cools (see frostOf in cold.ts),
 // on a canvas of its own over the world. Nothing at all while the body is warm; a rim of rime as it gets cold; ferns of
 // ice reaching further and further in as it freezes; and, in deadly cold, nearly closed in, the ice throbbing with each
@@ -16,33 +18,16 @@ export type FrostView = {
 }
 
 export function createFrostView(container: HTMLElement): FrostView {
-  const canvas = document.createElement('canvas')
-  canvas.className = 'frost'
-  container.append(canvas)
-  const context = canvas.getContext('2d')
-  // The ice, drawn over the whole view, to be uncovered.
+  // The ice, drawn over the whole view (the size of the view), to be uncovered.
   const ice = document.createElement('canvas')
-  let width = 0
-  let height = 0
-  let ratio = 1
   let shown = -1
   let amount = 0
   let time = 0
 
-  const fit = (): void => {
-    ratio = Math.min(2, window.devicePixelRatio || 1)
-    width = container.clientWidth
-    height = container.clientHeight
-    for (const target of [canvas, ice]) {
-      target.width = Math.max(1, Math.round(width * ratio))
-      target.height = Math.max(1, Math.round(height * ratio))
-    }
-    drawIce()
-    shown = -1
-  }
-
   // Rime thick at the edges, frosted in soft blotches, with a few fine ferns of ice growing in from them.
-  const drawIce = (): void => {
+  const drawIce = ({ width, height, ratio }: OverlaySize): void => {
+    ice.width = Math.max(1, Math.round(width * ratio))
+    ice.height = Math.max(1, Math.round(height * ratio))
     const paint = ice.getContext('2d')
     if (!paint) return
     paint.setTransform(ratio, 0, 0, ratio, 0, 0)
@@ -105,17 +90,18 @@ export function createFrostView(container: HTMLElement): FrostView {
     }
   }
 
-  fit()
-  const resize = new ResizeObserver(fit)
-  resize.observe(container)
+  // Drawn again for each size of the view.
+  const { canvas, context, dispose } = createOverlayCanvas(container, 'frost', (size) => {
+    drawIce(size)
+    shown = -1
+  })
 
   return {
     update(target, elapsedMs) {
       if (!context) return
       const seconds = elapsedMs / 1000
       time += seconds
-      const step = EASE_PER_SECOND * seconds
-      amount += Math.max(-step, Math.min(step, target - amount))
+      amount = easeToward(amount, target, EASE_PER_SECOND, seconds)
       // In deadly cold the ice throbs.
       const throb = amount > 0.97 ? 0.05 * Math.sin(time * 6) : 0
       const level = Math.max(0, Math.min(1, amount + throb))
@@ -146,9 +132,6 @@ export function createFrostView(container: HTMLElement): FrostView {
       context.restore()
       context.globalCompositeOperation = 'source-over'
     },
-    dispose() {
-      resize.disconnect()
-      canvas.remove()
-    },
+    dispose,
   }
 }

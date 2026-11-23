@@ -1,6 +1,8 @@
 import {
+  isMachineKind,
   ITEMS,
   itemByKey,
+  MACHINE_SLOTS,
   type DropState,
   type EntityState,
   type LinkState,
@@ -9,6 +11,7 @@ import {
   type TerrainSettings,
 } from '../../../packages/shared/src/index.ts'
 import type { AnimalSave } from './animals.ts'
+import type { RaftSave } from './rafts.ts'
 
 // A world, saved: everything that is not worked out again from the seed (the ground, ponds, ore are). Written as JSON to
 // a file per world in the saves folder (SAVES_DIR, see save-folder.ts), every SAVE_EVERY_MS while it runs, when it
@@ -29,6 +32,8 @@ export type PlayerSave = {
   bed?: [number, number]
   // Slot by slot: [item key, count], or null for an empty slot.
   inventory: Array<[string, number] | null>
+  // The raft they were aboard, and where on it: [raft ID, x, y] (see rafts.ts).
+  aboard?: [number, number, number]
 }
 
 export type WorldSave = {
@@ -59,6 +64,8 @@ export type WorldSave = {
   chunks: Array<{ chunk: number; entities: EntityState[]; drops: DropState[]; removed?: number[]; removedDrops?: number[] }>
   links: LinkState[]
   animals?: AnimalSave
+  // The rafts on the water (see the server's rafts.ts).
+  rafts?: RaftSave
   // Everyone who has played in it, by name (lower case, which is how players are linked to their save).
   players: Record<string, PlayerSave>
   // The host (the player who made it), and whether players can hurt each other.
@@ -82,15 +89,36 @@ export function itemRemap(saved: readonly string[]): (id: number) => number {
   return (id) => (id === 0 ? 0 : (map.get(id) ?? 0))
 }
 
-// An entity's state with its item numbers put right: in its slots, on its belt, and a miner's ore.
-export function remapEntity(state: EntityState, remap: (id: number) => number): EntityState {
-  const copy = { ...state } as EntityState & { inv?: number[]; lane?: number[]; ore?: number }
+// An entity's state from a save, as it is now: brought up to date if it was saved by an older version (see
+// `upgradeEntity`), and with its item numbers put right: in its slots, on its belt, and a miner's ore.
+export function remapEntity(saved: EntityState, remap: (id: number) => number): EntityState {
+  const copy = upgradeEntity(saved) as EntityState & { inv?: number[]; lane?: number[]; ore?: number }
   if (copy.inv) copy.inv = copy.inv.map((value, i) => (i % 2 === 0 ? remap(value) : value))
   if (copy.lane) copy.lane = copy.lane.map((value, i) => (i % 2 === 0 ? remap(value) : value))
   if (copy.ore !== undefined) copy.ore = remap(copy.ore)
   // An item that is gone leaves its slot empty.
   if (copy.inv) for (let i = 0; i < copy.inv.length; i += 2) if (copy.inv[i] === 0) copy.inv[i + 1] = 0
   return copy
+}
+
+// A building saved by an older version, as it is now (a copy; one that is up to date comes back as it was):
+// - a stump saved before it was a station like the workbench: its numbers by name, and its slots fewer;
+// - a workbench saved with a `repeat` number (since dropped), or before it had its tool slot;
+// - a barrel saved with three slots of solids: it keeps its first, and its output.
+type SavedState = Record<string, unknown> & { kind: string; inv?: number[]; n?: number[] }
+function upgradeEntity(saved: EntityState): EntityState {
+  const state = { ...(saved as unknown as SavedState) }
+  // Slots padded (with empty ones) to `slots`.
+  const padded = (inv: readonly number[] | undefined, slots: number): number[] => [...(inv ?? []), ...new Array(Math.max(0, slots * 2 - (inv?.length ?? 0))).fill(0)]
+  if (state.kind === 'stump' && state.n === undefined) {
+    const { hp, recipe = 0, progress = 0, active = 0 } = state as Record<string, number>
+    for (const field of ['hp', 'recipe', 'progress', 'active']) delete state[field]
+    state.n = [hp, recipe, progress, active]
+  }
+  if (state.kind === 'workbench' && state.n?.length === 5) state.n = [state.n[0], state.n[1], state.n[3], state.n[4]]
+  if (state.kind === 'barrel' && state.inv?.length === 8) state.inv = [...state.inv.slice(0, 2), ...state.inv.slice(6, 8)]
+  if (isMachineKind(state.kind)) state.inv = padded(state.inv, MACHINE_SLOTS[state.kind])
+  return state as unknown as EntityState
 }
 
 // Whether a file's contents look like a save this server can load, and if not, why not.

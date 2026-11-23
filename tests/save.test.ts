@@ -6,7 +6,7 @@ import test from 'node:test'
 import { GameRoom } from '../apps/server/src/game-room.ts'
 import { checkSave, type WorldSave } from '../apps/server/src/save.ts'
 import { fromBytes, SaveFolder, toBytes } from '../apps/server/src/save-folder.ts'
-import { animalDef, countOf, itemId, SUB } from '../packages/shared/src/index.ts'
+import { animalDef, countOf, isSeaAt, itemId, PLAYER_SPAWN, SUB } from '../packages/shared/src/index.ts'
 import { run, TestClient } from './helpers.ts'
 
 const center = (x: number, y: number): { x: number; y: number } => ({ x: x * SUB + SUB / 2, y: y * SUB + SUB / 2 })
@@ -130,6 +130,10 @@ test('a save keeps only what differs from what the seed grows: it is small, and 
       run(room, [client], 3)
     }
   }
+  // And over on the mountains' island, where the rocks are.
+  const mountain = room.terrain.sites[1]
+  client.player.position = { x: mountain.x * SUB, y: mountain.y * SUB }
+  run(room, [client], 3)
   const entities = room.world.chunkIds.flatMap((id) => [...room.world.chunk(id)!.entities])
   const felled = entities.find((entity) => entity.kind === 'tree')!
   const hurt = entities.find((entity) => entity.kind === 'rock')!
@@ -161,4 +165,34 @@ test('a version 1 save (every chunk whole, not gzipped) still loads', () => {
   }
   const loaded = GameRoom.fromSave(fromBytes(Buffer.from(JSON.stringify(old))) as WorldSave)
   for (const chunk of room.world.chunkIds) assert.equal(loaded.world.hashChunk(chunk), room.world.hashChunk(chunk))
+})
+
+test('a player who logged off aboard a raft that is gone when they come back wakes at their sleeping bag (or the spawn), not out at sea', () => {
+  const room = new GameRoom('RAFTGONE', 77, { wildAnimals: false })
+  const sailor = new TestClient(room, 'Sailor')
+  run(room, [sailor], 5)
+  // Open sea a few tiles east of the forest's coast.
+  const forest = room.terrain.sites[0]
+  let x = forest.x
+  while (!isSeaAt(room.terrain, x, forest.y) || !isSeaAt(room.terrain, x + 6, forest.y)) x++
+  const at = center(x + 4, forest.y)
+  const raft = room.rafts.add({ x: at.x, y: at.y, angle: 0 })
+  sailor.player.position = { ...at }
+  sailor.player.aboard = { raft: raft.id, x: 0, y: 0 }
+  run(room, [sailor], 2)
+  room.leave(sailor.player)
+  // The raft still there: back on it.
+  const again = new TestClient(room, 'Sailor')
+  run(room, [again], 2)
+  assert.equal(again.player.aboard?.raft, raft.id, 'back aboard')
+  room.leave(again.player)
+  // Gone (as from a save without it): the spawn, with no sleeping bag.
+  const save = throughFile(room.exportSave())
+  delete save.rafts
+  const loaded = GameRoom.fromSave(save, { wildAnimals: false })
+  const back = new TestClient(loaded, 'Sailor')
+  run(loaded, [back], 2)
+  assert.equal(back.player.aboard, undefined)
+  assert.ok(!isSeaAt(loaded.terrain, Math.floor(back.player.position.x / SUB), Math.floor(back.player.position.y / SUB)), 'on land')
+  assert.ok(Math.hypot(back.player.position.x - PLAYER_SPAWN.x, back.player.position.y - PLAYER_SPAWN.y) < SUB, 'at the spawn')
 })

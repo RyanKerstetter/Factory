@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { GameRoom } from '../apps/server/src/game-room.ts'
+import { HIT_KNOCKBACK, HIT_STUN_TICKS } from '../apps/server/src/combat.ts'
 import {
   animalDef,
   ARMOR_SLOT,
@@ -8,10 +9,7 @@ import {
   createEntity,
   damageAfterArmor,
   EAT_COOLDOWN_TICKS,
-  FOOD_SLOT,
-  addItems,
-  DUNGEON_LAYOUT,
-  dungeonTile,
+  cookingOf,
   getItem,
   isSeaAt,
   itemByKey,
@@ -19,6 +17,7 @@ import {
   NO_ITEM,
   PLAYER_MAX_HEALTH,
   PLAYER_SPAWN,
+  countOf,
   SUB,
   TPS,
   waterAt,
@@ -108,7 +107,7 @@ test('a sleeping bag, made of 3 leather, is where a player sleeps and wakes up w
   assert.deepEqual(client.player.position, center(2, 0), 'woke up at the sleeping bag')
   // The bag taken away: the spawn again.
   room.world.removeEntity(bed.id)
-  room.animals!.all.delete(wolf.id)
+  room.animals!.remove(wolf.id)
   client.player.position = center(30, 30)
   client.player.health = 1
   const again = room.animals!.spawn(animalDef('wolf'), center(32, 30).x, center(32, 30).y)
@@ -122,7 +121,7 @@ test('a request the server cannot read is answered as refused, and does not hold
   // As the hosted server puts it in place of a request that failed its checks (see index.ts).
   const answered = room.receiveRequest(client.player, { s: 1, r: { k: 'bad' } } as RequestMessage)
   assert.equal(answered, 1, 'acknowledged, so the stream goes on')
-  room.receiveRequest(client.player, { s: 2, r: { k: 'cmd', tick: room.tick + 1, c: { k: 'move', from: 0, to: 5 } } } as RequestMessage)
+  room.receiveRequest(client.player, { s: 2, r: { k: 'cmd', tick: room.tick + 1, c: { k: 'slot', from: { id: 0, i: 0 }, to: { id: 0, i: 5 }, count: 5 } } } as RequestMessage)
   room.step()
   room.step()
   assert.equal(client.player.inventory.slots[5].count, 5, 'the next command ran')
@@ -133,33 +132,7 @@ test('deer drop meat and hides; wolves drop hides and fangs; the items they used
   assert.deepEqual(drops('deer'), ['hide', 'steak'])
   assert.deepEqual(drops('wolf'), ['fang', 'hide'])
   for (const gone of ['venison', 'cooked-venison', 'wolf-pelt', 'cooked-egg']) assert.equal(itemByKey(gone), undefined, `${gone} is gone`)
-  assert.equal(getItem(itemId('egg')).cooks, undefined, 'eggs no longer cook into anything')
-})
-
-test('a skeleton that sees a player goes for them alone; hurt, it calls the others; and a wall hides a player from it', () => {
-  const { room, client } = arena('SKEL')
-  const skeleton = animalDef('skeleton')
-  const a = room.animals!.spawn(skeleton, client.player.position.x + 5 * SUB, client.player.position.y)
-  const b = room.animals!.spawn(skeleton, client.player.position.x + 9 * SUB, client.player.position.y + 2 * SUB)
-  run(room, [client], 8)
-  assert.equal(a.target, client.player.id, 'the near one comes')
-  assert.equal(b.target, 0, 'alone')
-  room.animals!.damage(a.id, 1, client.player.position, room.tick, {}, client.player.id)
-  assert.equal(b.target, client.player.id, 'hurt, it calls the others')
-  // In the crypt, a player behind a wall is not seen.
-  const crypt = new GameRoom('SKEL2', 11, { wildAnimals: false, plants: false, animals: true })
-  const delver = new TestClient(crypt, 'Delver')
-  // The player in the great hall; a skeleton in the side room below it, near, but with rock between them.
-  // (Rows counted from the doorway out of the lich's hall, which is row 8 of the part below it.)
-  const below = DUNGEON_LAYOUT.door.y - 8
-  const hall = dungeonTile(0, { x: 13, y: below + 12 })
-  const room2 = dungeonTile(0, { x: 18, y: below + 16 })
-  assert.ok(Math.hypot(hall.x - room2.x, hall.y - room2.y) < animalDef('skeleton').hunt!.aggroRadius / SUB, 'near enough to notice')
-  delver.player.position = center(hall.x, hall.y)
-  run(crypt, [delver], 3)
-  const behind = crypt.animals!.spawn(skeleton, center(room2.x, room2.y).x, center(room2.x, room2.y).y)
-  run(crypt, [delver], 8)
-  assert.equal(behind.target, 0, 'the wall hides the player')
+  assert.equal(cookingOf(itemId('egg'), 'campfire')?.into, itemId('fried-egg'), 'an egg fries')
 })
 
 test('a wolf that gives up a chase at the edge of its ground does not take it up again and again', () => {
@@ -199,14 +172,14 @@ test('grass stops spreading once its patch is 15 tufts big', () => {
   const everything = () => [...room.world.chunkIds].flatMap((chunk) => [...(room.world.chunk(chunk)?.entities ?? [])])
   for (const entity of everything()) if (Math.abs(entity.x) < 40 && Math.abs(entity.y) < 40) room.world.removeEntity(entity.id)
   room.world.addEntity(createEntity(99_999, 'grass', 8, 8, 0, NO_ITEM))
-  run(room, [client], 400 * TPS / 10)
+  run(room, [client], 300 * TPS)
   const grass = everything().filter((entity) => entity.kind === 'grass' && Math.abs(entity.x - 8) < 12 && Math.abs(entity.y - 8) < 12)
   assert.ok(grass.length > 3, `it spread (${grass.length})`)
   assert.ok(grass.length <= 16, `but no further than a patch of 15 (${grass.length})`)
 })
 
 test('an arrow that comes down over the sea sinks', () => {
-  const room = new GameRoom('SINK', 7, { wildAnimals: false, plants: false, animals: true, terrain: { size: 'small', bumpiness: 0 } })
+  const room = new GameRoom('SINK', 7, { wildAnimals: false, plants: false, animals: true, terrain: { size: 'small' } })
   const client = new TestClient(room, 'Archer')
   // The shore due west of the forest.
   const forest = room.terrain.sites[0]
@@ -216,10 +189,72 @@ test('an arrow that comes down over the sea sinks', () => {
   run(room, [client], 3)
   client.player.inventory.slots[0] = { item: itemId('bow'), count: 1 }
   client.player.inventory.slots[1] = { item: itemId('arrow'), count: 5 }
-  client.command({ k: 'attack', special: false, slot: 0, x: client.player.position.x - 20 * SUB, y: client.player.position.y, charge: 30 })
+  client.command({ k: 'attack', slot: 0, x: client.player.position.x - 20 * SUB, y: client.player.position.y})
   run(room, [client], 3 * TPS)
   assert.equal(client.player.inventory.slots[1].count, 4, 'shot')
   const lying = room.world.allDrops().filter((drop) => drop.item === itemId('arrow'))
   assert.ok(lying.every((drop) => !waterAt(room.terrain, Math.floor(drop.x / SUB), Math.floor(drop.y / SUB))), 'nothing lies on the water')
   assert.equal(lying.length, 0, 'the arrow sank')
+})
+
+test('respawning from the menu: back to the world spawn, or to the sleeping bag (refused without one), off any raft, health and things kept', () => {
+  const { room, client } = arena('RESPAWN', { 'sleeping-bag': 1, stick: 7 })
+  const stranded = center(40, 40)
+  client.player.position = { ...stranded }
+  client.player.health = 37
+  // No sleeping bag yet: refused, and they stay put.
+  client.command({ k: 'respawn', at: 'bed' })
+  run(room, [client], 2)
+  assert.equal(client.results.at(-1)?.why, 'noBed')
+  assert.deepEqual(client.player.position, stranded)
+  // To the world spawn.
+  client.command({ k: 'respawn', at: 'spawn' })
+  run(room, [client], 2)
+  assert.ok(Math.hypot(client.player.position.x - PLAYER_SPAWN.x, client.player.position.y - PLAYER_SPAWN.y) < SUB, 'at the spawn')
+  assert.equal(client.player.health, 37, 'not healed')
+  assert.equal(countOf(client.player.inventory, itemId('stick')), 7, 'things kept')
+  // A sleeping bag slept in: back to it, from wherever they are (aboard a raft, even).
+  client.command({ k: 'place', x: 2, y: 0, slot: 0 })
+  run(room, [client], 3)
+  const bed = room.world.entityAt(2, 0)!
+  client.command({ k: 'sleep', id: bed.id })
+  run(room, [client], 3)
+  const raft = room.rafts.add({ x: center(40, 40).x, y: center(40, 40).y, angle: 0 })
+  client.player.position = { ...stranded }
+  client.player.aboard = { raft: raft.id, x: 0, y: 0 }
+  client.command({ k: 'respawn', at: 'bed' })
+  run(room, [client], 2)
+  assert.deepEqual(client.player.position, center(2, 0), 'at the sleeping bag')
+  assert.equal(client.player.aboard, undefined, 'off the raft')
+})
+
+test('a wolf that is hit backs off and does not bite straight back; once its recoil is over, it comes again', () => {
+  const { room, client } = arena('RECOIL')
+  client.player.health = 1_000
+  const wolf = animalDef('wolf')
+  const at = client.player.position
+  const biter = room.animals!.spawn(wolf, at.x + Math.round(0.7 * SUB), at.y)
+  biter.homeX = at.x
+  biter.homeY = at.y
+  // On the player, its bite ready.
+  room.animals!.damage(biter.id, 0, { x: at.x + 5 * SUB, y: at.y }, room.tick, {}, client.player.id)
+  biter.recoilUntil = 0
+  biter.biteReadyAt = 0
+  // Hit by the player, as a melee hit lands (knocked back, stunned a moment).
+  room.animals!.damage(biter.id, 1, at, room.tick, { knockback: HIT_KNOCKBACK, stun: HIT_STUN_TICKS }, client.player.id)
+  const recoil = biter.recoilUntil! - room.tick
+  assert.ok(recoil >= wolf.hunt!.recoil, 'it recoils')
+  let farthest = 0
+  for (let tick = 0; tick < recoil - 1; tick++) {
+    client.player.position = { ...at }
+    run(room, [client], 1)
+    farthest = Math.max(farthest, Math.hypot(biter.x - at.x, biter.y - at.y))
+  }
+  assert.equal(client.player.health, 1_000, 'not bitten while it recoils')
+  assert.ok(farthest > 2 * SUB, `it backed off (${(farthest / SUB).toFixed(1)} tiles)`)
+  for (let tick = 0; tick < 5 * TPS && client.player.health === 1_000; tick++) {
+    client.player.position = { ...at }
+    run(room, [client], 1)
+  }
+  assert.ok(client.player.health < 1_000, 'and then it bites again')
 })

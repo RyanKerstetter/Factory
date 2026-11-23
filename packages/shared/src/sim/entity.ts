@@ -1,15 +1,16 @@
-import { BUILDINGS, type BuildingKind } from '../buildings.ts'
+import { BUILDINGS, type BuildingKind, type FireKind } from '../buildings.ts'
 import { CHEST_SLOTS, FEEDER_SLOTS, MINER_SLOTS, SAPLING_STAGES, SPROUT_STAGES, TREE_STICK_REGROW, TREE_STICKS, TPS } from '../constants.ts'
 import { getCrop } from '../crops.ts'
 import type { Direction } from '../geometry.ts'
-import { addItems, createInventory, inventoryFromWire, inventoryToWire, removeItems, roomFor, type Inventory } from '../inventory.ts'
-import { getItem, stackLimit, type ItemId } from '../items.ts'
+import { addItems, countOf, createInventory, inventoryFromWire, inventoryToWire, inventoryTotals, removeItems, roomFor, type Inventory } from '../inventory.ts'
+import { getItem, NO_ITEM, stackLimit, type ItemId } from '../items.ts'
 import {
   BARREL_SLOTS,
   BARREL_SOLIDS,
   CAMPFIRE_COOK,
   CAMPFIRE_FUEL,
   CAMPFIRE_SLOTS,
+  cookingOf,
   RACK_INPUT,
   RACK_SLOTS,
   rackRecipe,
@@ -17,19 +18,7 @@ import {
   stepCampfire,
   stepRack,
 } from '../machines.ts'
-import {
-  STATION_INPUT_SLOT,
-  STATION_OUTPUT_SLOT,
-  STATION_RECIPES,
-  STATION_SLOTS,
-  stationRecipe,
-  stationSlotFor,
-  WORKBENCH_INPUT_SLOTS,
-  WORKBENCH_SLOTS,
-  WORKBENCH_TOOL_SLOT,
-  workbenchCan,
-  workbenchMake,
-} from '../stations.ts'
+import { isStationKind, STATION_LAYOUT, STATION_RECIPES, stationCan, stationMake, stationSlotsFor, type StationKind } from '../stations.ts'
 import { stepLane, type BeltShape, type LaneItem } from './belt.ts'
 import type { Hasher } from './hash.ts'
 
@@ -42,10 +31,9 @@ export type BeltEntity = EntityBase & { kind: 'belt' | 'extractor'; lane: LaneIt
 export type MinerEntity = EntityBase & { kind: 'miner'; ore: ItemId; progress: number; inv: Inventory }
 // A chest, and the name a player gave it (shown when it is hovered; not part of the simulation's hash).
 export type ChestEntity = EntityBase & { kind: 'chest'; hp: number; inv: Inventory; name?: string }
-// A bush, a rock, a tuft of grass or a fence, with the hits it has left in it.
-export type PlantEntity = EntityBase & { kind: 'bush' | 'rock' | 'grass' | 'fence' | 'bed' | 'door'; hp: number }
-// Something stuck in the ground, to be knocked loose by a hit: a piece of flint, a thrown spear. `item` and `count` are
-// what it gives.
+// Something with only the hits it has left in it: a bush, a rock, a tuft of grass, a fence, a sleeping bag, an ice door, a well.
+export type PlantEntity = EntityBase & { kind: 'bush' | 'rock' | 'grass' | 'fence' | 'bed' | 'door' | 'well'; hp: number }
+// Something stuck in the ground, to be knocked loose by a hit (a piece of flint). `item` and `count` are what it gives.
 export type LooseEntity = EntityBase & { kind: 'loose'; item: ItemId; count: number }
 // A gate, and its mode (GATE_AUTO, GATE_OPEN or GATE_SHUT: see fences.ts).
 export type GateEntity = EntityBase & { kind: 'gate'; hp: number; mode: number }
@@ -58,17 +46,15 @@ export type SaplingEntity = EntityBase & { kind: 'sapling' | 'sprout'; stage: nu
 // A garden plot: the crop in it (its number in crops.json, 0 for none), how far it has grown (in GROWTH_STEP a random
 // tick, more when watered and fertilised), and how watered and how fertilised it is (0 to 100, falling over time).
 export type PlotEntity = EntityBase & { kind: 'plot'; hp: number; crop: number; growth: number; water: number; fertility: number }
-// The stump (see stations.ts): its tool, input and output slots, how many ticks into the recipe it is, and whether it is
-// working (1) or waiting for Craft to be pressed (0).
-export type StationEntity = EntityBase & { kind: 'stump'; hp: number; inv: Inventory; progress: number; active: number }
+// A work station, the stump or the workbench (see stations.ts): its tool, input and output slots (STATION_LAYOUT), the
+// recipe picked (its index in its station's list, plus one; 0 for none), how many ticks into it it is, and whether it
+// is working (1) or waiting for Craft to be pressed (0).
+export type StationEntity = EntityBase & { kind: StationKind; hp: number; inv: Inventory; recipe: number; progress: number; active: number }
 // A feed box: what is in it for the animals.
 export type FeederEntity = EntityBase & { kind: 'feeder'; hp: number; inv: Inventory }
-// The workbench: its three input slots and output slot, the recipe picked (its index in stations.json, plus one; 0 for
-// none), whether to keep making it, how far into it it is, and whether it is working.
-export type WorkbenchEntity = EntityBase & { kind: 'workbench'; hp: number; inv: Inventory; recipe: number; repeat: number; progress: number; active: number }
-// A campfire (see machines.ts).
+// A campfire, or an oven (see machines.ts).
 export type CampfireEntity = EntityBase & {
-  kind: 'campfire'
+  kind: FireKind
   hp: number
   inv: Inventory
   lit: number
@@ -78,7 +64,7 @@ export type CampfireEntity = EntityBase & {
   cook: number
   burnt: number
 }
-// A barrel (see machines.ts): its liquid (LIQUID_NONE, _WATER, _TANNIN) and how many buckets of it, whether it is
+// A barrel (see machines.ts): its liquid (its number in LIQUIDS, 0 for none) and how many buckets of it, whether it is
 // sealed, what it is working on and how far, and the heat it gets from a fire beside it.
 export type BarrelEntity = EntityBase & {
   kind: 'barrel'
@@ -96,15 +82,33 @@ export type BarrelEntity = EntityBase & {
 // A drying rack (see machines.ts).
 export type RackEntity = EntityBase & { kind: 'rack'; hp: number; inv: Inventory; progress: number; heat: number; border: number }
 
-// The machines whose state is their slots and a row of numbers, in this order (how they are sent and hashed).
+// The machines: buildings whose state is their slots and a row of numbers, in this order (how they are sent, saved
+// and hashed), and how many slots each has. A new machine is a kind here, its entity type above, and what it does each
+// tick in `stepEntity`.
+const STATION_FIELDS = ['hp', 'recipe', 'progress', 'active'] as const
+const FIRE_FIELDS = ['hp', 'lit', 'burn', 'target', 'heat', 'cook', 'burnt'] as const
 const MACHINE_FIELDS = {
-  workbench: ['hp', 'recipe', 'repeat', 'progress', 'active'],
-  campfire: ['hp', 'lit', 'burn', 'target', 'heat', 'cook', 'burnt'],
+  stump: STATION_FIELDS,
+  workbench: STATION_FIELDS,
+  campfire: FIRE_FIELDS,
+  oven: FIRE_FIELDS,
   barrel: ['hp', 'liquid', 'amount', 'sealed', 'process', 'progress', 'heat', 'border'],
   rack: ['hp', 'progress', 'heat', 'border'],
 } as const
-type MachineKind = keyof typeof MACHINE_FIELDS
-export type MachineEntity = WorkbenchEntity | CampfireEntity | BarrelEntity | RackEntity
+export type MachineKind = keyof typeof MACHINE_FIELDS
+export const MACHINE_SLOTS: Readonly<Record<MachineKind, number>> = {
+  stump: STATION_LAYOUT.stump.slots,
+  workbench: STATION_LAYOUT.workbench.slots,
+  campfire: CAMPFIRE_SLOTS,
+  oven: CAMPFIRE_SLOTS,
+  barrel: BARREL_SLOTS,
+  rack: RACK_SLOTS,
+}
+export type MachineEntity = StationEntity | CampfireEntity | BarrelEntity | RackEntity
+
+export function isMachineKind(kind: string): kind is MachineKind {
+  return Object.hasOwn(MACHINE_FIELDS, kind)
+}
 
 // A crop grows GROWTH_STEP on each random tick, as much again while its plot is watered, and up to that much again for
 // being fertilised (in proportion to how much). Watering lasts a set time, WATERED_SECONDS: a plot's water (100 when
@@ -129,7 +133,6 @@ export type Entity =
   | GateEntity
   | SaplingEntity
   | PlotEntity
-  | StationEntity
   | FeederEntity
   | MachineEntity
   | LooseEntity
@@ -138,11 +141,12 @@ export function isBeltLike(entity: Entity): entity is BeltEntity {
   return entity.kind === 'belt' || entity.kind === 'extractor'
 }
 
-export function isMachine(entity: Entity): entity is MachineEntity {
-  return entity.kind in MACHINE_FIELDS
+// Whether it is a work station (the stump, the workbench: see stations.ts).
+export function isStation(entity: Entity): entity is StationEntity {
+  return isStationKind(entity.kind)
 }
 
-export function hasInventory(entity: Entity): entity is MinerEntity | ChestEntity | StationEntity | FeederEntity | MachineEntity {
+export function hasInventory(entity: Entity): entity is MinerEntity | ChestEntity | FeederEntity | MachineEntity {
   return 'inv' in entity
 }
 
@@ -181,6 +185,7 @@ export function createEntity(id: number, kind: BuildingKind, x: number, y: numbe
     case 'fence':
     case 'bed':
     case 'door':
+    case 'well':
       return { id, kind, x, y, dir: 0, hp }
     case 'gate':
       return { id, kind, x, y, dir: 0, hp, mode: 0 }
@@ -192,17 +197,15 @@ export function createEntity(id: number, kind: BuildingKind, x: number, y: numbe
       return { id, kind, x, y, dir: 0, stage: 0 }
     case 'plot':
       return { id, kind, x, y, dir: 0, hp, crop: 0, growth: 0, water: 0, fertility: 0 }
-    case 'stump':
-      return { id, kind, x, y, dir: 0, hp, inv: createInventory(STATION_SLOTS), progress: 0, active: 0 }
     case 'feeder':
       return { id, kind, x, y, dir: 0, hp, inv: createInventory(FEEDER_SLOTS) }
+    case 'stump':
     case 'workbench':
     case 'campfire':
+    case 'oven':
     case 'barrel':
-    case 'rack': {
-      const slots = { workbench: WORKBENCH_SLOTS, campfire: CAMPFIRE_SLOTS, barrel: BARREL_SLOTS, rack: RACK_SLOTS }[kind]
-      return machineFrom(kind, id, x, y, createInventory(slots), MACHINE_FIELDS[kind].map((field) => (field === 'hp' ? hp : 0)))
-    }
+    case 'rack':
+      return machineFrom(kind, id, x, y, createInventory(MACHINE_SLOTS[kind]), MACHINE_FIELDS[kind].map((field) => (field === 'hp' ? hp : 0)))
   }
 }
 
@@ -240,42 +243,12 @@ export function stepEntity(entity: Entity): void {
       }
       return
     }
-    case 'stump': {
-      // A working station stops when it runs out of input or room, or its tool is taken out.
-      if (entity.active === 0) return
-      const recipe = stationRecipe(entity.kind, entity.inv)
-      if (!recipe) {
-        entity.active = 0
-        entity.progress = 0
-        return
-      }
-      entity.progress++
-      if (entity.progress < recipe.ticks) return
-      entity.progress = 0
-      const input = entity.inv.slots[STATION_INPUT_SLOT]
-      const output = entity.inv.slots[STATION_OUTPUT_SLOT]
-      input.count -= recipe.inputs[0][1]
-      if (input.count === 0) input.item = 0
-      output.item = recipe.output
-      output.count += recipe.count
+    case 'stump':
+    case 'workbench':
+      stepStation(entity)
       return
-    }
-    case 'workbench': {
-      // It makes the recipe picked, again and again while what is in it is enough.
-      if (entity.active === 0) return
-      const recipe = STATION_RECIPES.workbench[entity.recipe - 1]
-      if (!recipe || !workbenchCan(entity.inv, recipe)) {
-        entity.active = 0
-        entity.progress = 0
-        return
-      }
-      entity.progress++
-      if (entity.progress < recipe.ticks) return
-      entity.progress = 0
-      workbenchMake(entity.inv, recipe)
-      return
-    }
     case 'campfire':
+    case 'oven':
       stepCampfire(entity)
       return
     case 'barrel':
@@ -284,20 +257,8 @@ export function stepEntity(entity: Entity): void {
     case 'rack':
       stepRack(entity)
       return
-    case 'chest':
-    case 'tree':
-    case 'bush':
-    case 'rock':
-    case 'grass':
-    case 'loose':
-    case 'fence':
-    case 'bed':
-    case 'door':
-    case 'gate':
-    case 'sapling':
-    case 'sprout':
-    case 'plot':
-    case 'feeder':
+    default:
+      // Everything else only changes when something is done to it (or on a random tick: see `randomTick`).
       return
   }
 }
@@ -344,22 +305,20 @@ export function cropIsGrown(plot: PlotEntity): boolean {
 }
 
 // Which of a building's slots an item put in by hand can go to, and how many fit in each: a station's tool goes to its
-// tool slot and what it works on to its input slots; a campfire takes fuel and food in their own slots; a barrel any
+// tool slot and what it works on to its input slots; a campfire (or an oven) takes fuel and what it can cook in their
+// own slots; a barrel any
 // solid; a drying rack one hide. Nothing goes into a machine's output slots by hand. Anything else takes whatever fits.
 function slotsFor(entity: Entity & { inv: Inventory }, item: ItemId): { slots: readonly number[]; limit: number } | undefined {
   const limit = stackLimit(item, entity.inv.stack)
+  if (isStationKind(entity.kind)) {
+    const route = stationSlotsFor(entity.kind, item)
+    return route ? { slots: route.slots, limit: route.limit ?? limit } : undefined
+  }
   switch (entity.kind) {
-    case 'stump': {
-      const slot = stationSlotFor(entity.kind, item)
-      return slot === undefined ? undefined : { slots: [slot], limit }
-    }
-    case 'workbench':
-      // A tool to its tool slot (one), anything else to the input slots.
-      return getItem(item).tool ? { slots: [WORKBENCH_TOOL_SLOT], limit: 1 } : { slots: WORKBENCH_INPUT_SLOTS, limit }
-    case 'campfire': {
-      const def = getItem(item)
-      if (def.fuel) return { slots: [CAMPFIRE_FUEL], limit }
-      return def.cooks ? { slots: [CAMPFIRE_COOK], limit } : undefined
+    case 'campfire':
+    case 'oven': {
+      if (getItem(item).fuel) return { slots: [CAMPFIRE_FUEL], limit }
+      return cookingOf(item, entity.kind) ? { slots: [CAMPFIRE_COOK], limit } : undefined
     }
     case 'barrel':
       return { slots: BARREL_SOLIDS, limit }
@@ -423,18 +382,76 @@ export function takeFromBuilding(entity: Entity, item: ItemId, count: number): n
   return removeItems(entity.inv, item, count)
 }
 
+// Moves up to `max` of `item` (NO_ITEM: of every kind, in item order) between a player's inventory and a building's, as
+// the `take` and `put` commands do: as much as there is, and as fits where it goes. Changes both, and gives each kind
+// moved and how many. The server runs it on a copy of the building and sends the moves; the page runs it to show them.
+// Put in, it comes out of the player's ordinary slots only, never their food, ammunition, armour or trash slots
+// (`putSlots`): unless `fromSlot` is the slot clicked, which goes first, whatever it is.
+export function transferItems(player: Inventory, building: Entity, item: ItemId, max: number, way: 'take' | 'put', fromSlot?: number): Array<[ItemId, number]> {
+  if (!hasInventory(building)) return []
+  const kinds =
+    item === NO_ITEM
+      ? way === 'take'
+        ? inventoryTotals(building.inv).map((total) => total.item)
+        : [...new Set(putSlots(player, NO_ITEM, fromSlot).map((index) => player.slots[index].item))].sort((a, b) => a - b)
+      : [item]
+  const moves: Array<[ItemId, number]> = []
+  let left = max
+  for (const kind of kinds) {
+    if (left === 0) break
+    const sources = way === 'put' ? putSlots(player, kind, fromSlot) : []
+    const have = way === 'take' ? countOf(building.inv, kind) : sources.reduce((sum, index) => sum + player.slots[index].count, 0)
+    const room = way === 'take' ? roomFor(player, kind, left) : roomInBuilding(building, kind, left)
+    const count = Math.min(left, have, room)
+    if (count <= 0) continue
+    // Only what really moves (a sealed barrel gives and takes nothing).
+    const moved = way === 'take' ? takeFromBuilding(building, kind, count) : addToBuilding(building, kind, count)
+    if (moved <= 0) continue
+    if (way === 'take') addItems(player, kind, moved)
+    else {
+      let out = moved
+      for (const index of sources) {
+        const slot = player.slots[index]
+        const taken = Math.min(out, slot.count)
+        slot.count -= taken
+        if (slot.count === 0) slot.item = NO_ITEM
+        out -= taken
+        if (out === 0) break
+      }
+    }
+    moves.push([kind, moved])
+    left -= moved
+  }
+  return moves
+}
+
+// The player's slots that items of `kind` (NO_ITEM: any) are put into a building from, in order: the slot clicked
+// (`fromSlot`, if it holds some), then their ordinary slots from the last backwards (not the food, ammunition, armour
+// or trash slots).
+function putSlots(player: Inventory, kind: ItemId, fromSlot?: number): number[] {
+  const holds = (index: number): boolean => {
+    const slot = player.slots[index]
+    return slot !== undefined && slot.count > 0 && (kind === NO_ITEM || slot.item === kind)
+  }
+  const order: number[] = []
+  if (fromSlot !== undefined && holds(fromSlot)) order.push(fromSlot)
+  for (let index = player.slots.length - 1; index >= 0; index--) {
+    if (index !== fromSlot && player.slots[index].only === undefined && holds(index)) order.push(index)
+  }
+  return order
+}
+
 // A building as it is sent: in a snapshot, or when it is built.
 export type EntityState =
   | { id: number; kind: 'belt' | 'extractor'; x: number; y: number; dir: Direction; lane: number[] }
   | { id: number; kind: 'miner'; x: number; y: number; dir: Direction; ore: ItemId; progress: number; inv: number[] }
   | { id: number; kind: 'chest'; x: number; y: number; dir: Direction; hp?: number; inv: number[]; name?: string }
   | { id: number; kind: 'tree'; x: number; y: number; dir: Direction; hp: number; sticks: number; punches: number; regrow: number }
-  | { id: number; kind: 'bush' | 'rock' | 'grass' | 'fence' | 'bed' | 'door'; x: number; y: number; dir: Direction; hp: number }
+  | { id: number; kind: 'bush' | 'rock' | 'grass' | 'fence' | 'bed' | 'door' | 'well'; x: number; y: number; dir: Direction; hp: number }
   | { id: number; kind: 'gate'; x: number; y: number; dir: Direction; hp: number; mode: number }
   | { id: number; kind: 'loose'; x: number; y: number; dir: Direction; item: ItemId; count: number }
   | { id: number; kind: 'sapling' | 'sprout'; x: number; y: number; dir: Direction; stage: number }
   | { id: number; kind: 'plot'; x: number; y: number; dir: Direction; hp: number; crop: number; growth: number; water: number; fertility: number }
-  | { id: number; kind: 'stump'; x: number; y: number; dir: Direction; hp: number; inv: number[]; progress: number; active: number }
   | { id: number; kind: 'feeder'; x: number; y: number; dir: Direction; hp: number; inv: number[] }
   // A machine: its slots, and its numbers in the order of MACHINE_FIELDS.
   | { id: number; kind: MachineKind; x: number; y: number; dir: Direction; inv: number[]; n: number[] }
@@ -460,6 +477,7 @@ export function entityToState(entity: Entity): EntityState {
     case 'fence':
     case 'bed':
     case 'door':
+    case 'well':
       return { id, kind: entity.kind, x, y, dir, hp: entity.hp }
     case 'gate':
       return { id, kind: 'gate', x, y, dir, hp: entity.hp, mode: entity.mode }
@@ -470,12 +488,12 @@ export function entityToState(entity: Entity): EntityState {
       return { id, kind: entity.kind, x, y, dir, stage: entity.stage }
     case 'plot':
       return { id, kind: 'plot', x, y, dir, hp: entity.hp, crop: entity.crop, growth: entity.growth, water: entity.water, fertility: entity.fertility }
-    case 'stump':
-      return { id, kind: 'stump', x, y, dir, hp: entity.hp, inv: inventoryToWire(entity.inv), progress: entity.progress, active: entity.active }
     case 'feeder':
       return { id, kind: 'feeder', x, y, dir, hp: entity.hp, inv: inventoryToWire(entity.inv) }
+    case 'stump':
     case 'workbench':
     case 'campfire':
+    case 'oven':
     case 'barrel':
     case 'rack':
       return { id, kind: entity.kind, x, y, dir, inv: inventoryToWire(entity.inv), n: machineValues(entity) }
@@ -505,6 +523,7 @@ export function entityFromState(state: EntityState): Entity {
     case 'fence':
     case 'bed':
     case 'door':
+    case 'well':
       return { id, kind: state.kind, x, y, dir, hp: state.hp }
     case 'gate':
       return { id, kind: 'gate', x, y, dir, hp: state.hp, mode: state.mode }
@@ -515,20 +534,15 @@ export function entityFromState(state: EntityState): Entity {
       return { id, kind: state.kind, x, y, dir, stage: state.stage }
     case 'plot':
       return { id, kind: 'plot', x, y, dir, hp: state.hp, crop: state.crop, growth: state.growth, water: state.water, fertility: state.fertility }
-    case 'stump':
-      return { id, kind: 'stump', x, y, dir, hp: state.hp, inv: inventoryFromWire(state.inv), progress: state.progress, active: state.active }
     case 'feeder':
       return { id, kind: 'feeder', x, y, dir, hp: state.hp, inv: inventoryFromWire(state.inv) }
+    case 'stump':
     case 'workbench':
     case 'campfire':
+    case 'oven':
     case 'barrel':
-    case 'rack': {
-      // One saved before it had all its slots (a workbench without its tool slot) gets them, empty.
-      const size = { workbench: WORKBENCH_SLOTS, campfire: CAMPFIRE_SLOTS, barrel: BARREL_SLOTS, rack: RACK_SLOTS }[state.kind]
-      const inv = inventoryFromWire(state.inv)
-      while (inv.slots.length < size) inv.slots.push({ item: 0, count: 0 })
-      return machineFrom(state.kind, id, x, y, inv, state.n)
-    }
+    case 'rack':
+      return machineFrom(state.kind, id, x, y, inventoryFromWire(state.inv), state.n)
   }
 }
 
@@ -563,6 +577,7 @@ export function hashEntity(hasher: Hasher, entity: Entity): void {
     case 'fence':
     case 'bed':
     case 'door':
+    case 'well':
       hasher.int(entity.hp)
       return
     case 'gate':
@@ -578,20 +593,35 @@ export function hashEntity(hasher: Hasher, entity: Entity): void {
     case 'plot':
       hasher.int(entity.hp).int(entity.crop).int(entity.growth).int(entity.water).int(entity.fertility)
       return
-    case 'stump':
-      hasher.int(entity.hp).int(entity.progress).int(entity.active)
-      hashInventory(hasher, entity.inv)
-      return
     case 'feeder':
       hasher.int(entity.hp)
       hashInventory(hasher, entity.inv)
       return
+    case 'stump':
     case 'workbench':
     case 'campfire':
+    case 'oven':
     case 'barrel':
     case 'rack':
       for (const value of machineValues(entity)) hasher.int(value)
       hashInventory(hasher, entity.inv)
       return
   }
+}
+
+// A station (the stump, the workbench) makes the recipe picked, again and again while what is in it is enough; it stops
+// when it runs out, or has no room for what it makes, or its tool is taken out.
+function stepStation(entity: StationEntity): void {
+  if (entity.active === 0) return
+  const kind: StationKind = entity.kind
+  const recipe = STATION_RECIPES[kind][entity.recipe - 1]
+  if (!recipe || !stationCan(kind, entity.inv, recipe)) {
+    entity.active = 0
+    entity.progress = 0
+    return
+  }
+  entity.progress++
+  if (entity.progress < recipe.ticks) return
+  entity.progress = 0
+  stationMake(kind, entity.inv, recipe)
 }

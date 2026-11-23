@@ -26,7 +26,7 @@ export function fenceMask(kindAt: (x: number, y: number) => BuildingKind | undef
   )
 }
 
-// The placeholder art is 32 pixels to a tile; this many units to one of its pixels.
+// Fences are measured in 32nds of a tile; this many units to one.
 const PX = SUB / 32
 const box = (x0: number, y0: number, x1: number, y1: number): Box => [x0 * PX, y0 * PX, x1 * PX, y1 * PX]
 // One even band through the middle of the tile, as thick as the post: the post and every rail line up flush, so

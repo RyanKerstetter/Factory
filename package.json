@@ -16,7 +16,7 @@
     "build:client": "npm run build --workspace @factory/client",
     "build": "npm run build --workspace @factory/client && npm run typecheck --workspace @factory/server",
     "preview": "npm run preview --workspace @factory/client",
-    "typecheck": "npm run typecheck --workspace @factory/client && npm run typecheck --workspace @factory/server",
+    "typecheck": "npm run typecheck --workspace @factory/client && npm run typecheck --workspace @factory/server && tsc -p tests",
     "test": "tsx --test \"tests/*.test.ts\""
   },
   "devDependencies": {

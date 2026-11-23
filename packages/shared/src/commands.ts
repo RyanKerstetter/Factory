@@ -8,7 +8,7 @@ import { playerOverlapsTile, type Box, type IsSlow, type IsSolid } from './movem
 import type { FactoryWorld } from './sim/factory-world.ts'
 import { groundBlocks, oreAt, waterAt } from './world-gen.ts'
 import { isInDungeons } from './dungeon.ts'
-import type { Terrain } from './terrain.ts'
+import { canGrowAt, type Terrain } from './terrain.ts'
 
 // What a player asks to happen to the factory. A client sends it stamped with the tick it should run on; the server
 // checks it on that tick and runs it, runs part of it ("take up to 50"), or turns it down, and logs what happened.
@@ -19,10 +19,7 @@ export type Command =
   // Take up to `max` of `item` out of a building into the player's inventory. `item` 0 is every kind, in item order.
   | { k: 'take'; id: number; item: ItemId; max: number }
   // Put up to `max` of `item` from the player's inventory into a building. `item` 0 is every kind, in item order.
-  | { k: 'put'; id: number; item: ItemId; max: number }
-  // Move the stack in slot `from` of the player's inventory to slot `to`: onto a stack of the same kind as far as it
-  // fits, or swapping places with whatever is there.
-  | { k: 'move'; from: number; to: number }
+  | { k: 'put'; id: number; item: ItemId; max: number; slot?: number }
   // Move up to `count` from one slot to another: of the player's inventory (`id` 0) or of a building's (its ID). Onto
   // an empty slot or a stack of its kind as far as it fits (the rest stays), or a whole stack swapped with another.
   | { k: 'slot'; from: { id: number; i: number }; to: { id: number; i: number }; count: number }
@@ -34,29 +31,42 @@ export type Command =
   | { k: 'punch'; id: number; slot: number }
   // Make a recipe (see recipes.ts) from what is in the player's inventory.
   | { k: 'craft'; recipe: number }
-  // Start a work station: the stump on whatever it can make from what is in it; the workbench on recipe `recipe` (its
-  // index in stations.json), once or, with `repeat`, for as long as it can. It works while the player stays at it (see
-  // `use`).
-  | { k: 'work'; id: number; recipe?: number; repeat?: boolean }
-  // Use what is in slot `slot` on a tile: fill a bucket at a pond or from a barrel, pour one into a barrel, water a
-  // garden plot, or put compost on one.
+  // Start a work station (the stump, the workbench) on recipe `recipe` (its index in the station's list in
+  // stations.json), putting the tool it needs in from the player's inventory; it makes it for as long as what is in it
+  // is enough, while the player stays at it (see `use`).
+  | { k: 'work'; id: number; recipe: number }
+  // Use what is in slot `slot` on a tile: fill a bucket at a pond (fresh water) or the sea (salt water) or from a barrel,
+  // pour one into a barrel, water a garden plot, or empty it on bare ground.
   | { k: 'apply'; x: number; y: number; slot: number }
   // Light a campfire (or put it out); seal a barrel (or open it).
   | { k: 'machine'; id: number; action: 'light' | 'douse' | 'seal' | 'unseal' }
-  // The work station the player has open, or 0 when they close it: a station only works while someone is at it.
-  | { k: 'use'; id: number }
+  // The work station the player has open, or 0 when they close it: a station only works while someone is at it. `hand`:
+  // their inventory is open with nothing else (its crafting book showing), which hand crafting only goes on while
+  // (closing it calls off everything being made by hand).
+  | { k: 'use'; id: number; hand?: true }
   // Open a gate and keep it open, or shut it and keep it shut.
   | { k: 'toggle'; id: number }
-  // Hit an animal with whatever is in slot `slot`.
-  | { k: 'strike'; animal: number; slot: number }
-  // Attack with what is in slot `slot` (-1: bare-handed), towards the point x, y (in units): the basic attack, or the
-  // special one; `charge` is how many ticks a shot, a throw or a windup was held for (see weapons.ts). `seen` is the
-  // server tick the page was drawing the animals at, so the attack is judged against where the player saw them.
-  | { k: 'attack'; special: boolean; slot: number; x: number; y: number; charge: number; seen?: number; input?: number; dir?: number }
+  // Attack with what is in slot `slot` (-1: bare-handed), towards the point x, y (in units) (see weapons.ts). `seen` is
+  // the server tick the page was drawing creatures at, so the attack is judged against where the player saw them.
+  // `charged`: the attack button was held down (see `charge`) for the weapon's charged attack (see weapons.ts).
+  | { k: 'attack'; slot: number; x: number; y: number; seen?: number; charged?: 1 }
+  // The attack button has gone down and is being held, to charge an attack: a charged attack is only let through
+  // CHARGE_TICKS after this.
+  | { k: 'charge'; slot: number }
   // Use whatever is in slot `slot` on an animal: put a rope on it (or take yours off), or milk a cow.
   | { k: 'interact'; animal: number; slot: number }
+  // A rope on a raft's post, from slot `slot`, to pull it along (or take yours off, back into the inventory).
+  | { k: 'raftRope'; raft: number; slot: number }
+  // Tie an animal or a raft (one of them) to a fence on a rope: the rope it is led on by this player, or else one from
+  // their things. A fence holds one.
+  | { k: 'tie'; fence: number; animal?: number; raft?: number }
+  // Untie what is tied to a fence, the rope back into the inventory.
+  | { k: 'untie'; fence: number }
   // The host turns players hurting each other on or off.
   | { k: 'pvp'; on: boolean }
+  // Back to the world spawn, or to the sleeping bag last slept in (from the menu: for a player stuck somewhere, a raft
+  // lost out at sea). They keep their health and their things.
+  | { k: 'respawn'; at: 'spawn' | 'bed' }
   // Eat one of the food in slot `slot` (the food slot, with F), for the health it gives back (`heals` in items.json),
   // at most once every EAT_COOLDOWN_TICKS.
   | { k: 'eat'; slot: number }
@@ -90,21 +100,29 @@ export const REFUSALS = {
   noAmmo: 'You have nothing to shoot.',
   needsTool: 'You need the right tool with you for that (see the recipe).',
   water: 'You cannot build on water.',
+  raftWater: 'A raft goes on open water, clear of the shore and other rafts.',
   dungeon: 'Nothing can be built down here.',
   guarded: 'The skeletons guard the chest: defeat them all first.',
   sealed: 'The barrel is sealed.',
   inventoryFull: 'Your inventory is full.',
   unripe: 'It is still growing: it takes a tool to dig it up.',
   notHost: 'Only the host can change that.',
+  noBed: 'You have not slept in a sleeping bag that is still there.',
+  barren: 'Nothing grows there.',
   cannotApply: 'There is nothing to use that on there.',
   noFuel: 'Put some fuel in first.',
   barrelFull: 'The barrel is full, or has something else in it.',
   barrelEmpty: 'There is nothing in the barrel to take.',
   noWork: 'Put a tool and something it works on in first.',
   animalGone: 'That animal is gone.',
-  leadTaken: 'Someone else is leading that animal.',
+  leadTaken: 'That is on someone else\'s rope, or tied up.',
   noMilk: 'That cow has no milk yet.',
   nothingToDo: 'Hold a rope to lead it.',
+  raftGone: 'That raft is gone.',
+  noRope: 'You need a rope to tie it up.',
+  tieFar: 'That is too far from the fence to tie to it.',
+  postTaken: 'Something is already tied to that fence.',
+  notTied: 'Nothing is tied to that fence.',
   notEmpty: 'Something is already growing there.',
   noRecipe: 'There is no such recipe.',
   lacking: 'You do not have what that needs.',
@@ -126,8 +144,22 @@ export function isWithinReach(player: { x: number; y: number }, x: number, y: nu
   return distanceToTileSquared(player.x, player.y, x, y) <= PLAYER_REACH * PLAYER_REACH
 }
 
-// Whether a building can go on a tile, as the world is: the server's word on the tick the command runs, or the page's
-// guess when it draws the preview (from the factory it has, which is a few ticks old).
+// Whether a building of a kind can go on a tile, as the world is: in the world and in reach, the tile free (nothing on
+// it, not water, not in a dungeon), and not where the player stands if it is solid. The server's word on the tick a
+// command runs, or the page's guess (from the factory it has, which is a few ticks old).
+function checkTile(world: FactoryWorld, terrain: Terrain | undefined, player: { x: number; y: number }, x: number, y: number, kind: BuildingKind): Refusal | undefined {
+  if (!isInsideWorld(x, y)) return 'outside'
+  if (!isWithinReach(player, x, y)) return 'reach'
+  if (world.entityAt(x, y)) return 'occupied'
+  if (isInDungeons(x, y)) return 'dungeon'
+  if (terrain !== undefined && waterAt(terrain, x, y)) return 'water'
+  // A plant only on ground it grows in: not sand, not the mountains' rock and snow.
+  if (terrain !== undefined && (kind === 'grass' || kind === 'sprout' || kind === 'sapling') && !canGrowAt(terrain, x, y)) return 'barren'
+  if (BUILDINGS[kind].solid && playerOverlapsTile(player, x, y)) return 'standing'
+  return undefined
+}
+
+// Whether one of the factory's buildings can be built on a tile (a miner only on ore).
 export function checkBuild(
   world: FactoryWorld,
   terrain: Terrain,
@@ -136,12 +168,8 @@ export function checkBuild(
   y: number,
   kind: BuildingKind,
 ): Refusal | undefined {
-  if (!isInsideWorld(x, y)) return 'outside'
-  if (!isWithinReach(player, x, y)) return 'reach'
-  if (world.entityAt(x, y)) return 'occupied'
-  if (isInDungeons(x, y)) return 'dungeon'
-  if (waterAt(terrain, x, y)) return 'water'
-  if (BUILDINGS[kind].solid && playerOverlapsTile(player, x, y)) return 'standing'
+  const refused = checkTile(world, terrain, player, x, y, kind)
+  if (refused) return refused
   if (kind === 'miner' && oreAt(terrain.seed, x, y) === NO_ITEM) return 'noOre'
   return undefined
 }
@@ -203,15 +231,6 @@ export function checkPlace(
   }
   const kind = item.places
   if (!kind) return { ok: false, why: 'notPlaceable' }
-  if (!isInsideWorld(x, y)) return { ok: false, why: 'outside' }
-  if (!isWithinReach(player, x, y)) return { ok: false, why: 'reach' }
-  if (there) return { ok: false, why: 'occupied' }
-  if (isInDungeons(x, y)) return { ok: false, why: 'dungeon' }
-  if (terrain !== undefined && waterAt(terrain, x, y)) return { ok: false, why: 'water' }
-  if (BUILDINGS[kind].solid && playerOverlapsTile(player, x, y)) return { ok: false, why: 'standing' }
-  return { ok: true, kind }
-}
-
-export function buildingAcceptsDeposits(kind: BuildingKind): boolean {
-  return BUILDINGS[kind].acceptsDeposits
+  const refused = checkTile(world, terrain, player, x, y, kind)
+  return refused ? { ok: false, why: refused } : { ok: true, kind }
 }

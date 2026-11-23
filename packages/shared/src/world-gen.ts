@@ -1,9 +1,10 @@
 import { CHUNK_SIZE, SUB } from './constants.ts'
 import { floorDiv } from './geometry.ts'
 import { NO_ITEM, ORES, type ItemId } from './items.ts'
-import { hashInts } from './rng.ts'
+import { hashInts, valueNoise } from './rng.ts'
 import { dungeonBlocks, isInDungeons } from './dungeon.ts'
-import { biomeSiteAt, inLandmarkClearing, seaWithin, type Terrain } from './terrain.ts'
+import { biomeSiteAt, inLandmarkClearing, isSandAt, seaWithin, type BiomeSite, type Terrain } from './terrain.ts'
+import { WORLD_GEN } from './world-gen-data.ts'
 
 // What the world is made of, worked out from its seed wherever it is needed, the same on the server and on every
 // client, with whole numbers only: the ore deposits (put away for now), and where plants first grow in each biome (see
@@ -130,54 +131,29 @@ export type PlantGeneration = {
   spawnClearing: number
 }
 
-export const DEFAULT_PLANT_GENERATION: Readonly<PlantGeneration> = {
-  treeScatter: 2,
-  forestCover: 20,
-  forestDensity: 40,
-  bushPatchChance: 8,
-  bushesPerPatchMin: 1,
-  bushesPerPatchMax: 5,
-  rockPatchChance: 75,
-  rocksPerPatchMin: 2,
-  rocksPerPatchMax: 6,
-  grassPatchChance: 30,
-  grassPerPatchMin: 3,
-  grassPerPatchMax: 8,
-  flintScatter: 3,
-  spawnClearing: 5,
-}
+// From "plants" in data/world-gen.json (where to tweak them).
+export const DEFAULT_PLANT_GENERATION: Readonly<PlantGeneration> = { ...WORLD_GEN.plants }
 
 // How thick the forest is varies smoothly over FOREST_CELL tiles, from a value at each cell corner (0 to 999) blended
 // between them.
-const FOREST_CELL = 24
+const FOREST_CELL = WORLD_GEN.cells.forest
 
 // Bushes grow in patches, and rocks lie in groups: each cell of PATCH_CELL tiles may hold one of each, a small cluster
 // on the 3x3 tiles around its centre (the centre always, and the rest on some of the eight around it).
-const PATCH_CELL = 16
-const GRASS_CELL = 8
+const PATCH_CELL = WORLD_GEN.cells.bushPatch
+const GRASS_CELL = WORLD_GEN.cells.grassPatch
 // Rocks lie in smaller cells than bushes, so the mountains are thick with them.
-const ROCK_CELL = 10
+const ROCK_CELL = WORLD_GEN.cells.rockPatch
 const PATCH_NEIGHBOURS: ReadonlyArray<readonly [number, number]> = [
   [-1, -1], [0, -1], [1, -1],
   [-1, 0], [1, 0],
   [-1, 1], [0, 1], [1, 1],
 ]
 
-function forestAt(seed: number, x: number, y: number): number {
-  const cx = floorDiv(x, FOREST_CELL)
-  const cy = floorDiv(y, FOREST_CELL)
-  const fx = x - cx * FOREST_CELL
-  const fy = y - cy * FOREST_CELL
-  const corner = (ox: number, oy: number): number => hashInts(seed, cx + ox, cy + oy, 31) % 1000
-  const top = corner(0, 0) * (FOREST_CELL - fx) + corner(1, 0) * fx
-  const bottom = corner(0, 1) * (FOREST_CELL - fx) + corner(1, 1) * fx
-  return Math.floor((top * (FOREST_CELL - fy) + bottom * fy) / (FOREST_CELL * FOREST_CELL))
-}
-
 function treeChance(seed: number, x: number, y: number, rates: PlantGeneration): boolean {
   // The blend of four corners is seldom near 0 or 999, so the forest's threshold is pulled in from the ends.
   const thick = 1000 - Math.max(0, Math.min(100, rates.forestCover)) * 5 - 250
-  const forest = forestAt(seed, x, y)
+  const forest = valueNoise(seed, 31, x, y, FOREST_CELL)
   const chance = forest > thick ? rates.treeScatter + Math.floor(((forest - thick) * rates.forestDensity) / Math.max(1, 1000 - thick)) : rates.treeScatter
   return hashInts(seed, x, y, 32) % 1000 < chance
 }
@@ -234,11 +210,14 @@ function inPatch(seed: number, x: number, y: number, kind: PatchKind): boolean {
 // it, and to its left), so even thick forest has room to walk between the trunks.
 export function plantAt(terrain: Terrain, x: number, y: number, rates: PlantGeneration = DEFAULT_PLANT_GENERATION): PlantKind | undefined {
   if (Math.abs(x) <= rates.spawnClearing && Math.abs(y) <= rates.spawnClearing) return undefined
-  const biome = biomeSiteAt(terrain, x, y)?.biome
-  if (!biome || waterAt(terrain, x, y)) return undefined
+  const site = biomeSiteAt(terrain, x, y)
+  if (!site || pondAt(terrain, site, x, y)) return undefined
+  const biome = site.biome
   if (biome.key === 'mountain' && inLandmarkClearing(terrain, x, y)) return undefined
   const seed = terrain.seed
   if (biome.key === 'mountain') return inPatch(seed, x, y, rockPatches(rates)) ? 'rock' : undefined
+  // Nothing grows on the beach (see `canGrowAt`).
+  if (isSandAt(terrain, x, y)) return undefined
   if (inPatch(seed, x, y, bushPatches(rates))) return 'bush'
   if (inPatch(seed, x, y, grassPatches(rates))) return 'grass'
   if (!treeChance(seed, x, y, rates)) return undefined
@@ -265,17 +244,19 @@ export function plantsInChunk(
 
 // ---- ponds
 
-// Water: the sea round the biomes (see terrain.ts), and ponds in the biomes that have them (the forest). Each cell of
+// Water: the sea round the biomes (see terrain.ts), and ponds in the biomes that have them (`ponds` in BIOMES: none
+// now; the forest had them, and fresh water there now comes from a well). Each cell of
 // POND_CELL tiles may hold one pond, a rough disc of water (POND_MIN_RADIUS to POND_MAX_RADIUS), POND_CHANCE percent of
 // the time; none near the spawn, and none within POND_SHORE tiles of the sea (so a pond never runs into it). Water is
 // part of the ground, worked out from the seed like ore: players and animals cannot walk into it, nothing grows or is
 // built on it, and a bucket is filled from it.
-const POND_CELL = 28
-const POND_CHANCE = 22
-const POND_MIN_RADIUS = 2
-const POND_MAX_RADIUS = 4
-const POND_CLEARING = 12
-const POND_SHORE = 3
+// All from "ponds" in data/world-gen.json.
+const POND_CELL = WORLD_GEN.ponds.cell
+const POND_CHANCE = WORLD_GEN.ponds.chance
+const POND_MIN_RADIUS = WORLD_GEN.ponds.minRadius
+const POND_MAX_RADIUS = WORLD_GEN.ponds.maxRadius
+const POND_CLEARING = WORLD_GEN.ponds.spawnClearing
+const POND_SHORE = WORLD_GEN.ponds.shore
 
 function pondOf(seed: number, cx: number, cy: number): { x: number; y: number; radius: number } | undefined {
   if (hashInts(seed, cx, cy, 201) % 100 >= POND_CHANCE) return undefined
@@ -288,10 +269,15 @@ function pondOf(seed: number, cx: number, cy: number): { x: number; y: number; r
   return Math.abs(pond.x) <= POND_CLEARING && Math.abs(pond.y) <= POND_CLEARING ? undefined : pond
 }
 
+// Whether a tile is water: the sea (anywhere off the land), or a pond. Never in the dungeons.
 export function waterAt(terrain: Terrain, x: number, y: number): boolean {
   if (isInDungeons(x, y)) return false
   const site = biomeSiteAt(terrain, x, y)
-  if (!site) return true
+  return site === undefined || pondAt(terrain, site, x, y)
+}
+
+// Whether a tile of land (in `site`) is a pond.
+function pondAt(terrain: Terrain, site: BiomeSite, x: number, y: number): boolean {
   if (!site.biome.ponds) return false
   const cx = floorDiv(x, POND_CELL)
   const cy = floorDiv(y, POND_CELL)

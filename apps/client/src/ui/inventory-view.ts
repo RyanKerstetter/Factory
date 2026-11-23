@@ -1,9 +1,25 @@
-import { AMMO_SLOT, ARMOR_SLOT, CHEST_NAME_LENGTH, FOOD_SLOT, STACK_SIZE, stackLimit, ARMOR_SLOTS, getItem, HOTBAR_SLOTS, NO_ITEM, type BuildingKind, type ItemId, type Slot } from '../../../../packages/shared/src/index.ts'
-import { artUrl } from '../render/art.ts'
-import { itemArt } from '../render/art-catalog.ts'
+import { AMMO_SLOT, ARMOR_SLOT, ARMOR_SLOTS, CHEST_NAME_LENGTH, FOOD_SLOT, getItem, HOTBAR_SLOTS, isFilled, NO_ITEM, STACK_SIZE, stackLimit, TRASH_SLOT, type BuildingKind, type ItemId, type Slot } from '../../../../packages/shared/src/index.ts'
+import type { LiquidTone } from '../liquids.ts'
+import { iconUrl, showIcon } from './icons.ts'
 import { itemTip } from './item-tip.ts'
-import { button, element } from './dom.ts'
+import { button, element, pixelImage } from './dom.ts'
 import { createRecipeBook, type BookEntry, type RecipeBook } from './recipe-book.ts'
+
+// What goes in each of the inventory's special slots, drawn faintly in it while it is empty (outlines on a 24 by 24
+// grid): a helmet, a tunic, a boot, an arrow, an apple.
+type SlotMark = 'head' | 'body' | 'feet' | 'ammo' | 'food'
+const SLOT_MARKS: Readonly<Record<SlotMark, string>> = {
+  head: '<path d="M5 16a7 7 0 0 1 14 0z"/><path d="M3 16h18v2.5H3z"/><path d="M12 9v4"/>',
+  body: '<path d="M8.5 3.5 3 6.5l2 5 3-1.2V20.5h8V10.3l3 1.2 2-5-5.5-3c-.7 1.8-2 2.8-3.5 2.8s-2.8-1-3.5-2.8z"/>',
+  feet: '<path d="M7.5 3h6v9.5l5.5 2.6c1.2.6 2 1.6 2 2.9v2H5.5v-3.5L7.5 15z"/><path d="M5.5 17.5h15.5"/>',
+  ammo: '<path d="M5 19 18 6"/><path d="M12.5 5H19v6.5"/><path d="M4 15.5 6 18l2.5 2"/><path d="M3 18.5 5.5 21"/>',
+  food: '<path d="M12 7.5c-2.5-2-8-1.3-8 4.8 0 4.7 3 8.7 5 8.7 1.2 0 2-.8 3-.8s1.8.8 3 .8c2 0 5-4 5-8.7 0-6.1-5.5-6.8-8-4.8z"/><path d="M12 7.5c0-2 .8-3.6 2.8-4.5"/>',
+}
+function slotMark(mark: SlotMark): HTMLElement {
+  const made = element('span', 'slot-mark')
+  made.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${SLOT_MARKS[mark]}</svg>`
+  return made
+}
 
 export type BuildingPanelView = {
   id: number
@@ -27,22 +43,35 @@ export type BuildingPanelView = {
 
 // A machine's panel: its slots (what goes in on the left, what comes out on the right, an arrow that fills as it works
 // between them), gauges (heat, liquid), its buttons, and the recipes it can make, at the side (`action` is the label of
-// the button under the one picked, or '' for none).
+// the button under the one picked, or '' for none). A station's tool slot is marked as one (`tool`).
 export type MachineView = {
-  inputs: ReadonlyArray<{ index: number; label: string }>
-  outputs: ReadonlyArray<{ index: number; label: string }>
-  gauges: ReadonlyArray<{ label: string; fraction: number; text: string; tone: 'heat' | 'water' | 'tannin' | 'milk' | 'plain' }>
+  inputs: ReadonlyArray<{ index: number; tool?: boolean }>
+  outputs: ReadonlyArray<{ index: number }>
+  // A campfire: how much is left of what it is burning, 0 to 1, as a flame between its first input and the rest.
+  flame?: number
+  gauges: ReadonlyArray<{ label: string; fraction: number; text: string; tone: 'heat' | 'plain' | LiquidTone }>
   buttons: ReadonlyArray<{ id: string; label: string; disabled: boolean; primary?: boolean }>
+  // What it is doing now, in a few words at the foot of its panel ("Crafting planks"); nothing while it is idle.
+  status?: string
+  // What it makes, at the side.
   recipes?: { title: string; action: string; entries: readonly BookEntry[] }
 }
 
 // The player's whole inventory (its first HOTBAR_SLOTS slots are the hotbar, shown as a row of their own), which
 // hotbar slot is picked, and the building that is open, if any; with no building open, the recipes to craft.
-export type PanelsView = { player: readonly Slot[]; selected: number; building?: BuildingPanelView; recipes?: readonly BookEntry[] }
+// `crafting`: what is being made by hand (with no building open), how far along (0 to 1), and how many are waiting.
+export type PanelsView = {
+  player: readonly Slot[]
+  selected: number
+  building?: BuildingPanelView
+  recipes?: readonly BookEntry[]
+  crafting?: { name: string; fraction: number; queued: number }
+}
 
 export type PanelHandlers = {
   take: (id: number, item: ItemId, max: number) => void
-  put: (id: number, item: ItemId, max: number) => void
+  // `slot`: the player's slot clicked, which it comes out of first (else only their ordinary slots: see transferItems).
+  put: (id: number, item: ItemId, max: number, slot?: number) => void
   // Move up to `count` from one slot to another (`id` 0 is the player's inventory, else the building's ID): onto an empty
   // slot or a stack of its kind, or swapping two stacks.
   slot: (from: { id: number; i: number }, to: { id: number; i: number }, count: number) => void
@@ -68,6 +97,8 @@ export type InventoryPanels = {
   // How far the open miner or station is through its next item, 0 to 1. Called every frame, not only when `show` is,
   // so the bar fills smoothly.
   setProgress(fraction: number): void
+  // How far along what is being made by hand is (0 to 1), every frame, so its bar fills smoothly.
+  setHandProgress(fraction: number): void
   dispose(): void
 }
 
@@ -75,6 +106,12 @@ const EVERYTHING = 100_000
 
 // How far the mouse has to move with the button down before a click becomes a drag, in pixels.
 const DRAG_THRESHOLD = 5
+// Holding the middle button still on a stack: after HOLD_DELAY ms (so it is not a drag), one moves across every
+// HOLD_FIRST ms, sooner each time (HOLD_SPEEDUP) down to one every HOLD_FASTEST ms.
+const HOLD_DELAY = 350
+const HOLD_FIRST = 260
+const HOLD_SPEEDUP = 0.82
+const HOLD_FASTEST = 35
 
 type Side = 'player' | 'building'
 type Cell = { button: HTMLButtonElement; icon: HTMLImageElement; count: HTMLSpanElement; shown: string }
@@ -86,11 +123,27 @@ type Grid = { side: Side; offset: number; root: HTMLElement; cells: Cell[]; slot
 // once it has moved far enough to be a drag, the picture of the stack that follows the mouse and the slot it is over.
 type Drag = { side: Side; index: number; startX: number; startY: number; half: boolean; ghost?: HTMLElement; over?: HTMLElement }
 
+// The middle button down on a stack: where it went down, and how to move one of it across (as a middle click does) and
+// whether there is any left; then either held still (`timer`, and once it is `repeating`, moving one at a time) or
+// dragged (`dragging`), leaving one on each slot it passes over (`visited`).
+type Middle = {
+  side: Side
+  index: number
+  startX: number
+  startY: number
+  moveOne: () => void
+  left: () => boolean
+  timer?: ReturnType<typeof setTimeout>
+  repeating: boolean
+  dragging: boolean
+  visited: Set<HTMLElement>
+}
+
 // A grid of slots, made once and filled in place each time what is in it changes, so a click is never lost to the
 // grid being made again under the mouse while items arrive. Its cells are slots `offset` to `offset + size - 1`, and
 // every index handed on is the slot's index in the whole inventory. `onMove` is given that and how many to move;
-// `onPress` is told when the left button goes down on a stack, which may become a drag, and `wasDrag` says whether
-// the click that follows ends one (and should do nothing more).
+// `onPress` is told when the left or right button goes down on a stack, which may become a drag, and `wasDrag` says
+// whether the click that follows ends one (and should do nothing more); `onMiddle` when the middle button does.
 function createGrid(
   side: Side,
   offset: number,
@@ -98,40 +151,48 @@ function createGrid(
   onMove: (index: number, max: number) => void,
   onPress: (side: Side, index: number, event: PointerEvent) => void,
   wasDrag: () => boolean,
+  onMiddle: (side: Side, index: number, event: PointerEvent, moveOne: () => void, left: () => boolean) => void,
 ): Grid {
   const grid: Grid = { side, offset, root: element('div', 'slot-grid'), cells: [], slots: [] }
   for (let index = offset; index < offset + size; index++) {
-    const icon = element('img', 'pixel slot-icon')
-    icon.draggable = false
-    icon.alt = ''
+    const icon = pixelImage('slot-icon')
     const count = element('span', 'slot-count')
     const cell = element('button', 'slot', icon, count)
     cell.type = 'button'
     cell.dataset.side = side
     cell.dataset.index = String(index)
     cell.addEventListener('pointerdown', (event) => {
-      if (event.button === 0 && (grid.slots[index]?.count ?? 0) > 0) onPress(side, index, event)
+      if (event.button === 0 && isFilled(grid.slots[index])) onPress(side, index, event)
     })
     cell.addEventListener('click', (event) => {
       if (wasDrag()) return
       const slot = grid.slots[index]
-      if (slot && slot.count > 0) onMove(index, event.shiftKey ? EVERYTHING : slot.count)
+      if (isFilled(slot)) onMove(index, event.shiftKey ? EVERYTHING : slot.count)
     })
-    // A right click moves one, but only one that started on the panels: the right click that opened a chest is let go
-    // over the panel it opened, and must not move anything.
+    // A right click moves half the stack, but only one that started on the panels: the right click that opened a chest
+    // is let go over the panel it opened, and must not move anything.
     cell.addEventListener('pointerdown', (event) => {
       if (event.button !== 2) return
       rightDownOn = cell
       // The right button drags half the stack.
-      if ((grid.slots[index]?.count ?? 0) > 0) onPress(side, index, event)
+      if (isFilled(grid.slots[index])) onPress(side, index, event)
     })
     cell.addEventListener('contextmenu', (event) => {
       event.preventDefault()
       const started = rightDownOn === cell
       rightDownOn = undefined
       if (wasDrag()) return
-      if (started && (grid.slots[index]?.count ?? 0) > 0) onMove(index, 1)
+      const slot = grid.slots[index]
+      if (started && isFilled(slot)) onMove(index, Math.ceil(slot.count / 2))
     })
+    // The middle button: a click moves one; held still, one after another, faster and faster; dragged, one onto each
+    // slot it passes over. (Not the browser's own scrolling.)
+    cell.addEventListener('pointerdown', (event) => {
+      if (event.button !== 1) return
+      event.preventDefault()
+      if (isFilled(grid.slots[index])) onMiddle(side, index, event, () => onMove(index, 1), () => isFilled(grid.slots[index]))
+    })
+    cell.addEventListener('auxclick', (event) => event.preventDefault())
     cell.addEventListener('pointerenter', () => (hoveredCell = { side, index }))
     cell.addEventListener('pointerleave', () => {
       if (hoveredCell?.side === side && hoveredCell.index === index) hoveredCell = undefined
@@ -154,7 +215,7 @@ function fillGrid(grid: Grid, slots: readonly Slot[], movable: boolean, draggabl
   grid.slots = slots
   grid.cells.forEach((cell, at) => {
     const slot = slots[grid.offset + at]
-    const filled = slot !== undefined && slot.count > 0 && slot.item !== NO_ITEM
+    const filled = isFilled(slot)
     const key = filled ? `${slot.item}:${slot.count}:${movable}:${draggable}` : ''
     if (key === cell.shown) return
     cell.shown = key
@@ -166,8 +227,7 @@ function fillGrid(grid: Grid, slots: readonly Slot[], movable: boolean, draggabl
     cell.button.classList.toggle('is-empty', !filled)
     cell.button.setAttribute('aria-disabled', String(!filled))
     if (filled) {
-      const url = artUrl(itemArt(slot.item))
-      if (cell.icon.src !== url) cell.icon.src = url
+      showIcon(cell.icon, slot.item)
       cell.button.dataset.tip = itemTip(slot.item)
     } else delete cell.button.dataset.tip
   })
@@ -176,9 +236,11 @@ function fillGrid(grid: Grid, slots: readonly Slot[], movable: boolean, draggabl
 // The player's inventory, and with it the building that is open: a chest or miner beside it; a work station above it,
 // with the station's recipes at the side; or, with nothing open, the crafting book beside it. Clicking a slot moves its
 // stack across (into the player's inventory from the building, or into the building from the player's, if it takes
-// items); a right click moves one; holding Shift moves every one of that kind. A stack can also be dragged: to another
-// slot of either inventory (onto a stack of its kind as far as it fits, or swapping places), half of it with Ctrl held,
-// or off the panels to drop it on the ground.
+// items); a right click moves half of it, and a middle click one (held, one after another, faster and faster); holding
+// Shift moves every one of that kind. A stack can also be dragged: to another slot of either inventory (onto a stack of
+// its kind as far as it fits, or swapping places), half of it with the right button, or off the panels to drop it on
+// the ground; dragged with the middle button, it leaves one on each slot it passes over. The trash slot holds one
+// stack, thrown away when another kind is put there.
 export function createInventoryPanels(container: HTMLElement, handlers: PanelHandlers): InventoryPanels {
   const root = element('div', 'panels')
   root.hidden = true
@@ -190,14 +252,29 @@ export function createInventoryPanels(container: HTMLElement, handlers: PanelHan
   let hotbarGrid: Grid | undefined
   let ammoGrid: Grid | undefined
   let foodGrid: Grid | undefined
+  let trashGrid: Grid | undefined
   let armourGrid: Grid | undefined
   let buildingGrids: Grid[] = []
   let progressFill: HTMLElement | undefined
+  let flameFill: HTMLElement | undefined
+  // The bar under the crafting book for what is being made by hand.
+  let handGauge: HTMLElement | undefined
+  let handFill: HTMLElement | undefined
+  let handText: HTMLElement | undefined
+  // The line at the foot of a machine's panel saying what it is doing.
+  let statusLine: HTMLElement | undefined
   let miningNote: HTMLElement | undefined
   let guardNote: HTMLElement | undefined
   let machineButtons = new Map<string, HTMLButtonElement>()
   let gaugeBars: Array<{ fill: HTMLElement; text: HTMLElement }> = []
   let book: RecipeBook | undefined
+
+  // A click on a button for the building that is open (if one still is), as its ID.
+  const forBuilding =
+    (act: (id: number) => void) =>
+    (): void => {
+      if (current?.building) act(current.building.id)
+    }
 
   const take = (index: number, max: number): void => {
     const building = current?.building
@@ -210,13 +287,13 @@ export function createInventoryPanels(container: HTMLElement, handlers: PanelHan
   const put = (index: number, max: number): void => {
     const building = current?.building
     const slot = current?.player[index]
-    if (building?.acceptsDeposits && slot) handlers.put(building.id, slot.item, max)
+    if (building?.acceptsDeposits && slot) handlers.put(building.id, slot.item, max, index)
     else if (!building && slot && wear(index, slot)) return
-    else if (!building && slot && slot.count > 0) quickMove(index, slot)
+    else if (!building && isFilled(slot)) quickMove(index, slot, max)
   }
   // Moves a stack from the hotbar to the inventory, or from the inventory to the hotbar: onto a stack of its kind with
   // room, or else into the first empty slot (from the top).
-  const quickMove = (index: number, slot: Slot): void => {
+  const quickMove = (index: number, slot: Slot, max: number): void => {
     const player = current?.player ?? []
     const toHotbar = index >= HOTBAR_SLOTS
     const first = toHotbar ? 0 : HOTBAR_SLOTS
@@ -227,7 +304,7 @@ export function createInventoryPanels(container: HTMLElement, handlers: PanelHan
       if (other && other.count > 0 && other.item === slot.item && other.count < stackLimit(slot.item, STACK_SIZE)) target = i
     }
     for (let i = first; i < last && target < 0; i++) if ((player[i]?.count ?? 0) === 0) target = i
-    if (target >= 0) handlers.slot({ id: 0, i: index }, { id: 0, i: target }, slot.count)
+    if (target >= 0) handlers.slot({ id: 0, i: index }, { id: 0, i: target }, Math.min(max, slot.count))
   }
   // Puts on the armour in a slot (swapping out what was worn there), or takes off what is worn there into the first
   // empty slot. Gives whether it was armour.
@@ -256,6 +333,7 @@ export function createInventoryPanels(container: HTMLElement, handlers: PanelHan
     }
     if (index === AMMO_SLOT) return ammoGrid?.cells[0]
     if (index === FOOD_SLOT) return foodGrid?.cells[0]
+    if (index === TRASH_SLOT) return trashGrid?.cells[0]
     if (index >= ARMOR_SLOT) return armourGrid?.cells[index - ARMOR_SLOT]
     return index < HOTBAR_SLOTS ? hotbarGrid?.cells[index] : playerGrid?.cells[index - HOTBAR_SLOTS]
   }
@@ -271,23 +349,89 @@ export function createInventoryPanels(container: HTMLElement, handlers: PanelHan
     return was
   }
 
+  // A slot of either inventory as a command names it, if it can be moved from or to now (the building's, while it is
+  // in reach and open).
+  const slotRef = (of: Side, i: number): { id: number; i: number } | undefined => {
+    if (of === 'player') return { id: 0, i }
+    const building = current?.building
+    return building && building.inReach && !building.locked ? { id: building.id, i } : undefined
+  }
+
+  // ---- the middle button (see Middle)
+
+  let middle: Middle | undefined
+
+  const middleDown = (side: Side, index: number, event: PointerEvent, moveOne: () => void, left: () => boolean): void => {
+    if (side === 'building' && (!current?.building?.inReach || current.building.locked)) return
+    endMiddle(false)
+    const held: Middle = { side, index, startX: event.clientX, startY: event.clientY, moveOne, left, repeating: false, dragging: false, visited: new Set() }
+    middle = held
+    // Still held, and not dragged: one at a time, faster and faster, while there are any left.
+    const step = (wait: number): void => {
+      if (middle !== held || !held.left()) return
+      held.moveOne()
+      held.timer = setTimeout(() => step(Math.max(HOLD_FASTEST, wait * HOLD_SPEEDUP)), wait)
+    }
+    held.timer = setTimeout(() => {
+      if (middle !== held || held.dragging) return
+      held.repeating = true
+      step(HOLD_FIRST)
+    }, HOLD_DELAY)
+  }
+
+  // Let go (`click`: as a click, moving one if it was neither held long enough to repeat nor dragged), or given up.
+  const endMiddle = (click: boolean): void => {
+    const was = middle
+    if (!was) return
+    middle = undefined
+    clearTimeout(was.timer)
+    for (const cell of was.visited) cell.classList.remove('is-drop-target')
+    cellOf(was.side, was.index)?.button.classList.remove('is-drag-source')
+    if (click && !was.repeating && !was.dragging && was.left()) was.moveOne()
+  }
+
+  // Dragging with the middle button: one of the stack onto each slot passed over that is empty or holds its kind.
+  const middleMove = (event: PointerEvent): void => {
+    const held = middle
+    if (!held || held.repeating) return
+    if (!held.dragging) {
+      if (Math.hypot(event.clientX - held.startX, event.clientY - held.startY) < DRAG_THRESHOLD) return
+      held.dragging = true
+      clearTimeout(held.timer)
+      cellOf(held.side, held.index)?.button.classList.add('is-drag-source')
+    }
+    const over = slotAt(event.clientX, event.clientY)
+    if (!over || held.visited.has(over)) return
+    const toSide = over.dataset.side as Side
+    const toIndex = Number(over.dataset.index)
+    if (toSide === held.side && toIndex === held.index) return
+    const source = slotOf(held.side, held.index)
+    const target = slotOf(toSide, toIndex)
+    if (!isFilled(source) || !target || (isFilled(target) && target.item !== source.item)) return
+    const from = slotRef(held.side, held.index)
+    const to = slotRef(toSide, toIndex)
+    if (!from || !to) return
+    held.visited.add(over)
+    over.classList.add('is-drop-target')
+    handlers.slot(from, to, 1)
+  }
+
   const slotAt = (x: number, y: number): HTMLElement | undefined => {
     const found = document.elementFromPoint(x, y)?.closest<HTMLElement>('.slot')
     return found && root.contains(found) ? found : undefined
   }
 
   const onPointerMove = (event: PointerEvent): void => {
+    middleMove(event)
     if (!drag) return
     if (!drag.ghost) {
       if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < DRAG_THRESHOLD) return
       const slot = slotOf(drag.side, drag.index)
-      if (!slot || slot.count === 0) {
+      if (!isFilled(slot)) {
         drag = undefined
         return
       }
-      const icon = element('img', 'pixel slot-icon')
-      icon.src = artUrl(itemArt(slot.item))
-      icon.alt = ''
+      const icon = pixelImage('slot-icon', iconUrl(slot.item))
       drag.ghost = element('div', 'drag-ghost', icon, element('span', 'slot-count', String(drag.half ? Math.ceil(slot.count / 2) : slot.count)))
       document.body.append(drag.ghost)
       cellOf(drag.side, drag.index)?.button.classList.add('is-drag-source')
@@ -312,33 +456,31 @@ export function createInventoryPanels(container: HTMLElement, handlers: PanelHan
   // Let go: onto a slot of either inventory (onto its kind as far as it fits, the rest staying where it came from; onto
   // another kind, swapping them), or off the panels altogether, dropping it on the ground there.
   const onPointerUp = (event: PointerEvent): void => {
+    if (event.button === 1) endMiddle(true)
     if (!drag) return
     const { side, index, ghost, half } = drag
     const over = ghost ? slotAt(event.clientX, event.clientY) : undefined
     if (ghost) justDragged = true
     endDrag()
     const slot = slotOf(side, index)
-    const building = current?.building
-    if (!ghost || !slot || slot.count === 0) return
+    if (!ghost || !isFilled(slot)) return
     const count = half ? Math.ceil(slot.count / 2) : slot.count
-    const ref = (of: Side, i: number): { id: number; i: number } | undefined => {
-      if (of === 'player') return { id: 0, i }
-      return building && building.inReach && !building.locked ? { id: building.id, i } : undefined
-    }
-    const from = ref(side, index)
+    const from = slotRef(side, index)
     if (!from) return
     if (!over) {
       const under = document.elementFromPoint(event.clientX, event.clientY)
       if (!under || !root.contains(under)) handlers.drop(from, count, { x: event.clientX, y: event.clientY })
       return
     }
-    const to = ref(over.dataset.side as Side, Number(over.dataset.index))
+    const to = slotRef(over.dataset.side as Side, Number(over.dataset.index))
     if (to && (to.id !== from.id || to.i !== from.i)) handlers.slot(from, to, count)
   }
 
   window.addEventListener('pointermove', onPointerMove)
   window.addEventListener('pointerup', onPointerUp)
   window.addEventListener('blur', endDrag)
+  const cancelMiddle = (): void => endMiddle(false)
+  window.addEventListener('blur', cancelMiddle)
 
   // ---- making the panels
 
@@ -346,53 +488,99 @@ export function createInventoryPanels(container: HTMLElement, handlers: PanelHan
     element('section', 'panel', element('header', 'panel-header', element('h2', 'panel-title', title)), ...body)
 
   const inventoryPanel = (view: PanelsView): HTMLElement => {
-    playerGrid = createGrid('player', HOTBAR_SLOTS, Math.max(0, Math.min(AMMO_SLOT, view.player.length) - HOTBAR_SLOTS), put, press, wasDrag)
-    ammoGrid = createGrid('player', AMMO_SLOT, view.player.length > AMMO_SLOT ? 1 : 0, put, press, wasDrag)
+    playerGrid = createGrid('player', HOTBAR_SLOTS, Math.max(0, Math.min(AMMO_SLOT, view.player.length) - HOTBAR_SLOTS), put, press, wasDrag, middleDown)
+    // The special slots: each with a faint picture of what goes in it while it is empty, and a tip saying so.
+    const marked = (grid: Grid, marks: readonly SlotMark[], tips: readonly string[]): HTMLElement => {
+      grid.cells.forEach((cell, i) => {
+        cell.button.classList.add('marked-slot')
+        cell.button.append(slotMark(marks[i]))
+      })
+      const boxed = element('div', 'gear-box', grid.root)
+      boxed.dataset.tip = tips.join(' · ')
+      return boxed
+    }
+    ammoGrid = createGrid('player', AMMO_SLOT, view.player.length > AMMO_SLOT ? 1 : 0, put, press, wasDrag, middleDown)
     ammoGrid.root.classList.add('is-ammo')
-    foodGrid = createGrid('player', FOOD_SLOT, view.player.length > FOOD_SLOT ? 1 : 0, put, press, wasDrag)
+    foodGrid = createGrid('player', FOOD_SLOT, view.player.length > FOOD_SLOT ? 1 : 0, put, press, wasDrag, middleDown)
     foodGrid.root.classList.add('is-ammo')
-    hotbarGrid = createGrid('player', 0, Math.min(HOTBAR_SLOTS, view.player.length), put, press, wasDrag)
+    // The trash: whatever is put there stays until something else is, and then it is gone for good.
+    trashGrid = createGrid('player', TRASH_SLOT, view.player.length > TRASH_SLOT ? 1 : 0, put, press, wasDrag, middleDown)
+    trashGrid.root.classList.add('is-ammo', 'is-trash')
+    trashGrid.cells.forEach((cell) => {
+      cell.button.classList.add('trash-slot')
+      cell.button.append(element('span', 'trash-mark'))
+    })
+    const trashBox = element('div', 'gear-box', trashGrid.root)
+    trashBox.dataset.tip = 'Trash: what is here is thrown away for good when something else is put here (or more of it than fits)'
+    hotbarGrid = createGrid('player', 0, Math.min(HOTBAR_SLOTS, view.player.length), put, press, wasDrag, middleDown)
     hotbarGrid.root.classList.add('is-hotbar')
     // What the player wears: head, body and feet, each keeping them warmer and taking some damage off each hit.
-    armourGrid = createGrid('player', ARMOR_SLOT, view.player.length > ARMOR_SLOT ? ARMOR_SLOTS.length : 0, put, press, wasDrag)
+    armourGrid = createGrid('player', ARMOR_SLOT, view.player.length > ARMOR_SLOT ? ARMOR_SLOTS.length : 0, put, press, wasDrag, middleDown)
     armourGrid.root.classList.add('armour-row')
-    armourGrid.cells.forEach((cell, i) => {
-      cell.button.classList.add('armour-slot')
-      cell.button.append(element('span', 'armour-label', ['Head', 'Body', 'Feet'][i]))
-    })
-    const armour = armourGrid.root
+    const armour = marked(armourGrid, ['head', 'body', 'feet'], ['Armour: head, body and feet'])
     return element(
       'section',
       'panel',
       element('header', 'panel-header', element('h2', 'panel-title', 'Inventory'), button('panel-close', '×', () => handlers.close())),
-      element('div', 'gear-row', element('div', '', element('h3', 'grid-label', 'Armour'), armour), element('div', '', element('h3', 'grid-label', 'Ammo'), ammoGrid.root), element('div', '', element('h3', 'grid-label', 'Food'), foodGrid.root)),
+      element(
+        'div',
+        'gear-row',
+        armour,
+        element(
+          'div',
+          'gear-side',
+          marked(ammoGrid, ['ammo'], ['Ammo: arrows for a bow, stones for a sling']),
+          marked(foodGrid, ['food'], ['Food: F eats from here']),
+          trashBox,
+        ),
+      ),
       playerGrid.root,
       element('h3', 'grid-label', 'Hotbar'),
       hotbarGrid.root,
     )
   }
 
-  const takeAll = (): HTMLButtonElement =>
-    button('btn btn-small', 'Take all', () => {
-      if (current?.building) handlers.take(current.building.id, NO_ITEM, EVERYTHING)
-    })
+  const takeAll = (): HTMLButtonElement => button('btn btn-small', 'Take all', forBuilding((id) => handlers.take(id, NO_ITEM, EVERYTHING)))
 
   // A machine: what goes in (each slot labelled), an arrow that fills as it works, what comes out; its gauges, a line
   // on what it is doing, and its buttons.
   const machinePanel = (building: BuildingPanelView, machine: MachineView): HTMLElement => {
-    const slotBox = (label: string, index: number, output: boolean): HTMLElement => {
-      const grid = createGrid('building', index, 1, take, press, wasDrag)
+    // What goes in: with a tool slot (a station), the tool slot on the left of the slots it works from; else a column
+    // (a campfire's with its flame between what cooks and the fuel).
+    const stationInputs = (): HTMLElement => {
+      const tool = machine.inputs.find((slot) => slot.tool)
+      if (!tool) {
+        const boxes = machine.inputs.map((slot) => slotBox(slot.index, false))
+        if (machine.flame !== undefined) {
+          flameFill = element('div', 'station-flame-fill')
+          boxes.splice(1, 0, element('div', 'station-flame', flameFill))
+        }
+        return element('div', 'station-inputs', ...boxes)
+      }
+      const rest = machine.inputs.filter((slot) => !slot.tool)
+      return element(
+        'div',
+        'station-inputs station-inputs-tooled',
+        slotBox(tool.index, false, true),
+        element('div', rest.length === 4 ? 'station-input-square' : 'station-input-column', ...rest.map((slot) => slotBox(slot.index, false))),
+      )
+    }
+    const slotBox = (index: number, output: boolean, tool = false): HTMLElement => {
+      const grid = createGrid('building', index, 1, take, press, wasDrag, middleDown)
       buildingGrids.push(grid)
-      return element('div', `station-slot${output ? ' station-slot-output' : ''}`, element('span', 'station-label', label), grid.root)
+      const box = element('div', `station-slot${output ? ' station-slot-output' : ''}${tool ? ' station-slot-tool' : ''}`, grid.root)
+      // Shown while it is empty (what is in it has its own tip).
+      if (tool) box.dataset.tip = 'Tool: the tool a recipe needs goes here, and is not used up'
+      return box
     }
     progressFill = element('div', 'progress-fill')
-    const arrow = element('div', 'station-arrow', element('span', 'station-arrow-head', '→'), element('div', 'progress', progressFill))
+    const arrow = element('div', 'station-arrow', progressFill)
     const row = element(
       'div',
       'station-row',
-      element('div', 'station-inputs', ...machine.inputs.map((slot) => slotBox(slot.label, slot.index, false))),
+      stationInputs(),
       arrow,
-      element('div', 'station-outputs', ...machine.outputs.map((slot) => slotBox(slot.label, slot.index, true))),
+      element('div', 'station-outputs', ...machine.outputs.map((slot) => slotBox(slot.index, true))),
     )
     gaugeBars = machine.gauges.map((gauge) => ({ fill: element('div', `gauge-fill is-${gauge.tone}`), text: element('span', 'gauge-text') }))
     const gauges = element(
@@ -405,26 +593,27 @@ export function createInventoryPanels(container: HTMLElement, handlers: PanelHan
     machineButtons = new Map()
     const actions = element('div', 'panel-actions')
     for (const spec of machine.buttons) {
-      const made = button(`btn btn-small${spec.primary ? ' btn-primary' : ''}`, spec.label, () => {
-        if (current?.building) handlers.press(current.building.id, spec.id)
-      })
+      const made = button(`btn btn-small${spec.primary ? ' btn-primary' : ''}`, spec.label, forBuilding((id) => handlers.press(id, spec.id)))
       machineButtons.set(spec.id, made)
       actions.append(made)
     }
     actions.append(takeAll())
     const body: Node[] = [row]
     if (machine.gauges.length > 0) body.push(gauges)
-    body.push(actions)
+    statusLine = element('p', 'machine-status')
+    statusLine.hidden = true
+    body.push(actions, statusLine)
     return panel(building.title, ...body)
   }
 
   const build = (view: PanelsView): void => {
     const building = view.building
-    progressFill = miningNote = guardNote = undefined
+    progressFill = miningNote = guardNote = flameFill = statusLine = undefined
     machineButtons = new Map()
     gaugeBars = []
     buildingGrids = []
     book = undefined
+    handGauge = undefined
     if (building?.machine) {
       const machine = building.machine
       const column = element('div', 'panel-column', machinePanel(building, machine), inventoryPanel(view))
@@ -432,7 +621,7 @@ export function createInventoryPanels(container: HTMLElement, handlers: PanelHan
         book = createRecipeBook(machine.recipes.title, machine.recipes.action, (recipe, times) => {
           if (current?.building) handlers.recipe(current.building.id, recipe, times)
         })
-        root.replaceChildren(book.root, column)
+        root.replaceChildren(column, book.root)
       } else root.replaceChildren(column)
       return
     }
@@ -446,28 +635,18 @@ export function createInventoryPanels(container: HTMLElement, handlers: PanelHan
       }
       guardNote = element('p', 'panel-note is-warning', 'The skeletons guard this chest: defeat them all to open it.')
       body.push(guardNote)
-      const grid = createGrid('building', 0, building.slots.length, take, press, wasDrag)
+      const grid = createGrid('building', 0, building.slots.length, take, press, wasDrag, middleDown)
       buildingGrids.push(grid)
       body.push(grid.root)
       const actions = element('div', 'panel-actions', takeAll())
-      if (building.acceptsDeposits) {
-        actions.append(
-          button('btn btn-small', 'Store all', () => {
-            if (current?.building) handlers.put(current.building.id, NO_ITEM, EVERYTHING)
-          }),
-        )
-      }
+      if (building.acceptsDeposits) actions.append(button('btn btn-small', 'Store all', forBuilding((id) => handlers.put(id, NO_ITEM, EVERYTHING))))
       if (building.kind === 'chest') {
         actions.append(
-          button('btn btn-small', 'Top up', () => {
-            if (current?.building) handlers.chest(current.building.id, 'stash')
-          }),
-          button('btn btn-small', 'Sort', () => {
-            if (current?.building) handlers.chest(current.building.id, 'sort')
-          }),
+          button('btn btn-small', 'Top up', forBuilding((id) => handlers.chest(id, 'stash'))),
+          button('btn btn-small', 'Sort', forBuilding((id) => handlers.chest(id, 'sort'))),
         )
         // Its name: typed in, and kept when the box is left (or Enter is pressed).
-        const name = element('input', 'field-input chest-name') as HTMLInputElement
+        const name = element('input', 'field-input chest-name')
         name.placeholder = 'Name this chest'
         name.maxLength = CHEST_NAME_LENGTH
         name.value = building.name ?? ''
@@ -487,6 +666,12 @@ export function createInventoryPanels(container: HTMLElement, handlers: PanelHan
     panels.push(inventoryPanel(view))
     if (!building && view.recipes && view.recipes.length > 0) {
       book = createRecipeBook('Crafting', 'Craft', (recipe, times) => handlers.craft(recipe, times))
+      // What is being made by hand: a bar filling as it is made, and what it is.
+      handFill = element('div', 'gauge-fill is-plain')
+      handText = element('span', 'gauge-text')
+      handGauge = element('div', 'gauge hand-craft', element('span', 'gauge-label', 'Making'), element('div', 'gauge-bar', handFill), handText)
+      handGauge.hidden = true
+      book.root.append(handGauge)
       panels.push(book.root)
     }
     root.replaceChildren(...panels)
@@ -501,6 +686,7 @@ export function createInventoryPanels(container: HTMLElement, handlers: PanelHan
       root.hidden = !view
       if (!view) {
         endDrag()
+        endMiddle(false)
         layout = ''
         return
       }
@@ -513,12 +699,14 @@ export function createInventoryPanels(container: HTMLElement, handlers: PanelHan
       if (key !== layout) {
         layout = key
         endDrag()
+        endMiddle(false)
         build(view)
       }
       const depositing = building?.acceptsDeposits === true && building.inReach && !building.locked
       fillGrid(playerGrid!, view.player, depositing, true)
       fillGrid(ammoGrid!, view.player, depositing, true)
       fillGrid(foodGrid!, view.player, depositing, true)
+      fillGrid(trashGrid!, view.player, depositing || !building, true)
       fillGrid(armourGrid!, view.player, true, true)
       fillGrid(hotbarGrid!, view.player, depositing || !building, true)
       hotbarGrid!.cells.forEach((cell, index) => cell.button.classList.toggle('is-selected', index === view.selected))
@@ -526,6 +714,14 @@ export function createInventoryPanels(container: HTMLElement, handlers: PanelHan
       if (building) for (const grid of buildingGrids) fillGrid(grid, building.slots, usable, usable)
       if (guardNote) guardNote.hidden = building?.guarded !== true
       book?.update(machine?.recipes?.entries ?? view.recipes ?? [])
+      if (handGauge && handFill && handText) {
+        const crafting = building ? undefined : view.crafting
+        handGauge.hidden = !crafting
+        if (crafting) {
+          const text = crafting.queued > 1 ? `${crafting.name} (${crafting.queued - 1} more)` : crafting.name
+          if (handText.textContent !== text) handText.textContent = text
+        }
+      }
       if (machine) {
         for (const spec of machine.buttons) {
           const made = machineButtons.get(spec.id)
@@ -533,17 +729,28 @@ export function createInventoryPanels(container: HTMLElement, handlers: PanelHan
           if (made && made.disabled !== disabled) made.disabled = disabled
           if (made && made.textContent !== spec.label) made.textContent = spec.label
         }
+        if (statusLine) {
+          statusLine.hidden = !machine.status
+          if (statusLine.textContent !== (machine.status ?? '')) statusLine.textContent = machine.status ?? ''
+        }
+        if (flameFill) flameFill.style.setProperty('--burn', `${Math.min(1, Math.max(0, machine.flame ?? 0))}`)
         machine.gauges.forEach((gauge, i) => {
           const bar = gaugeBars[i]
           if (!bar) return
           bar.fill.style.transform = `scaleX(${Math.min(1, Math.max(0, gauge.fraction))})`
           if (bar.text.textContent !== gauge.text) bar.text.textContent = gauge.text
+          // Its colour too (the water in a barrel turning to tannin, as it is watched).
+          const tone = `gauge-fill is-${gauge.tone}`
+          if (bar.fill.className !== tone) bar.fill.className = tone
         })
       }
       if (building?.mining && miningNote) {
         const text = `Digging ${getItem(building.mining.item).name}`
         if (miningNote.textContent !== text) miningNote.textContent = text
       }
+    },
+    setHandProgress(fraction) {
+      if (handFill) handFill.style.transform = `scaleX(${Math.min(1, Math.max(0, fraction))})`
     },
     setProgress(fraction) {
       if (progressFill) progressFill.style.transform = `scaleX(${Math.min(1, Math.max(0, fraction))})`
@@ -553,6 +760,8 @@ export function createInventoryPanels(container: HTMLElement, handlers: PanelHan
       window.removeEventListener('pointermove', onPointerMove)
       window.removeEventListener('pointerup', onPointerUp)
       window.removeEventListener('blur', endDrag)
+      window.removeEventListener('blur', cancelMiddle)
+      endMiddle(false)
     },
   }
 }

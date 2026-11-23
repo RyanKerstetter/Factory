@@ -35,9 +35,12 @@ function setGameInAddress(code: string | undefined): void {
   window.history.replaceState(null, '', url)
 }
 
+// A request to the game server's API: what it answered, or why not (in words to show). A body of text is JSON; anything
+// else (a world's file) goes as it is.
 async function api<T>(path: string, init?: RequestInit): Promise<{ ok: true; data: T } | { ok: false; error: string }> {
   try {
-    const response = await fetch(path, { ...init, headers: { 'Content-Type': 'application/json' } })
+    const json = typeof init?.body === 'string'
+    const response = await fetch(path, { ...init, ...(json ? { headers: { 'Content-Type': 'application/json' } } : {}) })
     const body = (await response.json().catch(() => ({}))) as T & { error?: string }
     return response.ok ? { ok: true, data: body } : { ok: false, error: body.error ?? `The server said ${response.status}.` }
   } catch {
@@ -51,39 +54,26 @@ function showMenu(message?: string, isError = false): void {
     menu.setBusy(false)
     menu.setMessage(error, true)
   }
+  // Asks the server for a game (made, loaded from its save, or found running), saying so while it waits, and goes into
+  // it as `name`.
+  const enterFromServer = async (name: string, waiting: string, path: string, init?: RequestInit): Promise<void> => {
+    saveName(name)
+    menu.setBusy(true)
+    menu.setMessage(waiting)
+    const result = await api<GameInfo>(path, init)
+    if (!result.ok) return failed(result.error)
+    void enter(result.data.code, name)
+  }
   const menu = createMenuView(app, { name: readName(), code, ...(message ? { message, isError } : {}) }, {
     onCreate: async (name, worldName, seed, terrain) => {
-      saveName(name)
-      if (!worldName.trim()) {
-        menu.setMessage('Give the world a name.', true)
-        return
-      }
-      menu.setBusy(true)
-      menu.setMessage('Making a world…')
-      const body = { name: worldName.trim(), ...(seed.trim() ? { seed: seed.trim() } : {}), size: terrain.size, bumpiness: terrain.bumpiness }
-      const result = await api<GameInfo>('/api/games', { method: 'POST', body: JSON.stringify(body) })
-      if (!result.ok) return failed(result.error)
-      void enter(result.data.code, name)
+      if (!worldName.trim()) return menu.setMessage('Give the world a name.', true)
+      const body = { name: worldName.trim(), ...(seed.trim() ? { seed: seed.trim() } : {}), size: terrain.size }
+      await enterFromServer(name, 'Making a world…', '/api/games', { method: 'POST', body: JSON.stringify(body) })
     },
-    onLoad: async (name, worldCode) => {
-      saveName(name)
-      menu.setBusy(true)
-      menu.setMessage('Loading the world…')
-      const result = await api<GameInfo>(`/api/saves/${encodeURIComponent(worldCode)}/load`, { method: 'POST' })
-      if (!result.ok) return failed(result.error)
-      void enter(result.data.code, name)
-    },
+    onLoad: (name, worldCode) => enterFromServer(name, 'Loading the world…', `/api/saves/${encodeURIComponent(worldCode)}/load`, { method: 'POST' }),
     onJoin: async (name, gameCode) => {
-      saveName(name)
-      if (!gameCode.trim()) {
-        menu.setMessage('Type the code of the game to join.', true)
-        return
-      }
-      menu.setBusy(true)
-      menu.setMessage('Looking for the game…')
-      const result = await api<GameInfo>(`/api/games/${encodeURIComponent(gameCode.trim())}`)
-      if (!result.ok) return failed(result.error)
-      void enter(result.data.code, name)
+      if (!gameCode.trim()) return menu.setMessage('Type the code of the game to join.', true)
+      await enterFromServer(name, 'Looking for the game…', `/api/games/${encodeURIComponent(gameCode.trim())}`)
     },
     // A world as a file: the server sends it as a download.
     onExport: (worldCode) => {

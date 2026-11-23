@@ -2,41 +2,28 @@
 // under res/sounds/: then a file is played instead, picked at random when there are several. A sound `step/grass`
 // is played from `res/sounds/step-grass.ogg`, or from `step-grass-1.ogg`, `step-grass-2.ogg` and so on (.ogg, .mp3
 // or .wav). The dev server picks a new file up on reload; a hosted build needs `npm run build`.
+//
+// A new sound is a recipe in RECIPES (its name is its key there) and a volume in SOUND_VOLUME.
 
-import type { Terrain } from '../../../../packages/shared/src/index.ts'
+import { biomeAt, isInDungeons, isSeaAt, type Terrain } from '../../../../packages/shared/src/index.ts'
+import { snowOnTile } from '../snow.ts'
 
-// What the ground underfoot sounds like. Every tile is grass for now. A new surface needs a footstep recipe in
-// FOOTSTEPS (or only its files) and a place in `surfaceAt`.
-export type Surface = 'grass'
+// What the ground underfoot sounds like: grass in the forest, sand on its beaches, rock in the mountains and snow where
+// it lies, and the ice crypt's frozen flagstones. A new surface needs a footstep recipe in FOOTSTEPS (or only its files)
+// and a place in `surfaceAt`.
+export type Surface = 'grass' | 'sand' | 'stone' | 'snow' | 'ice' | 'wood'
 
-export type SoundId =
-  | 'punch/wood'
-  | 'punch/leaves'
-  | 'punch/stone'
-  | 'break/tree'
-  | 'break/bush'
-  | 'break/rock'
-  | 'hit/animal'
-  | 'hurt'
-  | 'wave'
-  | 'animal/cow'
-  | 'animal/chicken'
-  | 'animal/deer'
-  | 'animal/wolf'
-  | 'animal/skeleton'
-  | 'attack/jab'
-  | 'attack/swing'
-  | 'attack/thrust'
-  | 'attack/heavy'
-  | 'attack/shoot'
-  | 'attack/throw'
-  | 'plant' | 'rustle' | 'pickup' | 'eat' | 'sleep' | 'move'
-  | 'craft/one' | 'craft/some' | 'craft/all' | 'craft/fail'
-  | `step/${Surface}`
+// Every sound, by name (see RECIPES).
+export type SoundId = keyof typeof RECIPES
 
-// The surface a player standing on tile x, y walks on. Ore deposits and the mountains are grass too, until they have
-// their own sound.
-export function surfaceAt(_terrain: Terrain | undefined, _x: number, _y: number): Surface {
+// The surface a player standing on tile x, y walks on.
+export function surfaceAt(terrain: Terrain | undefined, x: number, y: number): Surface {
+  if (isInDungeons(x, y)) return 'ice'
+  if (!terrain) return 'grass'
+  const biome = biomeAt(terrain, x, y)
+  // Snow exactly where the ground is drawn white (a whole tile at a time: see isSnowAt), so what you hear is what you see.
+  if (biome?.key === 'mountain') return snowOnTile(terrain, x, y) ? 'snow' : 'stone'
+  for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) if (isSeaAt(terrain, x + dx, y + dy)) return 'sand'
   return 'grass'
 }
 
@@ -45,8 +32,12 @@ export function animalSound(kind: string): SoundId {
   if (kind === 'chicken') return 'animal/chicken'
   if (kind === 'deer') return 'animal/deer'
   if (kind === 'wolf') return 'animal/wolf'
-  if (kind === 'skeleton' || kind === 'skeleton-archer' || kind === 'frost-lich') return 'animal/skeleton'
   return 'animal/cow'
+}
+
+// The sound a monster of a kind makes when it is hurt: a skeleton's bones rattle; a wisp tinkles like ice.
+export function monsterSound(kind: string): SoundId {
+  return kind === 'frost-wisp' ? 'punch/stone' : 'animal/skeleton'
 }
 
 export function footstep(surface: Surface): SoundId {
@@ -56,14 +47,80 @@ export function footstep(surface: Surface): SoundId {
 // How loud everything is at full volume (the volume settings scale it), 0 to 1.
 const MASTER_VOLUME = 1
 
-// Which volume setting each sound is under: walking (footsteps and pushing through bushes), or everything else.
-export type SoundChannel = 'effects' | 'footsteps'
+// How loud each sound is, on top of the volume settings: 1 as made, 0.5 half as loud, 2 twice as loud. Tweak these to
+// balance the sounds against each other. (A file in res/sounds/ is played at this volume too.)
+export const SOUND_VOLUME: Readonly<Record<SoundId, number>> = {
+  // Hitting things and breaking them.
+  'punch/wood': 1,
+  'punch/leaves': 1,
+  'punch/stone': 1,
+  'break/tree': 1,
+  'break/bush': 1,
+  'break/rock': 1,
+  'hit/animal': 1,
+  // Being hurt, and the frost lich, and traps.
+  hurt: 1,
+  cast: 1,
+  blizzard: 1,
+  'trap/click': 1,
+  'trap/spikes': 1,
+  // Creatures crying out when hurt.
+  'animal/cow': 1,
+  'animal/chicken': 1,
+  'animal/deer': 1,
+  'animal/wolf': 1,
+  'animal/skeleton': 1,
+  // Attacks.
+  'attack/jab': 1,
+  'attack/swing': 1,
+  'attack/thrust': 1,
+  'attack/shoot': 1,
+  'attack/draw': 1,
+  // Charged attacks: ready to let go, and each kind let go.
+  'charge/ready': 0.5,
+  'attack/spin': 1,
+  'attack/slam': 1,
+  'attack/dash': 1,
+  // A skeleton raising its sword to swing, and crouching to charge.
+  'monster/raise': 0.9,
+  'monster/charge': 1,
+  // Everything else.
+  plant: 1,
+  rustle: 0.6,
+  pickup: 1,
+  eat: 1,
+  sleep: 1,
+  move: 1,
+  'craft/one': 1,
+  'craft/some': 1,
+  'craft/all': 1,
+  'craft/fail': 1,
+  // Footsteps, by what is underfoot.
+  'step/grass': 0.45,
+  'step/sand': 0.45,
+  'step/stone': 0.45,
+  'step/snow': 0.45,
+  'step/ice': 0.45,
+  'step/wood': 0.5,
+}
+
+// Which volume setting each sound is under: walking (footsteps and pushing through bushes), everything else, or (when
+// played for them: see `play`) what the other players do.
+const SOUND_CHANNELS = ['effects', 'footsteps', 'others'] as const
+export type SoundChannel = (typeof SOUND_CHANNELS)[number]
 
 function channelOf(id: SoundId): SoundChannel {
   return id.startsWith('step/') || id === 'rustle' ? 'footsteps' : 'effects'
 }
 
-export type SoundLevels = { master: number; effects: number; footsteps: number; muted: boolean }
+export type SoundLevels = { master: number; effects: number; footsteps: number; others: number; muted: boolean }
+
+// Where a sound comes from (tiles), and, for one another player makes, that it is theirs (under the "Other players"
+// volume). It is quieter the further it is from the player, panned to its side, and not heard at all beyond HEAR_RADIUS.
+export type SoundFrom = { x: number; y: number; other?: boolean }
+const HEAR_RADIUS = 26
+// How many tiles to one side a sound has to be to come from that side only.
+const PAN_SPREAD = 12
 
 type Recipe = (context: AudioContext, out: AudioNode, at: number, noise: AudioBuffer) => void
 
@@ -90,9 +147,55 @@ const FOOTSTEPS: Record<Surface, Recipe> = {
     crackles(context, step, noise, at, 0.05, 9 + Math.floor(Math.random() * 5), 0.5)
     crackles(context, step, noise, at + roll, 0.06, 7 + Math.floor(Math.random() * 5), 0.35)
   },
+  // Snow: a soft, squeaky, muffled crunch, lower and slower than grass, with no thud of hard ground under it.
+  snow: (context, out, at, noise) => {
+    const step = context.createBiquadFilter()
+    step.type = 'lowpass'
+    step.frequency.value = 1900
+    step.connect(out)
+    burst(context, step, noise, { at, length: 0.16, gain: 0.32, filter: 'bandpass', frequency: 700 * vary(0.1), to: 420, q: 0.9, attack: 0.03 })
+    crackles(context, step, noise, at + 0.02, 0.12, 12 + Math.floor(Math.random() * 6), 0.32, 0.45)
+    tone(context, step, { at: at + 0.04, type: 'sine', from: 1500 * vary(0.1), to: 1300, length: 0.05, gain: 0.025 })
+  },
+  // Rock: a hard, short tap of a heel and toe, a little grit under it.
+  stone: (context, out, at, noise) => {
+    burst(context, out, noise, { at, length: 0.025, gain: 0.32, filter: 'bandpass', frequency: 2300 * vary(0.12), q: 2.2, attack: 0.001 })
+    tone(context, out, { at, type: 'sine', from: 150, to: 90, length: 0.05, gain: 0.3 })
+    burst(context, out, noise, { at: at + 0.06 + Math.random() * 0.02, length: 0.02, gain: 0.18, filter: 'bandpass', frequency: 2800 * vary(0.12), q: 2.5, attack: 0.001 })
+    crackles(context, out, noise, at + 0.01, 0.04, 3, 0.12, 1.6)
+  },
+  // A raft's logs: a hollow knock of the heel on wood (a low, round tone, as a log rings), the toe a softer knock after,
+  // and a little creak of the lashings.
+  wood: (context, out, at, noise) => {
+    tone(context, out, { at, type: 'triangle', from: 210 * vary(0.08), to: 150, length: 0.09, gain: 0.32 })
+    burst(context, out, noise, { at, length: 0.03, gain: 0.22, filter: 'bandpass', frequency: 900 * vary(0.12), q: 1.6, attack: 0.001 })
+    const toe = at + 0.07 + Math.random() * 0.02
+    tone(context, out, { at: toe, type: 'triangle', from: 240 * vary(0.08), to: 175, length: 0.06, gain: 0.18 })
+    burst(context, out, noise, { at: toe, length: 0.025, gain: 0.12, filter: 'bandpass', frequency: 1100 * vary(0.12), q: 1.8, attack: 0.001 })
+    if (Math.random() < 0.35) tone(context, out, { at: at + 0.03, type: 'sawtooth', from: 520 * vary(0.15), to: 470, length: 0.08, gain: 0.012 })
+  },
+  // Sand: a soft shuffle, a hiss with little weight in it.
+  sand: (context, out, at, noise) => {
+    burst(context, out, noise, { at, length: 0.13, gain: 0.14, filter: 'bandpass', frequency: 1800 * vary(0.12), to: 1100, q: 0.8, attack: 0.02 })
+    burst(context, out, noise, { at, length: 0.06, gain: 0.25, filter: 'lowpass', frequency: 260 })
+  },
+  // The crypt's frozen flagstones: a muffled heel-and-toe on hard ground, with a faint gritty scuff of frost under the
+  // sole. No ringing note (a tone on every step sounds like a beep, not ice): all of it filtered soft.
+  ice: (context, out, at, noise) => {
+    const step = context.createBiquadFilter()
+    step.type = 'lowpass'
+    step.frequency.value = 2600
+    step.Q.value = 0.5
+    step.connect(out)
+    burst(context, step, noise, { at, length: 0.03, gain: 0.22, filter: 'bandpass', frequency: 1300 * vary(0.12), q: 1.3, attack: 0.002 })
+    tone(context, step, { at, type: 'sine', from: 120, to: 75, length: 0.06, gain: 0.2 })
+    burst(context, step, noise, { at: at + 0.01, length: 0.08, gain: 0.035, filter: 'bandpass', frequency: 3400 * vary(0.1), to: 2600, q: 0.8, attack: 0.01 })
+    crackles(context, step, noise, at + 0.01, 0.05, 3, 0.06, 1.3)
+    burst(context, step, noise, { at: at + 0.055 + Math.random() * 0.02, length: 0.02, gain: 0.1, filter: 'bandpass', frequency: 1700 * vary(0.12), q: 1.5, attack: 0.002 })
+  },
 }
 
-const RECIPES: Record<SoundId, Recipe> = {
+const RECIPES = {
   // A fist on a trunk: a hollow knock (a short, falling note with a woody click on top) and a low thump under it.
   'punch/wood': (context, out, at, noise) => {
     tone(context, out, { at, type: 'triangle', from: 210 * vary(0.1), to: 120, length: 0.1, gain: 0.55 })
@@ -119,8 +222,7 @@ const RECIPES: Record<SoundId, Recipe> = {
     burst(context, out, noise, { at, length: 0.1, gain: 0.3, filter: 'lowpass', frequency: 280 })
     crackles(context, out, noise, at, 0.22, 16, 0.38)
   },
-  // Attacks: a quick puff for a jab, a whoosh for a swing (deeper for a heavy one), a sharp hiss for a thrust, a twang
-  // for a shot, and a long whoosh for a throw.
+  // Attacks: a quick puff for a jab, a whoosh for a swing, a sharp hiss for a thrust, and a twang for a shot.
   'attack/jab': (context, out, at, noise) => {
     burst(context, out, noise, { at, length: 0.06, gain: 0.25, filter: 'bandpass', frequency: 1400 * vary(0.1), q: 1, attack: 0.005 })
   },
@@ -130,16 +232,46 @@ const RECIPES: Record<SoundId, Recipe> = {
   'attack/thrust': (context, out, at, noise) => {
     burst(context, out, noise, { at, length: 0.1, gain: 0.25, filter: 'bandpass', frequency: 2600 * vary(0.1), to: 1600, q: 2, attack: 0.01 })
   },
-  'attack/heavy': (context, out, at, noise) => {
-    burst(context, out, noise, { at, length: 0.28, gain: 0.35, filter: 'bandpass', frequency: 500 * vary(0.1), to: 1400, q: 1, attack: 0.06 })
-    tone(context, out, { at: at + 0.12, type: 'sine', from: 120, to: 55, length: 0.18, gain: 0.45 })
-  },
   'attack/shoot': (context, out, at, noise) => {
     tone(context, out, { at, type: 'triangle', from: 320 * vary(0.08), to: 180, length: 0.12, gain: 0.3 })
     burst(context, out, noise, { at, length: 0.12, gain: 0.15, filter: 'bandpass', frequency: 3000, to: 1800, q: 1.5, attack: 0.005 })
   },
-  'attack/throw': (context, out, at, noise) => {
-    burst(context, out, noise, { at, length: 0.3, gain: 0.25, filter: 'bandpass', frequency: 700 * vary(0.1), to: 1800, q: 1, attack: 0.05 })
+  // A shot being wound up: a bowstring creaking back, or a sling's cord starting to whoosh round.
+  'attack/draw': (context, out, at, noise) => {
+    tone(context, out, { at, type: 'triangle', from: 140 * vary(0.08), to: 190, length: 0.22, gain: 0.08 })
+    burst(context, out, noise, { at, length: 0.24, gain: 0.06, filter: 'bandpass', frequency: 900, to: 1400, q: 2, attack: 0.08 })
+  },
+  // A charge ready to let go: something to pick up on in the background, not a beep: a soft, low creak of the grip
+  // tightening, muffled.
+  'charge/ready': (context, out, at, noise) => {
+    tone(context, out, { at, type: 'sine', from: 260 * vary(0.05), to: 300, length: 0.09, gain: 0.06 })
+    burst(context, out, noise, { at, length: 0.1, gain: 0.04, filter: 'bandpass', frequency: 700, to: 900, q: 1.5, attack: 0.02 })
+  },
+  // A spin: two whooshes round, one after the other, a turn apart.
+  'attack/spin': (context, out, at, noise) => {
+    for (const turn of [0, 0.27]) burst(context, out, noise, { at: at + turn, length: 0.22, gain: 0.28, filter: 'bandpass', frequency: 700 * vary(0.1), to: 2400, q: 1.1, attack: 0.06 })
+  },
+  // A slam or a big strike: a heavy whoosh down and a deep thud into the ground.
+  'attack/slam': (context, out, at, noise) => {
+    burst(context, out, noise, { at, length: 0.16, gain: 0.25, filter: 'bandpass', frequency: 1400, to: 500, q: 1, attack: 0.04 })
+    tone(context, out, { at: at + 0.13, type: 'sine', from: 120 * vary(0.08), to: 40, length: 0.3, gain: 0.7 })
+    burst(context, out, noise, { at: at + 0.13, length: 0.22, gain: 0.45, filter: 'lowpass', frequency: 300 })
+  },
+  // A dash: a fast rush of air going past.
+  'attack/dash': (context, out, at, noise) => {
+    burst(context, out, noise, { at, length: 0.24, gain: 0.3, filter: 'bandpass', frequency: 600 * vary(0.1), to: 3000, q: 0.9, attack: 0.02 })
+    burst(context, out, noise, { at, length: 0.1, gain: 0.2, filter: 'lowpass', frequency: 240 })
+  },
+  // A skeleton raising its sword: bones creaking, and a short scrape of rusty metal.
+  'monster/raise': (context, out, at, noise) => {
+    for (let i = 0; i < 3; i++) burst(context, out, noise, { at: at + i * 0.04, length: 0.025, gain: 0.16, filter: 'bandpass', frequency: 1900 * vary(0.25) })
+    burst(context, out, noise, { at: at + 0.08, length: 0.18, gain: 0.12, filter: 'bandpass', frequency: 3600, to: 2600, q: 6, attack: 0.03 })
+  },
+  // A skeleton crouching to charge: a low, rising rattle and a long scrape of its blade, building to the dash.
+  'monster/charge': (context, out, at, noise) => {
+    for (let i = 0; i < 10; i++) burst(context, out, noise, { at: at + i * 0.08 * vary(0.2), length: 0.03, gain: 0.08 + i * 0.015, filter: 'bandpass', frequency: (1200 + i * 120) * vary(0.2) })
+    burst(context, out, noise, { at, length: 0.9, gain: 0.1, filter: 'bandpass', frequency: 2200, to: 4200, q: 7, attack: 0.5 })
+    tone(context, out, { at, type: 'sawtooth', from: 70, to: 110, length: 0.9, gain: 0.07 })
   },
   // A hurt cow: a short, low, falling moo. A hurt chicken: a sharp squawk.
   'animal/cow': (context, out, at) => {
@@ -172,10 +304,25 @@ const RECIPES: Record<SoundId, Recipe> = {
     tone(context, out, { at: at + 0.02, type: 'sawtooth', from: 210 * vary(0.1), to: 140, length: 0.13, gain: 0.1 })
     burst(context, out, noise, { at: at + 0.02, length: 0.12, gain: 0.12, filter: 'bandpass', frequency: 900 * vary(0.1), q: 3 })
   },
-  // A wave of cold air: a deep rushing gust.
-  wave: (context, out, at, noise) => {
-    burst(context, out, noise, { at, length: 0.8, gain: 0.35, filter: 'bandpass', frequency: 500, to: 1600, q: 0.8, attack: 0.25 })
-    tone(context, out, { at, type: 'sine', from: 90, to: 50, length: 0.7, gain: 0.35 })
+  // The frost lich starting a spell: a cold, rising shimmer.
+  cast: (context, out, at, noise) => {
+    tone(context, out, { at, type: 'sine', from: 520, to: 1040, length: 0.9, gain: 0.12 })
+    tone(context, out, { at: at + 0.05, type: 'triangle', from: 780, to: 1560, length: 0.8, gain: 0.06 })
+    burst(context, out, noise, { at, length: 0.9, gain: 0.08, filter: 'bandpass', frequency: 3200, to: 5200, q: 3, attack: 0.3 })
+  },
+  // A blizzard: a long, deep, howling gust.
+  blizzard: (context, out, at, noise) => {
+    burst(context, out, noise, { at, length: 2.2, gain: 0.3, filter: 'bandpass', frequency: 420, to: 900, q: 0.7, attack: 0.5 })
+    tone(context, out, { at, type: 'sine', from: 70, to: 55, length: 2, gain: 0.25 })
+  },
+  // A spike trap set off: a dry click of a catch let go; then the spikes shooting up: a sharp scrape and clank.
+  'trap/click': (context, out, at, noise) => {
+    burst(context, out, noise, { at, length: 0.03, gain: 0.35, filter: 'bandpass', frequency: 2600, q: 3, attack: 0.001 })
+    tone(context, out, { at, type: 'triangle', from: 900, to: 600, length: 0.05, gain: 0.12 })
+  },
+  'trap/spikes': (context, out, at, noise) => {
+    burst(context, out, noise, { at, length: 0.12, gain: 0.45, filter: 'bandpass', frequency: 1800, to: 3600, q: 1.5, attack: 0.002 })
+    tone(context, out, { at, type: 'square', from: 220, to: 160, length: 0.1, gain: 0.08 })
   },
   // A hit on an animal: a soft, dull thump.
   'hit/animal': (context, out, at, noise) => {
@@ -269,7 +416,12 @@ const RECIPES: Record<SoundId, Recipe> = {
     tone(context, out, { at: at + 0.12, type: 'square', from: 130, to: 100, length: 0.12, gain: 0.1 })
   },
   'step/grass': FOOTSTEPS.grass,
-}
+  'step/snow': FOOTSTEPS.snow,
+  'step/stone': FOOTSTEPS.stone,
+  'step/sand': FOOTSTEPS.sand,
+  'step/ice': FOOTSTEPS.ice,
+  'step/wood': FOOTSTEPS.wood,
+} satisfies Record<string, Recipe>
 
 const files = import.meta.glob('../../../../res/sounds/**/*.{ogg,mp3,wav}', { eager: true, query: '?url', import: 'default' }) as Record<
   string,
@@ -293,7 +445,9 @@ export class Sounds {
   private noise: AudioBuffer | undefined
   private readonly loaded = new Map<SoundId, AudioBuffer[]>()
   private readonly channels = new Map<SoundChannel, GainNode>()
-  private levels: SoundLevels = { master: 1, effects: 1, footsteps: 1, muted: false }
+  private levels: SoundLevels = { master: 1, effects: 1, footsteps: 1, others: 0.5, muted: false }
+  // Where the player hears from (tiles).
+  private listener = { x: 0, y: 0 }
 
   // How loud the game is: the master volume, each kind's, and whether it is muted (the sound settings).
   setLevels(levels: SoundLevels): void {
@@ -315,7 +469,7 @@ export class Sounds {
       }
       this.out = this.context.createGain()
       this.out.connect(this.context.destination)
-      for (const channel of ['effects', 'footsteps'] as const) {
+      for (const channel of SOUND_CHANNELS) {
         const gain = this.context.createGain()
         gain.connect(this.out)
         this.channels.set(channel, gain)
@@ -327,11 +481,40 @@ export class Sounds {
     if (this.context.state === 'suspended') void this.context.resume()
   }
 
-  play(id: SoundId): void {
+  // Where the player is, to hear sounds from (tiles).
+  listen(x: number, y: number): void {
+    this.listener = { x, y }
+  }
+
+  // Plays a sound: the player's own, or, `from` somewhere, as loud as it is from there (see SoundFrom).
+  play(id: SoundId, from?: SoundFrom): void {
     const context = this.context
-    const out = this.channels.get(channelOf(id))
+    const channel = this.channels.get(from?.other ? 'others' : channelOf(id))
     // A context still starting up plays what it is given as soon as it is running. Nothing is made while muted.
-    if (!context || !out || !this.noise || context.state === 'closed' || this.levels.muted) return
+    if (!context || !channel || !this.noise || context.state === 'closed' || this.levels.muted) return
+    // This sound's own volume (SOUND_VOLUME), let go of once it has had time to play out.
+    const own = context.createGain()
+    own.gain.value = SOUND_VOLUME[id]
+    own.connect(channel)
+    setTimeout(() => own.disconnect(), 4_000)
+    let out: AudioNode = own
+    if (from) {
+      const dx = from.x - this.listener.x
+      const distance = Math.hypot(dx, from.y - this.listener.y)
+      const near = 1 - distance / HEAR_RADIUS
+      if (near <= 0.02) return
+      const gain = context.createGain()
+      gain.gain.value = near * near
+      const pan = context.createStereoPanner()
+      pan.pan.value = Math.max(-1, Math.min(1, dx / PAN_SPREAD))
+      gain.connect(pan).connect(own)
+      out = gain
+      // Let go once it has had time to play out.
+      setTimeout(() => {
+        gain.disconnect()
+        pan.disconnect()
+      }, 4_000)
+    }
     const buffers = this.loaded.get(id)
     if (buffers && buffers.length > 0) {
       const source = context.createBufferSource()
@@ -341,7 +524,8 @@ export class Sounds {
       source.start()
       return
     }
-    RECIPES[id](context, out, context.currentTime, this.noise)
+    const recipe: Recipe = RECIPES[id]
+    recipe(context, out, context.currentTime, this.noise)
   }
 
   dispose(): void {

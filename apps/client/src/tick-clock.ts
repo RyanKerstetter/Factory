@@ -1,4 +1,4 @@
-import { COMMAND_LEAD_MARGIN, TICK_MS } from '../../../packages/shared/src/index.ts'
+import { TICK_MS } from '../../../packages/shared/src/index.ts'
 
 // What tick the server is on, worked out from when its messages arrive. Each state message says which tick the server
 // had just run; the soonest-arriving of the last few seconds' (the least held up on the way) sets `arrivalTick`, the
@@ -40,8 +40,9 @@ export class TickClock {
     return this.arrivalTick(now) + this.rttMs / 2 / TICK_MS
   }
 
-  // The tick to stamp a command with so it gets there in time: the server's tick when it arrives, plus a margin.
+  // The tick to stamp a command with: one the server has already run, so it runs the command on the very next tick
+  // after it arrives, as soon as it can (a command is never held back for a tick of its own).
   commandTick(now: number): number {
-    return Math.ceil(this.arrivalTick(now) + this.rttMs / TICK_MS + COMMAND_LEAD_MARGIN)
+    return Math.max(0, Math.floor(this.arrivalTick(now)))
   }
 }

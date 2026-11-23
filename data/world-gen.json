@@ -1,0 +1,61 @@
+{
+  "plants": {
+    "treeScatter": 2,
+    "forestCover": 20,
+    "forestDensity": 40,
+    "bushPatchChance": 20,
+    "bushesPerPatchMin": 3,
+    "bushesPerPatchMax": 5,
+    "rockPatchChance": 75,
+    "rocksPerPatchMin": 2,
+    "rocksPerPatchMax": 6,
+    "grassPatchChance": 30,
+    "grassPerPatchMin": 3,
+    "grassPerPatchMax": 8,
+    "flintScatter": 3,
+    "spawnClearing": 5
+  },
+  "cells": {
+    "forest": 24,
+    "bushPatch": 16,
+    "rockPatch": 10,
+    "grassPatch": 8
+  },
+  "ponds": {
+    "cell": 28,
+    "chance": 22,
+    "minRadius": 2,
+    "maxRadius": 4,
+    "spawnClearing": 12,
+    "shore": 3
+  },
+  "camps": {
+    "cell": 34,
+    "chance": 60,
+    "warmest": 6,
+    "coldest": -24,
+    "apartFromDungeon": 30,
+    "clearing": 4,
+    "guardsMin": 4,
+    "guardsMax": 5,
+    "archersMin": 1,
+    "archersMax": 2,
+    "patrolRadius": 11,
+    "respawnSeconds": 150
+  },
+  "dungeon": {
+    "share": 0.84,
+    "clearing": 3
+  },
+  "islands": {
+    "bumpiness": 60,
+    "gap": 6,
+    "facingBump": 5,
+    "shelf": 6,
+    "shelfFacing": 6,
+    "shelfJoin": 9
+  },
+  "map": {
+    "reveal": 12
+  }
+}

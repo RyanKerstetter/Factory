@@ -1,4 +1,5 @@
 import type { AnimalInfo, AnimalPosition } from './animals.ts'
+import type { LichSpell, MonsterInfo, MonsterPosition } from './monsters.ts'
 import type { Command, Refusal } from './commands.ts'
 import type { TerrainSettings } from './terrain.ts'
 import type { Numbered } from './reliable-stream.ts'
@@ -32,11 +33,19 @@ export type StreamEvent =
   // What a player holds (an item ID, 0 for nothing) and wears (head, body, feet: item IDs, 0 for none), for drawing
   // them: sent to everyone when it changes, and of everyone to a player who joins.
   | { k: 'gear'; id: number; held: number; armor: number[] }
-  // A player attacked (for drawing it on other pages): with what (the item ID, 0 for fists), whether it was the special
-  // attack, and which way (radians).
-  | { k: 'swung'; id: number; item: number; special: boolean; angle: number }
-  // A boss let out a wave of cold air (for drawing it): from a point (units), rolling out `delay` ticks from now.
-  | { k: 'wave'; x: number; y: number; delay: number }
+  // A player attacked (for drawing it on other pages): with what (the item ID, 0 for fists), which way (radians), and
+  // whether it was a charged attack.
+  | { k: 'swung'; id: number; item: number; angle: number; charged?: 1 }
+  // What a monster near the player is (see monsters.ts), sent when it comes near and whenever that changes; and one that
+  // is gone (out of range, or dead: `died`, the damage of the killing blow).
+  | { k: 'monster'; m: MonsterInfo }
+  | { k: 'monster-'; id: number; died?: number }
+  // A spike trap in a copy of the dungeon was set off (for drawing it): its spikes come up `delay` ticks from now (see
+  // DUNGEON_TRAPS and the server's dungeons.ts).
+  | { k: 'trap'; slot: number; trap: number; delay: number }
+  // The frost lich cast a spell that the pages draw (a blizzard, a wisp or an archer called up): where (units), how far
+  // it reaches (tiles), and for how long (ticks).
+  | { k: 'spell'; spell: LichSpell; x: number; y: number; radius: number; ticks: number }
   // What an animal near the player is, sent when it comes near and whenever that changes; and one that is gone (out of
   // range, or dead). Animals are not part of the simulation either (see animals.ts).
   | { k: 'animal'; a: AnimalInfo }
@@ -75,7 +84,10 @@ export function eventPhase(event: StreamEvent): EventPhase {
     case 'hurt':
     case 'gear':
     case 'swung':
-    case 'wave':
+    case 'monster':
+    case 'monster-':
+    case 'trap':
+    case 'spell':
     case 'animal':
     case 'animal-':
       return 'now'
@@ -97,20 +109,30 @@ export function eventPhase(event: StreamEvent): EventPhase {
 
 // Where everyone is, once a tick: [player ID, x, y] in units. `t` is the server's tick, `s` the number of the last log
 // message sent before it (so a page that has every log message up to `s` has the whole log up to `t`), and `a` the
-// last of this page's movement inputs the server has played. `n` is where the animals near the player are, `j` the
-// arrows, stones and spears in flight near it ([id, item, x, y, 1 once it has stopped]), `h` the player's own health,
-// `b` how warm their body is, in tenths of a °C (see cold.ts), and `d` the number of the last of this page's attacks
-// that set off a dash (so the page knows which of its dashes the server's position has in it: see LocalPlayer).
+// last of this page's movement inputs the server has played. `n` is where the animals near the player are, `m` the
+// monsters, `j` what is in flight near it (arrows, stones, spells: [id, item, x, y, 1 once it has stopped]), `h` the
+// player's own health, and `b` how warm their body is, in tenths of a °C (see cold.ts). `r` is where the rafts near the
+// player are ([id, x, y, angle in thousandths of a radian, the player leading it on a rope or 0, the fence it is tied
+// to or 0]: see rafts.ts), `q` which players are aboard which raft
+// ([player ID, raft ID]), and `o`, while the player is aboard one, where on it they are after input `a` ([raft ID, x,
+// y], units from its middle along its own axes). `c`, while the player is making something by hand, what ([recipe ID, ticks
+// spent on it so far (it only goes on while their inventory is open), how many are waiting, it included]). `v`, while a rope is pulling the player
+// along, how fast (units a tick, [x, y]: see `ropeStep`), for the page to play its inputs on from.
 export type StateMessage = {
   t: number
   s: number
   a: number
   p: Array<[number, number, number]>
   n?: AnimalPosition[]
+  m?: MonsterPosition[]
   j?: Array<[number, number, number, number, number]>
   h?: number
   b?: number
-  d?: number
+  r?: Array<[number, number, number, number, number, number]>
+  q?: Array<[number, number]>
+  o?: [number, number, number]
+  c?: [number, number, number]
+  v?: [number, number]
 }
 export type PongMessage = { c: number; t: number }
 export type RequestAckMessage = { s: number }
@@ -133,8 +155,6 @@ export type InputMessage = { i: Array<[number, number]> }
 // seed, and who is in it. A saved world that is not running: the same, when it was last saved (ms since 1970), and
 // everyone who has played in it.
 export type GameInfo = { code: string; name: string; seed: number; players: number; playerNames: string[] }
-// What a new world is made with besides its name and seed: its size and how ragged its coasts are.
-export type NewWorldOptions = { size?: string; bumpiness?: number }
 export type SavedWorldInfo = { code: string; name: string; seed: number; savedAt: number; players: string[] }
 
 // A player's name as the server keeps it: trimmed, and something if it is empty.

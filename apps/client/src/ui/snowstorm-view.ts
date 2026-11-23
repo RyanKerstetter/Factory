@@ -1,3 +1,5 @@
+import { createOverlayCanvas, easeToward } from './overlay-canvas.ts'
+
 // The snowstorm: snow blowing across the view in the cold, over whichever view draws the world, on a canvas of its
 // own. How heavy it is (0 to 1, see snowAt in terrain.ts) sets how many flakes there are, how hard the wind drives
 // them, and how white the edges of the view go, so the deep cold is a near whiteout. It eases from one strength to
@@ -16,31 +18,14 @@ export type Snowstorm = {
 }
 
 export function createSnowstorm(container: HTMLElement): Snowstorm {
-  const canvas = document.createElement('canvas')
-  canvas.className = 'snowstorm'
-  container.append(canvas)
-  const context = canvas.getContext('2d')
+  const { canvas, context, size, dispose } = createOverlayCanvas(container, 'snowstorm')
   const flakes: Flake[] = []
   let strength = 0
-  let width = 0
-  let height = 0
   let time = 0
 
-  const fit = (): void => {
-    const ratio = Math.min(2, window.devicePixelRatio || 1)
-    width = container.clientWidth
-    height = container.clientHeight
-    canvas.width = Math.max(1, Math.round(width * ratio))
-    canvas.height = Math.max(1, Math.round(height * ratio))
-    context?.setTransform(ratio, 0, 0, ratio, 0, 0)
-  }
-  fit()
-  const resize = new ResizeObserver(fit)
-  resize.observe(container)
-
   const newFlake = (anywhere: boolean): Flake => ({
-    x: Math.random() * (width + 200) - 100,
-    y: anywhere ? Math.random() * height : -10 - Math.random() * 40,
+    x: Math.random() * (size.width + 200) - 100,
+    y: anywhere ? Math.random() * size.height : -10 - Math.random() * 40,
     size: 1 + Math.random() * Math.random() * 3.2,
     speed: 0.6 + Math.random() * 0.8,
     drift: Math.random() * 2 - 1,
@@ -53,8 +38,10 @@ export function createSnowstorm(container: HTMLElement): Snowstorm {
       if (!context) return
       const seconds = elapsedMs / 1000
       time += seconds
-      const step = EASE_PER_SECOND * seconds
-      strength += Math.max(-step, Math.min(step, target - strength))
+      strength = easeToward(strength, target, EASE_PER_SECOND, seconds)
+      const { width, height, ratio } = size
+      // Drawn in the view's own pixels (sizing the canvas to the view starts it afresh).
+      context.setTransform(ratio, 0, 0, ratio, 0, 0)
       if (strength < 0.002) {
         if (flakes.length > 0 || canvas.style.opacity !== '0') {
           flakes.length = 0
@@ -122,9 +109,6 @@ export function createSnowstorm(container: HTMLElement): Snowstorm {
       }
       context.globalAlpha = 1
     },
-    dispose() {
-      resize.disconnect()
-      canvas.remove()
-    },
+    dispose,
   }
 }

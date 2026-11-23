@@ -1,4 +1,4 @@
-import { AMMO_SLOT, ARMOR_SLOT, FOOD_SLOT, PLAYER_SLOTS, STACK_SIZE } from './constants.ts'
+import { AMMO_SLOT, ARMOR_SLOT, FOOD_SLOT, PLAYER_SLOTS, STACK_SIZE, TRASH_SLOT } from './constants.ts'
 import { ARMOR_SLOTS, getItem, NO_ITEM, stackLimit, type ArmorSlot, type ItemId } from './items.ts'
 
 // An inventory is a row of slots, each holding up to a stack of one kind of item. Every change is made the same
@@ -6,12 +6,19 @@ import { ARMOR_SLOTS, getItem, NO_ITEM, stackLimit, type ArmorSlot, type ItemId 
 // A slot marked `only: 'ammo'` takes only ammunition (the player's ammunition slot), and one marked with an armour slot
 // ('head', 'body', 'feet') only armour worn there; the marks are not sent, but put back on the player's inventory
 // wherever one is made (see `playerInventory`). Nothing goes into a marked slot by itself but ammunition into the
-// ammunition slot: armour is put on by moving it there.
-export type Slot = { item: ItemId; count: number; only?: 'ammo' | 'food' | ArmorSlot }
+// ammunition slot: armour is put on by moving it there. One marked 'trash' takes anything, but only moved there, and
+// what is in it is thrown away when another kind of item is put there, or more of its kind than it has room for (see
+// `moveBetween`); it does not count as had.
+export type Slot = { item: ItemId; count: number; only?: 'ammo' | 'food' | 'trash' | ArmorSlot }
 export type Inventory = { slots: Slot[]; stack: number }
 
 export function createInventory(size: number, stack = STACK_SIZE): Inventory {
   return { slots: Array.from({ length: size }, () => ({ item: NO_ITEM, count: 0 })), stack }
+}
+
+// Whether a slot (if there is one) holds anything.
+export function isFilled(slot: Slot | undefined): slot is Slot {
+  return slot !== undefined && slot.count > 0 && slot.item !== NO_ITEM
 }
 
 // Whether an item is ammunition (tagged "ammo" in items.json).
@@ -21,15 +28,14 @@ export function isAmmo(item: ItemId): boolean {
 
 // Whether an item may go in a slot.
 export function fitsSlot(slot: Slot, item: ItemId): boolean {
-  if (slot.only === undefined) return true
+  if (slot.only === undefined || slot.only === 'trash') return true
   if (slot.only === 'ammo') return isAmmo(item)
   if (slot.only === 'food') return isFood(item)
   return item !== NO_ITEM && getItem(item).armor?.slot === slot.only
 }
 
-// Whether an item goes into a slot by itself (picked up, crafted, taken from a chest): a plain slot, or the ammunition
-// slot for ammunition; never an armour slot.
-// The food slot takes more of what it already holds by itself, nothing else.
+// Whether an item goes into a slot by itself (picked up, crafted, taken from a chest): a plain slot, the ammunition
+// slot for ammunition, or the food slot for more of what it already holds; never an armour slot.
 function fillsBySelf(slot: Slot, item: ItemId): boolean {
   return slot.only === undefined || (slot.only === 'ammo' && isAmmo(item)) || (slot.only === 'food' && slot.count > 0 && slot.item === item)
 }
@@ -57,14 +63,15 @@ export function damageAfterArmor(damage: number, defense: number): number {
   return Math.max(1, Math.round(damage) - defense)
 }
 
-// A player's inventory: `from` (one sent, or an older one of another size) made PLAYER_SLOTS long, with its ammunition
-// slot marked; or an empty one.
+// A player's inventory: `from` (one sent, or an older one of another size) made PLAYER_SLOTS long, with its ammunition,
+// armour and food slots marked; or an empty one.
 export function playerInventory(from?: Inventory): Inventory {
   const made = createInventory(PLAYER_SLOTS, from?.stack)
   from?.slots.slice(0, PLAYER_SLOTS).forEach((slot, i) => (made.slots[i] = { item: slot.item, count: slot.count }))
   made.slots[AMMO_SLOT].only = 'ammo'
   ARMOR_SLOTS.forEach((part, i) => (made.slots[ARMOR_SLOT + i].only = part))
   made.slots[FOOD_SLOT].only = 'food'
+  made.slots[TRASH_SLOT].only = 'trash'
   // Anything that is not ammunition in the ammunition slot (from an older save) is left where it is: it cannot be put
   // back in, only taken out.
   return made
@@ -80,13 +87,7 @@ function fillOrder(inventory: Inventory, item: ItemId): Slot[] {
 
 export function countOf(inventory: Inventory, item: ItemId): number {
   let total = 0
-  for (const slot of inventory.slots) if (slot.item === item) total += slot.count
-  return total
-}
-
-export function totalCount(inventory: Inventory): number {
-  let total = 0
-  for (const slot of inventory.slots) total += slot.count
+  for (const slot of inventory.slots) if (slot.item === item && slot.only !== 'trash') total += slot.count
   return total
 }
 
@@ -143,30 +144,6 @@ export function removeItems(inventory: Inventory, item: ItemId, count: number): 
   return count - left
 }
 
-// Moves the stack in slot `from` to slot `to`: onto a stack of the same kind there as far as it fits, or swapping the
-// two. Returns whether anything moved.
-export function moveSlot(inventory: Inventory, from: number, to: number): boolean {
-  const source = inventory.slots[from]
-  const target = inventory.slots[to]
-  if (!source || !target || from === to || source.count === 0) return false
-  if (!fitsSlot(target, source.item)) return false
-  if (target.count > 0 && target.item === source.item) {
-    const moved = Math.min(source.count, stackLimit(source.item, inventory.stack) - target.count)
-    if (moved <= 0) return false
-    target.count += moved
-    source.count -= moved
-    if (source.count === 0) source.item = NO_ITEM
-    return true
-  }
-  if (target.count > 0 && !fitsSlot(source, target.item)) return false
-  const { item, count } = target
-  target.item = source.item
-  target.count = source.count
-  source.item = count > 0 ? item : NO_ITEM
-  source.count = count
-  return true
-}
-
 // How many of an item a slot takes (0: it does not take it at all), by slot index.
 export type SlotLimit = (index: number, item: ItemId) => number
 
@@ -177,8 +154,8 @@ export function plainLimit(inventory: Inventory): SlotLimit {
 
 // Moves up to `count` from slot `from` of `source` to slot `to` of `target` (which may be the same inventory): onto an
 // empty slot or a stack of its kind, as far as it fits (what does not stays where it was); or, moving a whole stack
-// onto one of another kind, swapping the two, if each fits where the other was. `sourceLimit` and `targetLimit` say
-// what each slot takes. Returns whether anything moved.
+// onto one of another kind, swapping the two, if each fits where the other was (onto the trash slot, what was there is
+// thrown away instead). `sourceLimit` and `targetLimit` say what each slot takes. Returns whether anything moved.
 export function moveBetween(
   source: Inventory,
   from: number,
@@ -194,6 +171,16 @@ export function moveBetween(
   const moving = Math.min(count, a.count)
   const room = targetLimit(to, a.item)
   if (room === 0) return false
+  // Onto the trash: what was in it (another kind) is gone; of the same kind, as much of it as there is no room for
+  // beside what comes (so it goes on taking the same thing, keeping only the last of it).
+  if (b.only === 'trash' && b.count > 0 && b.item !== a.item) {
+    b.count = 0
+    b.item = NO_ITEM
+  }
+  if (b.only === 'trash' && b.count > 0 && b.count + moving > room) {
+    b.count = Math.max(0, room - moving)
+    if (b.count === 0) b.item = NO_ITEM
+  }
   if (b.count === 0 || b.item === a.item) {
     const moved = Math.min(moving, room - b.count)
     if (moved <= 0) return false
@@ -210,6 +197,45 @@ export function moveBetween(
   b.count = a.count
   a.item = item
   a.count = had
+  return true
+}
+
+// ---- some slots of an inventory (a machine's inputs, a station's input slots)
+
+// How many of the items `match` takes are in some slots of an inventory.
+export function countIn(inventory: Inventory, indices: readonly number[], match: (item: ItemId) => boolean): number {
+  let total = 0
+  for (const index of indices) {
+    const slot = inventory.slots[index]
+    if (slot && slot.count > 0 && match(slot.item)) total += slot.count
+  }
+  return total
+}
+
+// Takes up to `count` of the items `match` takes out of some slots, in their order. Gives how many came out.
+export function takeIn(inventory: Inventory, indices: readonly number[], match: (item: ItemId) => boolean, count: number): number {
+  let left = count
+  for (const index of indices) {
+    if (left === 0) break
+    const slot = inventory.slots[index]
+    if (!slot || slot.count === 0 || !match(slot.item)) continue
+    left -= takeFromSlot(inventory, index, left)
+  }
+  return count - left
+}
+
+// Whether `count` more of an item fit in one slot: it is empty, or holds that item with room for them.
+export function fitsIn(inventory: Inventory, index: number, item: ItemId, count = 1): boolean {
+  const slot = inventory.slots[index]
+  return slot !== undefined && (slot.count === 0 || slot.item === item) && slot.count + count <= stackLimit(item, inventory.stack)
+}
+
+// Puts `count` of an item into one slot, if they fit there (see fitsIn). Gives whether they did.
+export function putIn(inventory: Inventory, index: number, item: ItemId, count: number): boolean {
+  if (!fitsIn(inventory, index, item, count)) return false
+  const slot = inventory.slots[index]
+  slot.item = item
+  slot.count += count
   return true
 }
 

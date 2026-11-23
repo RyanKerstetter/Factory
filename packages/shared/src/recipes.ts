@@ -1,46 +1,45 @@
+import stationsData from '../../../data/stations.json' with { type: 'json' }
+import { failIn, fieldsOf, onlyFields, secondsField, textField, wholeField, type Fail } from './data-check.ts'
 import { addItems, cloneInventory, countOf, removeItems, type Inventory } from './inventory.ts'
-import recipesData from '../../../data/recipes.json' with { type: 'json' }
-import { itemByKey, type ItemId } from './items.ts'
+import { itemFromKey, type ItemId } from './items.ts'
 
-// What can be made by hand from the inventory, from data/recipes.json. A recipe's number is part of the protocol (a
-// `craft` command names it), so a new one takes the next number. In the file, items are named by their keys, and
-// `count` (how many it makes) can be left out (1).
-export type Recipe = { id: number; category: string; output: ItemId; count: number; inputs: ReadonlyArray<readonly [ItemId, number]> }
+// What a player can make by hand from their inventory: the "player" station in data/stations.json. Made by hand it is
+// made at once; `seconds` is how long it takes at the player's own `speed` (1), which the stations that include it
+// make quicker (see `includes` and `speed` in stations.ts). A recipe's number (`id`) is its place in the list plus one,
+// and is part of the protocol (a `craft` command names it), so a new one goes at the end. In the file, items are named
+// by their keys, and `count` (how many it makes) can be left out (1).
+export type Recipe = { id: number; category: string; output: ItemId; count: number; inputs: ReadonlyArray<readonly [ItemId, number]>; ticks: number }
 
-const isWhole = (value: unknown, min: number): value is number => typeof value === 'number' && Number.isInteger(value) && value >= min
+// The player's speed at making things (see `speed` in stations.ts).
+export const PLAYER_CRAFT_SPEED: number = parsePlayer(stationsData).speed
+export const RECIPES: readonly Recipe[] = parsePlayer(stationsData).recipes
 
-export const RECIPES: readonly Recipe[] = parseRecipes(recipesData)
-
-function parseRecipes(data: unknown): Recipe[] {
-  if (!Array.isArray(data)) throw new Error('data/recipes.json must be a list of recipes.')
-  const seen = new Set<number>()
-  return data.map((raw: Record<string, unknown>, index): Recipe => {
-    const fail = (problem: string): never => {
-      throw new Error(`data/recipes.json, recipe ${index + 1}: ${problem}`)
-    }
-    if (typeof raw !== 'object' || raw === null) fail('is not an object')
-    const { id, output, count = 1, inputs, category = 'Other' } = raw
-    if (typeof category !== 'string') fail('"category" must be text')
-    if (!isWhole(id, 1)) return fail('"id" must be a whole number above 0')
-    if (seen.has(id)) fail(`"id" ${id} is used twice`)
-    seen.add(id)
-    const item = (key: unknown): ItemId => {
-      const found = typeof key === 'string' ? itemByKey(key) : undefined
-      return found ? found.id : fail(`there is no item "${String(key)}"`)
-    }
-    if (!isWhole(count, 1)) return fail('"count" must be a whole number above 0')
-    if (typeof inputs !== 'object' || inputs === null || Object.keys(inputs).length === 0) return fail('"inputs" must name at least one item')
+function parsePlayer(data: unknown): { speed: number; recipes: Recipe[] } {
+  const fail = failIn('data/stations.json, player')
+  const entry = fieldsOf(fieldsOf(data, 'data/stations.json', fail).player, 'it', fail)
+  onlyFields(entry, ['speed', 'recipes'], fail)
+  if (!Array.isArray(entry.recipes)) fail('"recipes" must be a list of recipes')
+  const recipes = (entry.recipes as unknown[]).map((item: unknown, index): Recipe => {
+    const fail = failIn(`data/stations.json, player recipe ${index + 1}`)
+    const raw = fieldsOf(item, 'it', fail)
+    onlyFields(raw, ['category', 'output', 'count', 'inputs', 'seconds'], fail)
     return {
-      id,
-      category: category as string,
-      output: item(output),
-      count,
-      inputs: Object.entries(inputs as Record<string, unknown>).map(([key, n]) => {
-        if (!isWhole(n, 1)) return fail(`"inputs" needs a whole number above 0 of ${key}`)
-        return [item(key), n] as const
-      }),
+      id: index + 1,
+      category: textField(raw, 'category', fail, 'Other'),
+      output: itemFromKey(raw.output, fail),
+      count: wholeField(raw, 'count', fail, 1, 1),
+      inputs: ingredientsOf(raw.inputs, fail),
+      ticks: secondsField(raw, 'seconds', fail),
     }
   })
+  return { speed: wholeField(entry, 'speed', fail, 1), recipes }
+}
+
+// A recipe's ingredients as a data file writes them, `{ "item key": how many }`: each item's number and how many.
+export function ingredientsOf(value: unknown, fail: Fail): Array<readonly [ItemId, number]> {
+  const inputs = fieldsOf(value ?? {}, '"inputs"', fail)
+  const list = Object.keys(inputs).map((key) => [itemFromKey(key, fail), wholeField(inputs, key, fail, 1)] as const)
+  return list.length > 0 ? list : fail('"inputs" must name at least one item')
 }
 
 export function getRecipe(id: number): Recipe | undefined {

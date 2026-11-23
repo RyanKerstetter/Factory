@@ -85,12 +85,11 @@ export class Chunk {
   // What takes heat (a barrel, a drying rack) gets it from the hottest campfire near it in this chunk, as it was at the
   // end of the last tick (see `heatFrom`), or from one over the chunk's edge (`border`, which the server sends).
   private spreadHeat(): void {
-    const fires = this.ordered.filter((entity) => entity.kind === 'campfire' && entity.heat > 0)
     for (const entity of this.ordered) {
       if (entity.kind !== 'barrel' && entity.kind !== 'rack') continue
       let heat = entity.border
-      for (const fire of fires) {
-        if (fire.kind !== 'campfire') continue
+      for (const fire of this.ordered) {
+        if ((fire.kind !== 'campfire' && fire.kind !== 'oven') || fire.heat === 0) continue
         heat = Math.max(heat, heatFrom(fire.heat, Math.max(Math.abs(fire.x - entity.x), Math.abs(fire.y - entity.y))))
       }
       entity.heat = heat

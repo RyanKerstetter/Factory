@@ -2,12 +2,14 @@ import type { Settings } from '../settings.ts'
 import { button, element } from './dom.ts'
 import { createSettingsView, type GameSettings } from './settings-view.ts'
 
-export type PauseMenuHandlers = { onCopyInvite: () => void; onLeave: () => void }
+// `onRespawn`: back to the world spawn, or to the sleeping bag last slept in (for a player stuck somewhere).
+export type PauseMenuHandlers = { onCopyInvite: () => void; onLeave: () => void; onRespawn: (at: 'spawn' | 'bed') => void }
 export type PauseMenu = {
   readonly isOpen: boolean
   open(): void
   close(): void
-  // What Escape does while the menu is open: back from the settings to the menu, or out of the menu to the game.
+  // What Escape does while the menu is open: back from the settings (or respawning) to the menu, or out of the menu
+  // to the game.
   back(): void
   dispose(): void
 }
@@ -24,8 +26,25 @@ export function createPauseMenu(container: HTMLElement, settings: Settings, hand
     element('div', 'stripe'),
     resume,
     button('btn', 'Settings', () => showSettings()),
+    button('btn', 'Respawn', () => showRespawn()),
     button('btn', 'Copy invite link', () => handlers.onCopyInvite()),
     button('btn btn-danger', 'Leave game', () => handlers.onLeave()),
+  )
+  // Respawning: where to, or back to the menu.
+  const respawnTo = (at: 'spawn' | 'bed') => (): void => {
+    menu.close()
+    handlers.onRespawn(at)
+  }
+  const toSpawn = button('btn btn-primary', 'At the world spawn', respawnTo('spawn'))
+  const respawn = element(
+    'div',
+    'pause-card',
+    element('h2', 'pause-title', 'Respawn'),
+    element('div', 'stripe'),
+    element('p', 'settings-note', 'For when you are stuck somewhere (a raft lost at sea). You keep your health and your things.'),
+    toSpawn,
+    button('btn', 'At my sleeping bag', respawnTo('bed')),
+    button('btn', 'Back', () => showMain()),
   )
   const settingsView = createSettingsView(settings, () => showMain(), game)
   const backdrop = element('div', 'pause', main)
@@ -38,6 +57,10 @@ export function createPauseMenu(container: HTMLElement, settings: Settings, hand
   const showMain = (): void => {
     backdrop.replaceChildren(main)
     resume.focus()
+  }
+  const showRespawn = (): void => {
+    backdrop.replaceChildren(respawn)
+    toSpawn.focus()
   }
   const showSettings = (): void => {
     settingsView.refresh()
@@ -59,7 +82,7 @@ export function createPauseMenu(container: HTMLElement, settings: Settings, hand
       backdrop.replaceChildren(main)
     },
     back() {
-      if (backdrop.firstChild === settingsView.root) showMain()
+      if (backdrop.firstChild === settingsView.root || backdrop.firstChild === respawn) showMain()
       else menu.close()
     },
     dispose() {

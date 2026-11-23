@@ -1,0 +1,40 @@
+{
+  "tree": {
+    "felled": [
+      { "item": "log", "min": 2, "max": 4 },
+      { "item": "acorn", "min": 1, "max": 2 },
+      { "item": "leaves", "min": 2, "max": 4 }
+    ],
+    "punchesPerBranch": 5,
+    "branch": [
+      { "item": "stick", "min": 1, "max": 1 },
+      { "item": "leaves", "min": 1, "max": 1 }
+    ],
+    "branchWithKnife": [
+      { "item": "bark", "min": 1, "max": 1 },
+      { "item": "leaves", "min": 1, "max": 1 }
+    ]
+  },
+  "bush": {
+    "broken": [
+      { "item": "fiber", "min": 1, "max": 2 },
+      { "item": "berries", "min": 2, "max": 2 }
+    ]
+  },
+  "rock": {
+    "broken": [
+      { "item": "stone", "min": 2, "max": 4 },
+      { "item": "flint", "min": 1, "max": 2 }
+    ]
+  },
+  "grass": {
+    "pulled": [{ "item": "wheat-seed", "min": 1, "max": 1, "chance": 30 }, { "item": "grass-seed", "min": 1, "max": 1, "chance": 50 }],
+    "cut": [{ "item": "hay", "min": 1, "max": 1 }]
+  },
+  "sapling": {
+    "dug": [{ "item": "acorn", "min": 1, "max": 1 }]
+  },
+  "sprout": {
+    "dug": [{ "item": "berries", "min": 1, "max": 1 }]
+  }
+}

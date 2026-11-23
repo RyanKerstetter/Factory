@@ -38,7 +38,7 @@ test('the singleplayer server runs a world in a worker and talks to the page as 
   assert.ok(mirror.world.chunkIds.length > 0, 'and has the chunks round the player')
 
   // A request is answered.
-  send({ t: 'req', message: { s: 1, r: { k: 'cmd', tick: last.t + 2, c: { k: 'move', from: 0, to: 1 } } } })
+  send({ t: 'req', message: { s: 1, r: { k: 'cmd', tick: last.t + 2, c: { k: 'slot', from: { id: 0, i: 0 }, to: { id: 0, i: 1 }, count: 1 } } } })
   assert.ok(received.some((message) => message.t === 'req-ack' && message.s === 1))
   send({ t: 'stop' })
 })

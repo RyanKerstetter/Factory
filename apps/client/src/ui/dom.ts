@@ -17,11 +17,11 @@ export function button(className: string, label: string, onClick: (event: MouseE
   return made
 }
 
-// An image of pixel art, kept crisp.
-export function pixelImage(className: string, src: string, alt = ''): HTMLImageElement {
+// An image of pixel art (an item's icon), kept crisp, that cannot be dragged off the page; `src` may be set later.
+export function pixelImage(className: string, src?: string): HTMLImageElement {
   const image = element('img', `pixel ${className}`)
-  image.src = src
-  image.alt = alt
+  if (src !== undefined) image.src = src
+  image.alt = ''
   image.draggable = false
   return image
 }

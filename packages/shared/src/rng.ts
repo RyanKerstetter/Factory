@@ -1,3 +1,5 @@
+import { floorDiv } from './geometry.ts'
+
 // Seeded random numbers made with 32-bit integer arithmetic only, so every machine and every browser gives the same
 // numbers from the same seed. Nothing in the simulation uses Math.random.
 
@@ -22,6 +24,11 @@ export class Rng {
   nextInt(max: number): number {
     return this.nextU32() % max
   }
+
+  // A number from 0 up to (not including) 1.
+  next(): number {
+    return this.nextU32() / 0x1_0000_0000
+  }
 }
 
 // A number from 0 to 2³² - 1 made from a few whole numbers, the same for the same numbers and nothing like it for
@@ -37,6 +44,18 @@ export function hashInts(...values: readonly number[]): number {
   }
   h ^= h >>> 16
   return h >>> 0
+}
+
+// Smooth noise, 0 to 999, from values at the corners of a grid of `cell` tiles blended between them (whole numbers).
+export function valueNoise(seed: number, salt: number, x: number, y: number, cell: number): number {
+  const cx = floorDiv(x, cell)
+  const cy = floorDiv(y, cell)
+  const fx = x - cx * cell
+  const fy = y - cy * cell
+  const corner = (ox: number, oy: number): number => hashInts(seed, cx + ox, cy + oy, salt) % 1000
+  const top = corner(0, 0) * (cell - fx) + corner(1, 0) * fx
+  const bottom = corner(0, 1) * (cell - fx) + corner(1, 1) * fx
+  return Math.floor((top * (cell - fy) + bottom * fy) / (cell * cell))
 }
 
 // A seed from text a player typed (or from a number written as text).

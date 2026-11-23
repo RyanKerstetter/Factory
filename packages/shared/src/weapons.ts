@@ -1,175 +1,282 @@
-import { ATTACK_DEFS } from './attack-defs.ts'
+import weaponsData from '../../../data/weapons.json' with { type: 'json' }
 import { BUILDINGS, type BuildingKind } from './buildings.ts'
 import { SUB, TPS } from './constants.ts'
-import { floorDiv } from './geometry.ts'
+import { failIn, fieldsOf, numberField, onlyFields, secondsField, speedField, tilesField, type Fail, type Fields } from './data-check.ts'
+import { floorDiv, tileMiddle } from './geometry.ts'
 import { dungeonBlocks } from './dungeon.ts'
 import { isHittable, type Entity } from './sim/entity.ts'
 import type { FactoryWorld } from './sim/factory-world.ts'
 import type { PlayerPosition } from './movement.ts'
 import type { Inventory } from './inventory.ts'
-import { getItem, itemByKey, type ItemId, type ToolKind } from './items.ts'
+import { getItem, itemByKey, itemFromKey, NO_ITEM, type ItemId, type ToolKind } from './items.ts'
 
-// Weapons, from attack-defs.ts (where to tweak them): what a player attacks with, by what is in the picked hotbar slot (an item with an
-// entry there), or their fists ("hand") with anything else, or with nothing picked (Q). Everything is in tiles and
-// seconds in the file, and units and ticks here.
+// Weapons, from data/weapons.json (where to tweak them): what a player attacks with, by what is in the picked hotbar
+// slot (an item with an entry there), or their fists ("hand") with anything else, or with nothing picked (Q). In the
+// file, by item key, distances are in tiles, times in seconds and angles in degrees; here, units, ticks and radians.
+// An attack is the left click, on a cooldown every weapon shares, aimed at the mouse; the right click never attacks (it
+// is for using things).
 //
-// The left click is the basic attack, on a short cooldown and usable on the move:
-// - "jab", "swing", "thrust": a hit on everything within `range` and `arc` (degrees) of the way the player faces, and on
-//   the nearest plant, rock or building there, for `damage` (see `resourceDamage` for what it does to those);
-// - "strike": a hit on everything within `radius` of a spot `range` ahead (a pickaxe's point coming down);
-// - "shot": held to charge (`windup` the least, `charge` the most), slowing the player; let go, it shoots one of
-//   `ammo`, harder and further the longer it was charged.
-// The right click is the special attack: held for its `windup`, then let go (it never touches plants or buildings):
-// - "haymaker": a big punch that knocks back, aimed where the mouse is when it lands;
-// - "chop": a heavy, narrow blow; "smash": a slam on everything round a spot in front; "bash": a close shove;
-// - "stun": a wide swing that stuns (`stun` seconds) what it hits;
-// - "lunge": a dash (`dash` tiles) and a stab;
-// - "throw": the spear itself is thrown (charged like a shot), and lands to be picked up again;
-// - "volley": `count` arrows at once, `spread` degrees apart, no windup, and a hop (`hop` tiles) backwards.
-// Every attack, basic or special, puts every weapon on cooldown, so switching does not get round it.
-export type BasicStyle = 'jab' | 'swing' | 'thrust' | 'strike' | 'shot'
-export type SpecialKind = 'haymaker' | 'chop' | 'smash' | 'bash' | 'stun' | 'lunge' | 'throw' | 'volley'
+// - `damage`: what the attack does to a creature, before the creature's armour (see `damageAfterArmor`). Every hit
+//   also knocks the creature back a little and stuns it for a moment (see the server's combat.ts).
+// - `harvest`: what it does to a plant, a rock or something put down: an axe to trees and what was put down, a pickaxe
+//   to rocks, anything to a bush (see `resourceDamage`).
+// - `range`, `arc`: how far and how wide the attack reaches. A jab or a thrust is narrow and straight; a swing wide.
+//   It hits every creature, and every plant, rock or building, inside that shape, so spacing things right clears more.
+//   With `width` (tiles) instead of `arc`, it is a straight rectangle out in front, `range` long and `width` wide.
+//   A "strike" is a small circle instead, `radius` across, `range` ahead (a pickaxe's point coming down).
+// - `cooldown`: how long after it before the next attack (with anything: every weapon shares it).
+// - `basic`: "jab", "swing", "thrust" or "strike" (melee), "row" (an oar: a stroke pulled in towards the player from
+//   the way it is aimed, hitting like a jab, and, aboard a raft, pushing the raft that way: see the server's rafts.ts),
+//   or "shot": after a short `windup` (the bow drawn, the sling
+//   whirled once round) one of `ammo` flies at `speed` tiles a second, at most `range` tiles (then it comes down).
+// - `name`: what it is called (bare hands only: a weapon item is called what the item is).
+// - `charged`: what it does with the attack button held down for its `charge` (seconds; CHARGE_TICKS, half a second, if
+//   not given) and let go, by `kind`:
+//   - "spin": round and round `spins` times (SPIN_TICKS each), hitting everything all round within its `range` on each
+//     turn, for `damage` (no weapon has it now);
+//   - "strike": a bigger strike, `radius` across, `range` ahead (no weapon has it now);
+//   - "dash": the player dashes `range` tiles the way it is aimed, hitting everything `width` wide along the way (no
+//     weapon has it now);
+//   - "slam": a long, narrow strip, `range` long and `width` wide (the club);
+//   - "throw": the weapon itself flies `range` tiles at `speed`, and sticks in the ground where it comes down, to be
+//     knocked loose and picked up again (a spear);
+//   - "shot": the ammo flies at `speed` instead, with no windup (the bow, the sling: drawn while held), at most `range`
+//     tiles (the weapon's own if not given).
+//   `damage` is what it does, `cooldown` how long after it before the next attack. Every melee attack but a punch,
+//   charged or not, steps the player forward a little (see `lungeOf`), unless `steps` is false.
+// - `steps`: false for a weapon the player stands still with (the tools: knife, axe, pickaxe, which have no charged
+//   attack either, so holding the button down just goes on hitting, for gathering).
+export type BasicStyle = 'jab' | 'swing' | 'thrust' | 'strike' | 'shot' | 'row'
 
-export type Special = {
-  kind: SpecialKind
-  windup: number
-  charge: number
+// What an attack covers, in units, from where the attacker stands, aimed along `facing`: everything within `range` and
+// half of `arc` either side (a swing; an `arc` of a full turn is all round), a straight strip `length` long and `width`
+// wide (a jab, a thrust, a slam, a dash), or a circle `radius` across, `distance` ahead (a strike).
+export type AttackArea =
+  | { kind: 'cone'; range: number; arc: number }
+  | { kind: 'band'; length: number; width: number }
+  | { kind: 'circle'; distance: number; radius: number }
+
+export type ChargedKind = 'spin' | 'strike' | 'dash' | 'slam' | 'throw' | 'shot'
+export type ChargedAttack = {
+  kind: ChargedKind
   damage: number
-  range: number
-  arc: number
-  radius: number
-  knockback: number
-  stun: number
-  dash: number
-  hop: number
-  count: number
-  spread: number
+  // A melee one's reach.
+  area?: AttackArea
+  // How many times it hits (a spin's turns), SPIN_TICKS apart.
+  hits: number
+  // A throw's or a shot's: how fast it flies (units a tick), and how far at most (units).
   speed: number
+  range: number
   cooldown: number
+  // How long the attack button has to be held for it, in ticks (its `charge`, or CHARGE_TICKS).
+  charge: number
 }
+
+// How long the attack button has to be held for a charged attack that does not say (its `charge`), in ticks (half a
+// second).
+export const CHARGE_TICKS = 15
+// How long each turn of a spin takes, in ticks.
+export const SPIN_TICKS = 8
+// A melee attack steps the player forward over LUNGE_TICKS (so walking backwards and swinging is cut short), further the
+// slower the weapon: LUNGE_PER_SECOND tiles for each second of the attack's cooldown (see `lungeDistance`), so fists and
+// a knife take a short step and a club, or a charged slam, a long one. A dash goes its `range` over DASH_TICKS.
+export const LUNGE_PER_SECOND = 1.4
+export const LUNGE_TICKS = 3
+// How far an attack with a cooldown of `cooldown` ticks steps the player, in units.
+export function lungeDistance(cooldown: number): number {
+  return Math.round((cooldown / TPS) * LUNGE_PER_SECOND * SUB)
+}
+// The step of an attack with a half-second cooldown (an axe's swing), for reference.
+export const LUNGE_DISTANCE = lungeDistance(TPS / 2)
+export const DASH_TICKS = 6
 
 export type Weapon = {
   key: string
   name: string
+  // To creatures (before their armour), and to plants, rocks and what was put down.
   damage: number
+  harvest: number
   range: number
   arc: number
-  // Above 0, the basic attack is a straight rectangle this wide (in units) instead of an arc.
+  // Above 0, the attack is a straight rectangle this wide (in units) instead of an arc.
   width: number
   // A strike's reach round the spot it lands on (units).
   radius: number
   cooldown: number
   basic: BasicStyle
   ammo?: ItemId
+  // A shot's windup before it flies, in ticks; and how fast it flies, in units a tick.
   windup: number
-  charge: number
   speed: number
-  // None for bare hands: their right click is for using things.
-  special?: Special
+  // What it does held down and let go, if anything.
+  charged?: ChargedAttack
+  // Whether the player steps forward with its attack (see `lungeOf`).
+  steps: boolean
 }
 
-const BASICS: readonly BasicStyle[] = ['jab', 'swing', 'thrust', 'strike', 'shot']
-const SPECIALS: readonly SpecialKind[] = ['haymaker', 'chop', 'smash', 'bash', 'stun', 'lunge', 'throw', 'volley']
+const BASICS: readonly BasicStyle[] = ['jab', 'swing', 'thrust', 'strike', 'shot', 'row']
+const WEAPON_FIELDS = ['name', 'damage', 'harvest', 'range', 'arc', 'width', 'radius', 'cooldown', 'basic', 'ammo', 'windup', 'speed', 'charged', 'steps']
+// The fields of each kind of charged attack, besides `kind`.
+const CHARGED_FIELDS: Readonly<Record<ChargedKind, readonly string[]>> = {
+  spin: ['damage', 'spins', 'cooldown'],
+  strike: ['damage', 'range', 'radius', 'cooldown'],
+  dash: ['damage', 'range', 'width', 'cooldown'],
+  slam: ['damage', 'range', 'width', 'cooldown'],
+  throw: ['damage', 'speed', 'range', 'cooldown'],
+  shot: ['damage', 'speed', 'range', 'cooldown'],
+}
 
-export const WEAPONS: ReadonlyMap<string, Weapon> = parseWeapons(ATTACK_DEFS)
+export const WEAPONS: ReadonlyMap<string, Weapon> = parseWeapons(weaponsData)
 
 function parseWeapons(data: unknown): Map<string, Weapon> {
-  if (typeof data !== 'object' || data === null) throw new Error('ATTACK_DEFS must be an object of weapons.')
+  if (typeof data !== 'object' || data === null) throw new Error('data/weapons.json must be an object of weapons.')
   const weapons = new Map<string, Weapon>()
-  for (const [key, raw] of Object.entries(data as Record<string, Record<string, unknown>>)) {
-    const fail = (problem: string): never => {
-      throw new Error(`attack-defs.ts, ${key}: ${problem}`)
-    }
+  for (const [key, entry] of Object.entries(data)) {
+    const fail: Fail = failIn(`data/weapons.json, ${key}`)
+    const raw = fieldsOf(entry, 'it', fail)
+    onlyFields(raw, WEAPON_FIELDS, fail)
     if (key !== 'hand' && !itemByKey(key)) fail('there is no item of that key')
-    const num = (from: Record<string, unknown>, name: string, fallback?: number): number => {
-      const value = from[name] ?? fallback
-      return typeof value === 'number' && value >= 0 ? value : fail(`"${name}" must be a number, 0 or more`)
-    }
-    const ticks = (from: Record<string, unknown>, name: string, fallback = 0): number => Math.round(num(from, name, fallback) * TPS)
-    const units = (from: Record<string, unknown>, name: string, fallback = 0): number => Math.round(num(from, name, fallback) * SUB)
-    const radians = (from: Record<string, unknown>, name: string, fallback = 0): number => (num(from, name, fallback) * Math.PI) / 180
-    const speed = (from: Record<string, unknown>): number => Math.round((num(from, 'speed', 0) * SUB) / TPS)
     const basic = raw.basic as BasicStyle
     if (!BASICS.includes(basic)) fail(`"basic" must be one of ${BASICS.join(', ')}`)
-    const s = raw.special as Record<string, unknown> | undefined
-    if (s && !SPECIALS.includes(s.kind as SpecialKind)) fail(`"special.kind" must be one of ${SPECIALS.join(', ')}`)
-    const ammo = raw.ammo === undefined ? undefined : (itemByKey(raw.ammo as string)?.id ?? fail(`there is no ammo item "${String(raw.ammo)}"`))
+    const ammo = raw.ammo === undefined ? undefined : itemFromKey(raw.ammo, fail)
     if (basic === 'shot' && ammo === undefined) fail('a "shot" weapon needs "ammo"')
+    if (basic === 'shot' && !(typeof raw.range === 'number' && raw.range > 0)) fail('a "shot" weapon needs a "range": how far it flies at most')
     if (basic === 'strike' && !(typeof raw.radius === 'number' && raw.radius > 0)) fail('a "strike" weapon needs a "radius"')
+    const range = tilesField(raw, 'range', fail, 0)
+    const charged = raw.charged === undefined ? undefined : chargedOf(fieldsOf(raw.charged, '"charged"', fail), range, basic, fail)
+    if (raw.steps !== undefined && typeof raw.steps !== 'boolean') fail('"steps" must be true or false')
     weapons.set(key, {
       key,
       name: typeof raw.name === 'string' ? raw.name : getItem(itemByKey(key)!.id).name,
-      damage: num(raw, 'damage'),
-      range: units(raw, 'range'),
-      arc: radians(raw, 'arc', 90),
-      width: units(raw, 'width'),
-      radius: units(raw, 'radius'),
-      cooldown: ticks(raw, 'cooldown'),
+      damage: numberField(raw, 'damage', fail),
+      harvest: numberField(raw, 'harvest', fail),
+      range,
+      arc: (numberField(raw, 'arc', fail, 0, 90) * Math.PI) / 180,
+      width: tilesField(raw, 'width', fail, 0),
+      radius: tilesField(raw, 'radius', fail, 0),
+      cooldown: secondsField(raw, 'cooldown', fail),
       basic,
       ...(ammo !== undefined ? { ammo } : {}),
-      windup: ticks(raw, 'windup'),
-      charge: ticks(raw, 'charge'),
-      speed: speed(raw),
-      ...(s ? { special: {
-        kind: s.kind as SpecialKind,
-        windup: ticks(s, 'windup'),
-        charge: ticks(s, 'charge'),
-        damage: num(s, 'damage'),
-        range: units(s, 'range'),
-        arc: radians(s, 'arc', 90),
-        radius: units(s, 'radius'),
-        knockback: units(s, 'knockback'),
-        stun: ticks(s, 'stun'),
-        dash: units(s, 'dash'),
-        hop: units(s, 'hop'),
-        count: num(s, 'count', 1),
-        spread: radians(s, 'spread'),
-        speed: speed(s),
-        cooldown: ticks(s, 'cooldown'),
-      } } : {}),
+      windup: Math.round(numberField(raw, 'windup', fail, 0, 0) * TPS),
+      speed: Math.round((numberField(raw, 'speed', fail, 0, 0) * SUB) / TPS),
+      ...(charged ? { charged } : {}),
+      steps: raw.steps !== false,
     })
   }
-  if (!weapons.has('hand')) throw new Error('ATTACK_DEFS needs a "hand" weapon: what a player hits with bare-handed.')
+  if (!weapons.has('hand')) throw new Error('data/weapons.json needs a "hand" weapon: what a player hits with bare-handed.')
   return weapons
 }
 
-// The weapon in a slot of an inventory: the item's, if it is a weapon; fists otherwise (and for the bare hand, slot -1).
-export function weaponIn(inventory: Inventory, slot: number): Weapon {
-  const held = inventory.slots[slot]
-  const key = held && held.count > 0 ? getItem(held.item).key : 'hand'
-  return WEAPONS.get(key) ?? WEAPONS.get('hand')!
-}
-
-// What a basic attack with a weapon does to a plant, a rock or a building: a tree only gives way to an axe and a rock to
-// a pickaxe, and what a player put down only to an axe, each by the weapon's damage (0: it cannot be broken that way; a
-// tree hit with anything else gives up sticks, or bark to a knife). A bush takes any weapon's damage; grass, saplings
-// and sprouts come up at a touch.
-export function resourceDamage(kind: BuildingKind, weapon: Weapon, tool: ToolKind | undefined): number {
+// A weapon's charged attack, from its "charged" in weapons.json (`range` is the weapon's own, in units: a spin's reach).
+function chargedOf(raw: Fields, range: number, basic: BasicStyle, fail: Fail): ChargedAttack {
+  const kind = raw.kind as ChargedKind
+  if (!Object.hasOwn(CHARGED_FIELDS, kind)) fail(`"charged.kind" must be one of ${Object.keys(CHARGED_FIELDS).join(', ')}`)
+  onlyFields(raw, ['kind', 'charge', ...CHARGED_FIELDS[kind]], fail, '"charged": ')
+  if ((kind === 'shot') !== (basic === 'shot')) fail('a "shot" weapon charges a "shot", and only it does')
+  const tiles = (field: string): number => tilesField(raw, field, fail)
+  const base = {
+    kind,
+    damage: numberField(raw, 'damage', fail, 1),
+    cooldown: secondsField(raw, 'cooldown', fail),
+    charge: secondsField(raw, 'charge', fail, CHARGE_TICKS / TPS),
+    hits: 1,
+    speed: 0,
+    range: 0,
+  }
+  const speed = (): number => speedField(raw, 'speed', fail)
   switch (kind) {
-    case 'tree':
-      return tool === 'axe' ? weapon.damage : 0
-    case 'rock':
-      return tool === 'pickaxe' ? weapon.damage : 0
-    case 'bush':
-      return weapon.damage
-    default:
-      // Anything a player put down (see `breakable` in buildings.ts) only comes down to an axe.
-      return BUILDINGS[kind].breakable ? (tool === 'axe' ? weapon.damage : 0) : 1
+    case 'spin':
+      return { ...base, area: { kind: 'cone', range, arc: Math.PI * 2 }, hits: Math.round(numberField(raw, 'spins', fail, 1)) }
+    case 'strike':
+      return { ...base, area: { kind: 'circle', distance: tiles('range'), radius: tiles('radius') } }
+    case 'dash':
+    case 'slam':
+      return { ...base, area: { kind: 'band', length: tiles('range'), width: tiles('width') } }
+    case 'throw':
+      return { ...base, speed: speed(), range: tiles('range') }
+    case 'shot':
+      return { ...base, speed: speed(), range: raw.range === undefined ? range : tiles('range') }
   }
 }
 
-// A dash (a lunge forward, a volley's hop back) carries the player `distance` units along `angle` over DASH_TICKS
-// movement inputs: the ones after the input the player had made when they attacked (`after`, sent with the attack), so
-// the page moves its player through it exactly as the server does, smoothly, rather than being put right afterwards.
-export const DASH_TICKS = 5
-export type Dash = { vx: number; vy: number; ticks: number; after: number }
+// What a weapon's basic attack covers (nothing for a shot: what it shoots does the hitting).
+export function basicArea(weapon: Weapon): AttackArea | undefined {
+  if (weapon.basic === 'shot') return undefined
+  if (weapon.basic === 'strike') return { kind: 'circle', distance: weapon.range, radius: weapon.radius }
+  if (weapon.width > 0) return { kind: 'band', length: weapon.range, width: weapon.width }
+  return { kind: 'cone', range: weapon.range, arc: weapon.arc }
+}
 
-export function dashOf(angle: number, distance: number, after: number): Dash {
-  return {
-    vx: Math.round((Math.cos(angle) * distance) / DASH_TICKS),
-    vy: Math.round((Math.sin(angle) * distance) / DASH_TICKS),
-    ticks: DASH_TICKS,
-    after,
+// How far from the attacker an area reaches at most, in units.
+export function areaReach(area: AttackArea): number {
+  return area.kind === 'cone' ? area.range : area.kind === 'band' ? area.length : area.distance + area.radius
+}
+
+// Whether a point is inside an area an attack from `origin` along `facing` covers, give or take `margin` (how far the
+// target reaches from its middle).
+export function inArea(area: AttackArea, origin: { x: number; y: number }, facing: number, target: { x: number; y: number }, margin = 0): boolean {
+  if (area.kind === 'circle') {
+    const spot = strikeSpot(origin, facing, area.distance)
+    return Math.hypot(target.x - spot.x, target.y - spot.y) <= area.radius + margin
+  }
+  if (area.kind === 'band') return inSwing(origin, facing, area.length, 0, target, margin, area.width)
+  return inSwing(origin, facing, area.range, area.arc, target, margin)
+}
+
+// How a player steps as they attack (see `lungeDistance`: the slower the attack, the further): how far, in units, over
+// how many ticks; nothing for a punch, a shot, a throw, a spin or an oar's stroke, which they make standing.
+export function lungeOf(weapon: Weapon, charged: boolean): { distance: number; ticks: number } | undefined {
+  if (charged && weapon.charged) {
+    const kind = weapon.charged.kind
+    if (kind === 'dash') return { distance: weapon.charged.area?.kind === 'band' ? weapon.charged.area.length : 0, ticks: DASH_TICKS }
+    return kind === 'strike' || kind === 'slam' ? { distance: lungeDistance(weapon.charged.cooldown), ticks: LUNGE_TICKS } : undefined
+  }
+  if (!weapon.steps || weapon.basic === 'shot' || weapon.basic === 'jab' || weapon.basic === 'row') return undefined
+  return { distance: lungeDistance(weapon.cooldown), ticks: LUNGE_TICKS }
+}
+
+// How many ticks something shot or thrown flies before it comes down: as long as it takes to go `range` units at
+// `speed` units a tick.
+export function flightTicks(range: number, speed: number): number {
+  return Math.max(1, Math.ceil(range / Math.max(1, speed)))
+}
+
+// Bare fists: what a player attacks with holding nothing that is a weapon.
+const HAND = WEAPONS.get('hand')!
+
+// What an attack holding an item is made with: the item's weapon, if it is one; fists otherwise (and holding nothing).
+export function weaponOf(item: ItemId): Weapon {
+  return (item !== NO_ITEM ? WEAPONS.get(getItem(item).key) : undefined) ?? HAND
+}
+
+// The weapon in a slot of an inventory (see weaponOf; fists for the bare hand, slot -1).
+export function weaponIn(inventory: Inventory, slot: number): Weapon {
+  const held = inventory.slots[slot]
+  return weaponOf(held && held.count > 0 ? held.item : NO_ITEM)
+}
+
+// Whether a player can attack holding what is in a slot: a weapon (or a tool), or nothing (an empty slot, or the bare
+// hand, slot -1). Holding anything else (logs, seeds), there is no attack: fists are for an empty hand.
+export function canAttackWith(inventory: Inventory, slot: number): boolean {
+  const held = inventory.slots[slot]
+  return !held || held.count === 0 || WEAPONS.has(getItem(held.item).key)
+}
+
+// What an attack with a weapon does to a plant, a rock or a building: a tree only gives way to an axe and a rock to a
+// pickaxe, and what a player put down only to an axe, each by the weapon's `harvest` (0: it cannot be broken that way;
+// a tree hit with anything else gives up sticks, or bark to a knife). A bush takes any weapon's; grass, saplings and
+// sprouts come up at a touch.
+export function resourceDamage(kind: BuildingKind, weapon: Weapon, tool: ToolKind | undefined): number {
+  switch (kind) {
+    case 'tree':
+      return tool === 'axe' ? weapon.harvest : 0
+    case 'rock':
+      return tool === 'pickaxe' ? weapon.harvest : 0
+    case 'bush':
+      return weapon.harvest
+    default:
+      // Anything a player put down (see `breakable` in buildings.ts) only comes down to an axe.
+      return BUILDINGS[kind].breakable ? (tool === 'axe' ? weapon.harvest : 0) : 1
   }
 }
 
@@ -200,7 +307,7 @@ export function inSwing(origin: { x: number; y: number }, facing: number, range:
   return angleBetween(facing, angleTo(origin, target)) <= arc / 2 + Math.atan2(margin, Math.max(distance, 1))
 }
 
-// Where a strike (or a smash) `range` ahead of `origin` comes down.
+// Where a strike `range` ahead of `origin` comes down.
 export function strikeSpot(origin: { x: number; y: number }, facing: number, range: number): PlayerPosition {
   return { x: Math.round(origin.x + Math.cos(facing) * range), y: Math.round(origin.y + Math.sin(facing) * range) }
 }
@@ -208,33 +315,39 @@ export function strikeSpot(origin: { x: number; y: number }, facing: number, ran
 // Every plant, rock and building whose tile's middle is within `radius` (give or take half a tile) of a point, nearest
 // first: what a strike hits.
 export function tilesNear(world: FactoryWorld, middle: PlayerPosition, radius: number): Entity[] {
-  const tileX = floorDiv(middle.x, SUB)
-  const tileY = floorDiv(middle.y, SUB)
-  const reach = Math.ceil(radius / SUB) + 1
+  return hittableAround(world, middle, radius, (tile) => Math.hypot(tile.x - middle.x, tile.y - middle.y) <= radius + SUB / 2)
+}
+
+// The plants, rocks and buildings within `reach` (units, plus a tile) of a point whose tile's middle `covered` says is
+// covered, nearest the point first.
+function hittableAround(world: FactoryWorld, from: PlayerPosition, reach: number, covered: (middle: PlayerPosition) => boolean): Entity[] {
+  const tileX = floorDiv(from.x, SUB)
+  const tileY = floorDiv(from.y, SUB)
+  const tiles = Math.ceil(reach / SUB) + 1
   const found: Array<{ entity: Entity; distance: number }> = []
-  for (let y = tileY - reach; y <= tileY + reach; y++) {
-    for (let x = tileX - reach; x <= tileX + reach; x++) {
+  for (let y = tileY - tiles; y <= tileY + tiles; y++) {
+    for (let x = tileX - tiles; x <= tileX + tiles; x++) {
       const entity = world.entityAt(x, y)
       if (!entity || !isHittable(entity)) continue
-      const distance = Math.hypot(x * SUB + SUB / 2 - middle.x, y * SUB + SUB / 2 - middle.y)
-      if (distance <= radius + SUB / 2) found.push({ entity, distance })
+      const middle = tileMiddle(x, y)
+      if (covered(middle)) found.push({ entity, distance: Math.hypot(middle.x - from.x, middle.y - from.y) })
     }
   }
   return found.sort((a, b) => a.distance - b.distance || a.entity.id - b.entity.id).map((entry) => entry.entity)
 }
 
-// What a basic melee attack hits of the plants, rocks and buildings: in its swing, or round where a strike lands, and
-// with nothing solid between it and the attacker (see attackClear).
-export function tilesHitBy(world: FactoryWorld, weapon: Weapon, origin: PlayerPosition, facing: number): Entity[] {
-  const covered =
-    weapon.basic === 'strike'
-      ? tilesNear(world, strikeSpot(origin, facing, weapon.range), weapon.radius)
-      : tilesIn(world, origin, facing, weapon.range, weapon.arc, weapon.width)
-  return covered.filter((target) => attackClear(world, origin, { x: target.x * SUB + SUB / 2, y: target.y * SUB + SUB / 2 }))
+// What a melee attack covering `area` hits of the plants, rocks and buildings: in its swing or strip, or round where a
+// strike lands. A swing is not stopped by what is in the way (only what flies is: see the server's combat.ts).
+export function tilesHitBy(world: FactoryWorld, area: AttackArea, origin: PlayerPosition, facing: number): Entity[] {
+  return area.kind === 'circle'
+    ? tilesNear(world, strikeSpot(origin, facing, area.distance), area.radius)
+    : area.kind === 'band'
+      ? tilesIn(world, origin, facing, area.length, 0, area.width)
+      : tilesIn(world, origin, facing, area.range, area.arc)
 }
 
-// Whether an attack from `from` reaches `to` with nothing in the way: no dungeon wall, and nothing solid (a tree, a
-// chest, a rock) on any tile between them (the tiles at the two ends do not count). Attacks do not go through walls.
+// Whether `to` can be seen from `from` with nothing in the way: no dungeon wall, and nothing solid (a tree, a chest, a
+// rock) on any tile between them (the tiles at the two ends do not count). What a monster can see past.
 export function attackClear(world: FactoryWorld, from: { x: number; y: number }, to: { x: number; y: number }): boolean {
   const fromX = floorDiv(from.x, SUB)
   const fromY = floorDiv(from.y, SUB)
@@ -255,18 +368,5 @@ export function attackClear(world: FactoryWorld, from: { x: number; y: number },
 // Every plant, rock and building whose tile a swing reaches (its middle, give or take half a tile), nearest first. The
 // page works out the same, to show what a swing hits the moment it swings.
 export function tilesIn(world: FactoryWorld, origin: PlayerPosition, facing: number, range: number, arc: number, width = 0): Entity[] {
-  const tileX = floorDiv(origin.x, SUB)
-  const tileY = floorDiv(origin.y, SUB)
-  const reach = Math.ceil(range / SUB) + 1
-  const found: Array<{ entity: Entity; distance: number }> = []
-  for (let y = tileY - reach; y <= tileY + reach; y++) {
-    for (let x = tileX - reach; x <= tileX + reach; x++) {
-      const entity = world.entityAt(x, y)
-      if (!entity || !isHittable(entity)) continue
-      const middle = { x: x * SUB + SUB / 2, y: y * SUB + SUB / 2 }
-      if (!inSwing(origin, facing, range, arc, middle, SUB / 2, width)) continue
-      found.push({ entity, distance: Math.hypot(middle.x - origin.x, middle.y - origin.y) })
-    }
-  }
-  return found.sort((a, b) => a.distance - b.distance || a.entity.id - b.entity.id).map((entry) => entry.entity)
+  return hittableAround(world, origin, range, (middle) => inSwing(origin, facing, range, arc, middle, SUB / 2, width))
 }

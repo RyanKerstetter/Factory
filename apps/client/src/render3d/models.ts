@@ -1,6 +1,8 @@
 import * as THREE from 'three'
+import { liquidLook } from '../liquids.ts'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { hashInts } from '../../../../packages/shared/src/index.ts'
+import { POND_COLOR } from './ground-colors.ts'
 
 // The 3D models: built in code from simple low-poly shapes (flat-shaded, in earthy colours), one function per kind of
 // thing. A world unit is a tile; y is up; a model stands on y = 0 at its tile's middle and faces +x. Geometries and
@@ -77,7 +79,6 @@ const PALETTE = {
 }
 
 // The colour of each liquid seen in an open barrel.
-export const LIQUID_COLORS: Readonly<Record<string, number>> = { water: 0x3a74b0, tannin: 0x7a4a22, milk: 0xf0ece0 }
 
 const doubleSided = new Map<number, THREE.MeshStandardMaterial>()
 // The same, seen from both sides (the inside of an open barrel).
@@ -96,6 +97,17 @@ export function material(color: number): THREE.MeshStandardMaterial {
   if (!made) {
     made = new THREE.MeshStandardMaterial({ color, flatShading: true, roughness: 0.95, metalness: 0 })
     materials.set(color, made)
+  }
+  return made
+}
+
+const shinyMaterials = new Map<number, THREE.MeshStandardMaterial>()
+// The same, smooth and a little glossy (flint, catching the light).
+function shiny(color: number): THREE.MeshStandardMaterial {
+  let made = shinyMaterials.get(color)
+  if (!made) {
+    made = new THREE.MeshStandardMaterial({ color, flatShading: true, roughness: 0.3, metalness: 0.15 })
+    shinyMaterials.set(color, made)
   }
   return made
 }
@@ -156,38 +168,153 @@ export function tree(x: number, y: number): THREE.Group {
   )
 }
 
-export function bush(): THREE.Group {
-  // The clumps of leaves: where each is, and how big (its size across, up, and deep).
-  const clumps: Array<{ color: number; at: [number, number, number]; size: [number, number, number] }> = [
-    { color: PALETTE.leafDark, at: [-0.15, 0.22, 0.05], size: [0.55, 0.45, 0.55] },
-    { color: PALETTE.leaf, at: [0.15, 0.25, -0.05], size: [0.55, 0.5, 0.55] },
-    { color: PALETTE.leafLight, at: [0, 0.38, 0.12], size: [0.45, 0.4, 0.45] },
-  ]
-  const made = group(...clumps.map((clump) => part(lump(), clump.color, clump.at, clump.size)))
-  // Berries sit on the clumps' surfaces (a little sunk in), on their upper and outer sides: each is a clump and a
-  // direction out from its middle.
-  const berries: Array<[number, number, number]> = [
-    [0, 140, 30],
-    [0, 230, 50],
-    [1, 20, 35],
-    [1, 300, 55],
-    [2, 90, 45],
-    [2, 200, 65],
-  ]
-  for (const [which, around, up] of berries) {
-    const clump = clumps[which]
-    const a = (around * Math.PI) / 180
-    const b = (up * Math.PI) / 180
-    // The lumps are a little smaller than their size, at their flat faces, so berries go in to 0.42 of it.
-    const reach = 0.42
-    const at: [number, number, number] = [
-      clump.at[0] + Math.cos(a) * Math.cos(b) * clump.size[0] * reach,
-      clump.at[1] + Math.sin(b) * clump.size[1] * reach,
-      clump.at[2] + Math.sin(a) * Math.cos(b) * clump.size[2] * reach,
-    ]
-    made.add(part(ball(), PALETTE.berry, at, [0.09, 0.09, 0.09]))
+// ---- foliage cards
+//
+// A berry bush (and a sprout growing into one) is made of foliage cards: flat planes crossing through its middle, each
+// painted with a picture of leaves with gaps between them where it is see-through, so the cards behind show through
+// the gaps and the bush has texture and depth. The pictures are pixel art, painted once here (the same every time) and
+// shared; anything see-through is cut away (alphaTest), so they sort and cast their leafy shadows like anything solid.
+
+type FoliageLook = 'leaves' | 'berries' | 'unripe' | 'young'
+type FoliageShape = 'dome' | 'round'
+const FOLIAGE_W = 48
+const FOLIAGE_H = 40
+
+// A little random number maker, seeded, so the pictures come out the same every time.
+function seeded(seed: number): () => number {
+  let state = seed >>> 0
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0
+    let t = state
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
   }
+}
+
+const foliageMaterials = new Map<string, THREE.MeshStandardMaterial>()
+// A foliage card's material: its picture of leaves (and berries: red and ripe, or small and green), in the outline of a
+// bush seen from the side (`dome`, flat along the bottom) or from above (`round`).
+function foliageMaterial(look: FoliageLook, shape: FoliageShape): THREE.MeshStandardMaterial {
+  const key = `${look}|${shape}`
+  let made = foliageMaterials.get(key)
+  if (made) return made
+  const width = FOLIAGE_W
+  const height = shape === 'round' ? FOLIAGE_W : FOLIAGE_H
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const g = canvas.getContext('2d')!
+  const random = seeded(look.length * 977 + (shape === 'round' ? 31 : 7))
+  // Inside the outline: a half-ellipse standing on the bottom edge, or an ellipse filling the square, a little ragged.
+  const inside = (x: number, y: number): number => {
+    const dx = (x - width / 2) / (width / 2)
+    const dy = shape === 'round' ? (y - height / 2) / (height / 2) : (height - y) / height
+    return 1 - Math.hypot(dx, dy)
+  }
+  const shades =
+    look === 'young'
+      ? ['#4f8a34', '#6fbf4a', '#86cf5a', '#5aa23e', '#3f7a2c']
+      : ['#1f4220', '#2c5a2a', '#3f7a35', '#4b8a3a', '#5a9a44', '#6aac4c']
+  // Leaves: small pointed ovals, many of them, darker deep in and at the bottom, lighter towards the top and the edge,
+  // with gaps left between the clumps.
+  const leaves = look === 'young' ? 150 : 260
+  for (let n = 0; n < leaves; n++) {
+    const x = random() * width
+    const y = random() * height
+    const depth = inside(x, y)
+    if (depth < 0.04 + random() * 0.08) continue
+    // Fewer leaves in some patches, so there are holes to see through.
+    if (Math.sin(x * 0.45 + y * 0.2) * Math.cos(y * 0.5 - x * 0.15) > 0.55 && random() < 0.85) continue
+    const light = Math.min(shades.length - 1, Math.max(0, Math.floor((1 - y / height) * 2.2 + (1 - depth) * 2 + random() * 2.2)))
+    g.fillStyle = shades[light]
+    const angle = random() * Math.PI
+    const long = 2 + random() * 1.6
+    g.beginPath()
+    g.ellipse(Math.round(x), Math.round(y), long, long * 0.5, angle, 0, Math.PI * 2)
+    g.fill()
+    // A light vein on some.
+    if (random() < 0.3) {
+      g.fillStyle = 'rgba(160, 210, 120, 0.7)'
+      g.fillRect(Math.round(x), Math.round(y), 1, 1)
+    }
+  }
+  // Berries: clusters of round red ones with a glint, or a few small green ones not yet ripe.
+  if (look === 'berries' || look === 'unripe') {
+    const clusters = look === 'berries' ? 9 : 5
+    for (let c = 0; c < clusters; c++) {
+      let x = 0
+      let y = 0
+      for (let tries = 0; tries < 20; tries++) {
+        x = 6 + random() * (width - 12)
+        y = 6 + random() * (height - 10)
+        if (inside(x, y) > 0.2) break
+      }
+      const count = look === 'berries' ? 2 + Math.floor(random() * 3) : 1 + Math.floor(random() * 2)
+      for (let b = 0; b < count; b++) {
+        const bx = Math.round(x + (random() - 0.5) * 5)
+        const by = Math.round(y + (random() - 0.5) * 4)
+        if (look === 'berries') {
+          g.fillStyle = '#8a1a30'
+          g.fillRect(bx - 1, by - 1, 3, 3)
+          g.fillStyle = '#c8324f'
+          g.fillRect(bx - 1, by - 1, 2, 2)
+          g.fillStyle = '#ffd0d8'
+          g.fillRect(bx - 1, by - 1, 1, 1)
+        } else {
+          g.fillStyle = '#9ac85a'
+          g.fillRect(bx, by, 2, 2)
+        }
+      }
+    }
+  }
+  // Hard edges only: each pixel is a leaf or a gap.
+  const image = g.getImageData(0, 0, width, height)
+  for (let i = 3; i < image.data.length; i += 4) image.data[i] = image.data[i] >= 128 ? 255 : 0
+  g.putImageData(image, 0, 0)
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  texture.magFilter = THREE.NearestFilter
+  texture.minFilter = THREE.NearestFilter
+  texture.generateMipmaps = false
+  made = new THREE.MeshStandardMaterial({ map: texture, alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.95, metalness: 0 })
+  foliageMaterials.set(key, made)
   return made
+}
+
+// A foliage card standing on the ground through the middle (its foot at y = 0), turned `turn` round, `width` across
+// and `height` high; or (`top`) lying over it at `height`, `width` across.
+function foliageCard(look: FoliageLook, width: number, height: number, turn: number, top = false): THREE.Mesh {
+  const plane = geometry('foliageCard', () => new THREE.PlaneGeometry(1, 1).translate(0, 0.5, 0))
+  const flat = geometry('foliageTop', () => new THREE.PlaneGeometry(1, 1))
+  const mesh = new THREE.Mesh(top ? flat : plane, foliageMaterial(look, top ? 'round' : 'dome'))
+  if (top) {
+    mesh.position.y = height
+    mesh.scale.set(width, width, 1)
+    mesh.rotation.set(-Math.PI / 2, 0, turn)
+  } else {
+    mesh.scale.set(width, height, 1)
+    mesh.rotation.y = turn
+  }
+  mesh.castShadow = true
+  mesh.receiveShadow = true
+  return mesh
+}
+
+// A clump of foliage cards: `cards` standing through its middle, evenly turned, and a lid of leaves over the top, round a
+// dark heart (so it never looks hollow), `width` across and `height` high. Every other card is `look`, the rest plain
+// leaves (or young ones).
+function foliageClump(look: FoliageLook, width: number, height: number, cards: number): THREE.Group {
+  const plain: FoliageLook = look === 'young' ? 'young' : 'leaves'
+  const made = group(part(lump(), look === 'young' ? PALETTE.leaf : PALETTE.leafDark, [0, height * 0.3, 0], [width * 0.32, height * 0.42, width * 0.32]))
+  for (let i = 0; i < cards; i++) made.add(foliageCard(i % 2 === 0 ? look : plain, width, height, (i / cards) * Math.PI + 0.3))
+  made.add(foliageCard(look, width * 0.8, height * 0.72, 0.5, true))
+  return made
+}
+
+// A berry bush: a full clump of leafy cards, red berries among the leaves.
+export function bush(): THREE.Group {
+  return foliageClump('berries', 1.0, 0.72, 4)
 }
 
 export function rock(x: number, y: number): THREE.Group {
@@ -216,49 +343,86 @@ export function grass(x: number, y: number): THREE.Group {
   return made
 }
 
-// Something stuck in the ground, to be knocked loose: a piece of flint (dark shards poking up, turned by its tile), a
-// thrown spear (standing at a slant, its point in the ground), or anything else (a small lump).
+// Something stuck in the ground, to be knocked loose: a piece of flint (a broken nodule, turned by its tile), a
+// thrown spear standing where it came down (leaning, its point buried), or anything else (a small lump).
 export function loose(item: string, x: number, y: number): THREE.Group {
-  if (item === 'flint') {
-    const turn = vary(x, y, 40) * Math.PI * 2
-    const made = group(
-      part(lump(), 0x3e3f46, [0, 0.09, 0], [0.34, 0.24, 0.25], [0.3, turn, 0.2]),
-      part(cone(4), 0x55565e, [0.12, 0.12, 0.06], [0.14, 0.3, 0.11], [0.2, turn, -0.4]),
-      part(lump(), 0x2c2d33, [-0.11, 0.06, -0.08], [0.18, 0.12, 0.15], [0, turn * 2, 0]),
+  if (item.endsWith('spear')) {
+    const turn = vary(x, y, 43) * Math.PI * 2
+    const spear = group(
+      part(cylinder(5), PALETTE.wood, [0, 0.55, 0], [0.045, 1.1, 0.045]),
+      part(box(), PALETTE.rope, [0, 0.12, 0], [0.06, 0.06, 0.06]),
+      part(cylinder(8), PALETTE.soil, [0, 0.01, 0], [0.16, 0.02, 0.16]),
     )
+    spear.rotation.set(0.35, turn, 0.2)
+    return group(spear)
+  }
+  if (item === 'flint') {
+    // A few pieces of flint on the ground: thin, sharp-edged flakes of dark grey flint (flattened diamonds, like
+    // knapped blades) lying on their sides, scattered a little apart, all one flint colour, a little glossy.
+    const turn = vary(x, y, 40) * Math.PI * 2
+    const facets = geometry('flintFacets', () => new THREE.OctahedronGeometry(0.5, 0))
+    const flake = (color: number, at: [number, number, number], scale: [number, number, number], tilt: [number, number, number]): THREE.Mesh => {
+      const mesh = part(facets, color, at, scale, tilt)
+      mesh.material = shiny(color)
+      return mesh
+    }
+    const made = group(
+      flake(0x3a3d46, [0, 0.022, 0], [0.32, 0.045, 0.14], [0.05, 0.3, 0.04]),
+      flake(0x31343c, [0.13, 0.028, 0.11], [0.24, 0.04, 0.11], [0.22, 1.5, -0.12]),
+      flake(0x444853, [-0.15, 0.018, -0.09], [0.2, 0.035, 0.1], [-0.08, -0.9, 0.1]),
+    )
+    made.rotation.y = turn
     made.position.set((vary(x, y, 41) - 0.5) * 0.4, 0, (vary(x, y, 42) - 0.5) * 0.4)
     return group(made)
-  }
-  if (item.endsWith('spear')) {
-    const spear = projectile('spear')
-    // Pointing down into the ground, leaning back the way it came.
-    spear.rotation.set(0, vary(x, y, 43) * Math.PI * 2, -Math.PI / 2 + 0.45)
-    spear.position.set(0, 0.5, 0)
-    return group(spear)
   }
   return group(part(lump(), PALETTE.stoneDark, [0, 0.06, 0], [0.2, 0.12, 0.2]))
 }
 
-// A sapling grows from a twig with a tuft of leaves to a small tree: `grown` from 0 to 1.
-export function sapling(grown: number): THREE.Group {
-  const size = 0.35 + grown * 0.45
-  const made = group(
-    part(cylinder(5), PALETTE.bark, [0, 0.3, 0], [0.08, 0.6, 0.08]),
-    part(blob(), PALETTE.leafLight, [0, 0.62, 0], [0.45, 0.4, 0.45]),
-  )
-  made.scale.setScalar(size)
-  return made
+// How many looks a sapling and a berry sprout go through before they are a tree and a bush (see `growthLook`).
+export const GROWTH_LOOKS = 3
+
+// Which of its GROWTH_LOOKS a sapling or sprout shows, from how far it has grown (`grown`, 0 to 1).
+export function growthLook(grown: number): number {
+  return Math.max(0, Math.min(GROWTH_LOOKS - 1, Math.floor(grown * GROWTH_LOOKS)))
 }
 
-// A berry sprout: young, light green leaves and no berries (they come when it becomes a bush), bigger at each stage.
-export function sprout(grown: number): THREE.Group {
-  const made = group(
-    part(lump(), PALETTE.leaf, [-0.1, 0.18, 0.04], [0.42, 0.36, 0.42]),
-    part(lump(), PALETTE.leafLight, [0.1, 0.22, -0.04], [0.42, 0.4, 0.42]),
-    part(lump(), PALETTE.sprout, [0, 0.33, 0.08], [0.32, 0.3, 0.32]),
+// A sapling, at each of its looks on the way to a tree: just planted, a twig with a few leaves; then a thin young trunk
+// with a tuft of leaves; then a small tree, two clumps of leaves on a slimmer trunk.
+export function sapling(look: number): THREE.Group {
+  if (look <= 0) {
+    return group(
+      part(cylinder(5), PALETTE.bark, [0, 0.09, 0], [0.035, 0.18, 0.035]),
+      part(blob(), PALETTE.sprout, [0.03, 0.19, 0], [0.12, 0.08, 0.1], [0, 0.4, 0]),
+      part(blob(), PALETTE.leafLight, [-0.03, 0.16, 0.02], [0.1, 0.07, 0.09], [0, 1.4, 0]),
+    )
+  }
+  if (look === 1) {
+    return group(
+      part(cylinder(5), PALETTE.bark, [0, 0.22, 0], [0.06, 0.44, 0.06]),
+      part(blob(), PALETTE.leaf, [0, 0.46, 0], [0.36, 0.3, 0.36]),
+      part(blob(), PALETTE.leafLight, [0.04, 0.58, -0.02], [0.24, 0.2, 0.24], [0, 1, 0]),
+    )
+  }
+  return group(
+    part(cylinder(6), PALETTE.bark, [0, 0.36, 0], [0.13, 0.72, 0.13]),
+    part(blob(), PALETTE.leafDark, [0, 0.78, 0], [0.78, 0.6, 0.78]),
+    part(blob(), PALETTE.leaf, [0.06, 1.0, -0.04], [0.6, 0.48, 0.6], [0, 1.3, 0]),
+    part(blob(), PALETTE.leafLight, [-0.05, 1.18, 0.05], [0.36, 0.32, 0.36]),
   )
-  made.scale.setScalar(0.45 + grown * 0.5)
-  return made
+}
+
+// A berry sprout, at each of its looks on the way to a bush: just planted, a tiny seedling of a few young leaves; then a
+// small leafy clump; then nearly a bush, with small green berries not yet ripe.
+export function sprout(look: number): THREE.Group {
+  if (look <= 0) {
+    const made = group(part(cylinder(5), PALETTE.leafDark, [0, 0.05, 0], [0.025, 0.1, 0.025]))
+    for (const [turn, tilt] of [[0, 0.9], [2.1, 1.0], [4.2, 0.8]] as const) {
+      made.add(part(blob(), turn === 0 ? PALETTE.sprout : PALETTE.leafLight, [Math.cos(turn) * 0.05, 0.1, Math.sin(turn) * 0.05], [0.11, 0.025, 0.06], [0, -turn, tilt * 0.4]))
+    }
+    return made
+  }
+  if (look === 1) return foliageClump('young', 0.45, 0.32, 3)
+  return foliageClump('unripe', 0.72, 0.52, 4)
 }
 
 // A crop in a garden plot, by how far it has grown: green shoots, taller, and golden ears once it is ready.
@@ -268,7 +432,7 @@ export function sprout(grown: number): THREE.Group {
 // made once and shared, turned a different way on each plot so a field does not repeat.
 export const CROP_GROWTH_STAGES = 6
 // A crop in its plot at a growth stage, standing in tidy rows along the plot's three furrows.
-export function crop(stage: number, _x = 0, _y = 0): THREE.Group {
+export function crop(stage: number): THREE.Group {
   const mesh = new THREE.Mesh(cropGeometry(Math.max(0, Math.min(CROP_GROWTH_STAGES - 1, stage))), cropMaterial)
   mesh.castShadow = true
   mesh.receiveShadow = true
@@ -350,9 +514,16 @@ function cropGeometry(stage: number): THREE.BufferGeometry {
 
 // ---- what is put down
 
-// A fence: a post, and rails to each side it joins (north 1, east 2, south 4, west 8).
-export function fence(mask: number): THREE.Group {
+// A fence: a post, with rails to each side it joins (`mask`: north 1, east 2, south 4, west 8); with something tied
+// to it (`tied`), a rope wound round the post near its top, its end hanging down.
+export function fence(mask: number, tied = false): THREE.Group {
   const made = group(part(box(), PALETTE.bark, [0, 0.38, 0], [0.16, 0.76, 0.16]))
+  if (tied) {
+    for (const [height, turn] of [[0.6, 0.15], [0.65, -0.1], [0.7, 0.2]] as const) {
+      made.add(part(box(), PALETTE.rope, [0, height, 0], [0.2, 0.04, 0.2], [0, turn, 0.08]))
+    }
+    made.add(part(box(), PALETTE.rope, [0.1, 0.62, 0.06], [0.035, 0.07, 0.035], [0, 0, 0.3]))
+  }
   const rails: Array<[number, number, number]> = [
     [1, 0, -1],
     [2, 1, 0],
@@ -386,7 +557,8 @@ export function gate(across: boolean, open: boolean): THREE.Group {
   return made
 }
 
-// A stump, with `tool` (an item key) stuck in it: an axe is sunk blade first into its top, its handle up at a slant.
+// A stump, with `tool` (an item key) in it: an axe is sunk blade first into its top, its handle up at a slant; a knife
+// stuck point first into it, its handle up; any other tool lies on its top (see `restingTool`).
 export function stump(tool?: string): THREE.Group {
   const made = group(
     part(cylinder(12), PALETTE.bark, [0, 0.18, 0], [0.74, 0.36, 0.74]),
@@ -405,7 +577,46 @@ export function stump(tool?: string): THREE.Group {
     made.add(stick(PALETTE.bark, [Math.cos(turn) * 0.3, 0.14, Math.sin(turn) * 0.3], [Math.cos(turn) * 0.52, 0, Math.sin(turn) * 0.52], 0.1))
   }
   if (tool === 'axe') made.add(axe())
+  else if (tool === 'knife') {
+    // Point first into the wood, half the blade sunk in, leaning a little.
+    const knife = heldModel('knife')!
+    knife.scale.setScalar(1.5)
+    knife.position.set(0.1, 0.7, 0.02)
+    knife.rotation.set(0.2, 0.6, 0.25)
+    made.add(knife)
+  } else if (tool) {
+    const resting = restingTool(tool)
+    if (resting) {
+      resting.position.set(-0.08, 0.38, 0.04)
+      made.add(resting)
+    }
+  }
   return made
+}
+
+// A tool lying on a flat top (its foot at y = 0): an axe, a pickaxe or a knife on its side, its handle along x from
+// about x = 0 to x = 0.45; a mortar and pestle standing, the pestle leaning in the bowl. Undefined for anything else.
+export function restingTool(key: string): THREE.Group | undefined {
+  if (key === 'mortar') return mortar()
+  const held = heldModel(key)
+  if (!held || !['axe', 'pickaxe', 'knife'].includes(key)) return undefined
+  // Turned about its handle so its head lies flat (an axe's blade already does), then laid down along x.
+  if (key !== 'axe') held.rotation.y = Math.PI / 2
+  const laid = group(held)
+  laid.rotation.z = Math.PI / 2
+  // Up off the top by half its thickness (the head is the thickest part).
+  laid.position.y = key === 'knife' ? 0.02 : 0.035
+  return group(laid)
+}
+
+// A mortar and pestle: a squat bowl of stone, dark inside, the pestle leaning in it.
+function mortar(): THREE.Group {
+  return group(
+    part(geometry('mortarBowl', () => new THREE.CylinderGeometry(0.5, 0.38, 1, 9)), PALETTE.stone, [0, 0.055, 0], [0.2, 0.11, 0.2]),
+    part(cylinder(9), PALETTE.stoneDark, [0, 0.106, 0], [0.15, 0.012, 0.15]),
+    stick(PALETTE.stoneDark, [-0.02, 0.07, 0.01], [0.08, 0.24, -0.03], 0.04, 6),
+    part(ball(), PALETTE.stoneDark, [0.085, 0.245, -0.032], [0.055, 0.055, 0.055]),
+  )
 }
 
 // An axe chopped into the top of a stump (y 0.37): its flint blade sunk into the wood, lashed to a handle that sticks
@@ -434,8 +645,8 @@ function stick(color: number, from: [number, number, number], to: [number, numbe
 
 // A workbench: a thick top of three planks on four legs, braced by rails under the top and stretchers low down, a
 // shelf with logs on it, a block for a vice at one end, and on top a stone hammer, a flint knife, a few planks and
-// curls of shavings.
-export function workbench(): THREE.Group {
+// curls of shavings; and the tool in its tool slot (`tool`, an item key), resting on its top at the back.
+export function workbench(tool?: string): THREE.Group {
   const made = group()
   // The top: three planks, seams between them.
   for (const z of [-0.23, 0, 0.23]) made.add(part(box(), z === 0 ? PALETTE.woodLight : PALETTE.wood, [0, 0.54, z], [0.96, 0.08, 0.225]))
@@ -457,18 +668,30 @@ export function workbench(): THREE.Group {
   // A block for a vice at the right-hand end, with its peg.
   made.add(part(box(), PALETTE.bark, [0.44, 0.52, 0.2], [0.1, 0.14, 0.16]))
   made.add(part(cylinder(5), PALETTE.woodLight, [0.5, 0.52, 0.2], [0.025, 0.12, 0.025], [0, 0, Math.PI / 2]))
-  // A stone hammer: its handle, and its head lashed on.
-  made.add(stick(PALETTE.woodLight, [0.06, 0.6, 0.2], [0.2, 0.6, -0.02], 0.035))
-  made.add(part(lump(), PALETTE.stone, [0.21, 0.62, -0.035], [0.14, 0.09, 0.09], [0, 1, 0]))
-  made.add(part(box(), PALETTE.rope, [0.205, 0.62, -0.027], [0.05, 0.1, 0.1], [0, 1, 0]))
-  // A flint knife.
-  made.add(part(box(), PALETTE.wood, [-0.12, 0.595, 0.18], [0.1, 0.025, 0.035], [0, -0.3, 0]))
-  made.add(part(cone(4), PALETTE.stoneDark, [-0.22, 0.595, 0.21], [0.04, 0.14, 0.015], [0, -0.3, Math.PI / 2]))
+  const resting = tool ? restingTool(tool) : undefined
+  if (!resting) {
+    // With no tool in it: a stone hammer (its handle, and its head lashed on), and a flint knife.
+    made.add(stick(PALETTE.woodLight, [0.06, 0.6, 0.2], [0.2, 0.6, -0.02], 0.035))
+    made.add(part(lump(), PALETTE.stone, [0.21, 0.62, -0.035], [0.14, 0.09, 0.09], [0, 1, 0]))
+    made.add(part(box(), PALETTE.rope, [0.205, 0.62, -0.027], [0.05, 0.1, 0.1], [0, 1, 0]))
+    made.add(part(box(), PALETTE.wood, [-0.12, 0.595, 0.18], [0.1, 0.025, 0.035], [0, -0.3, 0]))
+    made.add(part(cone(4), PALETTE.stoneDark, [-0.22, 0.595, 0.21], [0.04, 0.14, 0.015], [0, -0.3, Math.PI / 2]))
+  }
   // A couple of planks, and shavings.
   made.add(part(box(), PALETTE.woodLight, [-0.22, 0.6, -0.14], [0.42, 0.03, 0.11], [0, 0.08, 0]))
   made.add(part(box(), PALETTE.wood, [-0.2, 0.63, -0.13], [0.4, 0.03, 0.1], [0, -0.05, 0]))
   for (const [sx, sz] of [[0.02, 0.02], [0.08, -0.08], [-0.02, 0.12], [0.3, 0.14]]) {
     made.add(part(cylinder(5), 0xe6c690, [sx, 0.592, sz], [0.04, 0.01, 0.04]))
+  }
+  // The tool in its slot, resting at the front of the top, where it is seen (in place of the hammer and knife).
+  if (resting) {
+    if (tool === 'mortar') resting.position.set(0.12, 0.58, 0.08)
+    else {
+      resting.position.set(-0.05, 0.58, 0.16)
+      resting.rotation.y = 0.15
+      resting.scale.setScalar(1.15)
+    }
+    made.add(resting)
   }
   return made
 }
@@ -529,38 +752,235 @@ export function campfire(lit: boolean): THREE.Group {
   return made
 }
 
-// A barrel, open at the top: what is in it shows, a liquid at its level in its colour, or a heap of rotting compost
-// (with flies over it) while it is making compost; sealed, a lid with a handle covers it.
-export function barrel(sealed = false, liquid = '', fill = 0, composting = false): THREE.Group {
-  const wall = new THREE.Mesh(geometry('tube12', () => new THREE.CylinderGeometry(0.5, 0.5, 1, 12, 1, true)), bothSides(PALETTE.wood))
-  wall.position.set(0, 0.36, 0)
-  wall.scale.set(0.6, 0.72, 0.6)
-  wall.castShadow = true
-  wall.receiveShadow = true
-  // The hoops are open rings, so they do not hide what is inside.
-  const hoop = (y: number): THREE.Mesh => {
-    const ring = new THREE.Mesh(geometry('tube12', () => new THREE.CylinderGeometry(0.5, 0.5, 1, 12, 1, true)), bothSides(PALETTE.barkDark))
-    ring.position.set(0, y, 0)
-    ring.scale.set(0.63, 0.06, 0.63)
-    return ring
+// A makeshift oven, after its icon: a beehive dome of rough stones laid in courses that touch and cover it all over
+// (the dome itself is solid underneath, so no gap shows through), an arched dark mouth at the front (+z) framed by
+// stones, and a short stone chimney on top. It stands straight on the ground. Lit, the mouth glows and flames (named, so
+// they flicker) lick out of it.
+const OVEN_RADIUS = 0.42
+const OVEN_HEIGHT = 0.5
+const OVEN_SHADES = [PALETTE.stone, PALETTE.stoneDark, 0x7d8086, 0x9a9ca0]
+export function oven(lit: boolean): THREE.Group {
+  const made = group()
+  // The dome under the stones: the top half of a squashed sphere, in the stones' darkest colour, so the gaps between
+  // them read as mortar.
+  const dome = new THREE.Mesh(geometry('ovenDome', () => new THREE.SphereGeometry(0.5, 14, 7, 0, Math.PI * 2, 0, Math.PI / 2)), material(0x5a5c60))
+  dome.scale.set(OVEN_RADIUS * 2, OVEN_HEIGHT * 2, OVEN_RADIUS * 2)
+  dome.castShadow = true
+  dome.receiveShadow = true
+  made.add(dome)
+  // Where the mouth is: an arch at the front, `MOUTH_HALF` across either side of the middle and up to `MOUTH_TOP`.
+  const MOUTH_HALF = 0.13
+  const MOUTH_TOP = 0.27
+  const inMouth = (x: number, y: number, z: number): boolean => z > 0 && Math.abs(x) < MOUTH_HALF + 0.03 && y < MOUTH_TOP + 0.03
+  // The courses of stones, bottom to top: each a ring round the dome at an angle up from the ground, its stones as wide
+  // as fits the ring with a little overlap, sunk half into the dome and turned to lie along it.
+  const courses = 6
+  for (let c = 0; c < courses; c++) {
+    const up = ((c + 0.35) / courses) * (Math.PI / 2) * 0.92
+    const ring = OVEN_RADIUS * Math.cos(up)
+    const y = OVEN_HEIGHT * Math.sin(up)
+    const count = Math.max(5, Math.round((Math.PI * 2 * ring) / 0.15))
+    const wide = ((Math.PI * 2 * ring) / count) * 1.25
+    const tall = (OVEN_HEIGHT / courses) * 1.7
+    for (let i = 0; i < count; i++) {
+      const angle = (i / count) * Math.PI * 2 + (c % 2) * (Math.PI / count)
+      const x = Math.cos(angle) * ring
+      const z = Math.sin(angle) * ring
+      if (inMouth(x, y, z)) continue
+      const normal = new THREE.Vector3(x / (OVEN_RADIUS * OVEN_RADIUS), y / (OVEN_HEIGHT * OVEN_HEIGHT), z / (OVEN_RADIUS * OVEN_RADIUS)).normalize()
+      const shade = OVEN_SHADES[(i * 3 + c * 5) % OVEN_SHADES.length]
+      const jitter = 0.9 + ((i * 7 + c * 3) % 5) * 0.05
+      const stone = part(lump(), shade, [x, y, z], [wide * jitter, tall * jitter, 0.1])
+      stone.lookAt(new THREE.Vector3(x, y, z).add(normal))
+      made.add(stone)
+    }
   }
-  const made = group(wall, part(cylinder(12), PALETTE.barkDark, [0, 0.06, 0], [0.58, 0.04, 0.58]), hoop(0.16), hoop(0.56))
+  // A cap stone over the top, under the chimney.
+  made.add(part(lump(), PALETTE.stone, [0, OVEN_HEIGHT - 0.03, 0], [0.26, 0.1, 0.26]))
+  // The mouth: dark inside, an arch (a box with a half-disc on top) set back into the front of the dome, a little
+  // narrower than the stones framing it, so its edges are tucked in behind them. The box stops where the half-disc
+  // starts, so no two faces of it lie on one another.
+  const mouthZ = OVEN_RADIUS * 0.9
+  const inside = lit ? 0x2a1208 : 0x1a1816
+  const mouthBack = mouthZ - 0.05
+  const arch = MOUTH_HALF * 0.92
+  made.add(part(box(), inside, [0, (MOUTH_TOP - MOUTH_HALF) / 2, mouthBack], [arch * 2, MOUTH_TOP - MOUTH_HALF, 0.12]))
+  made.add(part(geometry('ovenArch', () => new THREE.CylinderGeometry(0.5, 0.5, 1, 10, 1, false, Math.PI / 2, Math.PI)), inside, [0, MOUTH_TOP - MOUTH_HALF, mouthBack], [arch * 2, 0.12, arch * 2], [Math.PI / 2, 0, 0]))
+  const frame = 9
+  for (let i = 0; i < frame; i++) {
+    // Up one side, over the arch, and down the other.
+    const t = i / (frame - 1)
+    const angle = Math.PI * (1 - t)
+    const fx = Math.cos(angle) * (MOUTH_HALF + 0.05)
+    const fy = MOUTH_TOP - MOUTH_HALF + Math.max(0, Math.sin(angle)) * (MOUTH_HALF + 0.05) - (i === 0 || i === frame - 1 ? 0.1 : 0)
+    made.add(part(lump(), OVEN_SHADES[i % OVEN_SHADES.length], [fx, fy, mouthZ + 0.03], [0.11, 0.1, 0.18], [0, 0, angle]))
+  }
+  for (const side of [-1, 1]) made.add(part(lump(), PALETTE.stoneDark, [side * (MOUTH_HALF + 0.05), 0.05, mouthZ + 0.04], [0.12, 0.11, 0.1]))
+  // The chimney: a short stack of stones, dark at its mouth.
+  for (let i = 0; i < 2; i++) {
+    made.add(part(cylinder(7), i === 0 ? PALETTE.stoneDark : PALETTE.stone, [0, OVEN_HEIGHT + 0.03 + i * 0.07, -0.02], [0.17 - i * 0.015, 0.08, 0.17 - i * 0.015], [0, i * 0.4, 0]))
+  }
+  made.add(part(cylinder(7), 0x141312, [0, OVEN_HEIGHT + 0.145, -0.02], [0.1, 0.01, 0.1]))
+  if (lit) {
+    const glow = new THREE.Mesh(box(), new THREE.MeshBasicMaterial({ color: 0xff6a1a }))
+    // Just in front of the dark inside (never on it), behind the frame stones.
+    glow.position.set(0, 0.07, mouthZ + 0.03)
+    glow.scale.set(MOUTH_HALF * 1.6, 0.08, 0.02)
+    made.add(glow)
+    for (const [fx, height] of [[-0.05, 0.13], [0.05, 0.1], [0, 0.17]] as const) {
+      const flame = new THREE.Mesh(cone(6), new THREE.MeshBasicMaterial({ color: fx === 0 ? PALETTE.flameCore : PALETTE.flame }))
+      flame.position.set(fx, 0.06 + height / 2, mouthZ + 0.05)
+      flame.scale.set(0.07, height, 0.07)
+      flame.name = 'flame'
+      made.add(flame)
+    }
+  }
+  return made
+}
+
+// A barrel, open at the top: a round-bellied cask of thick staves (its wall has an inside and an outside, and a rim
+// across the top between them), bound by two dark hoops. What is in it shows, a liquid at its level in its colour, or a
+// heap of rotting compost (with flies over it) while it is making compost; sealed, a lid with a handle covers it.
+const BARREL_TOP = 0.74
+const BARREL_WALL = 0.05
+// Its outline from the bottom up: [radius, height], bellied out in the middle.
+const BARREL_PROFILE: ReadonlyArray<readonly [number, number]> = [
+  [0.27, 0],
+  [0.305, 0.12],
+  [0.325, 0.26],
+  [0.33, 0.37],
+  [0.325, 0.48],
+  [0.305, 0.62],
+  [0.28, BARREL_TOP],
+]
+// How wide it is at a height (between the points of its outline).
+function barrelRadius(y: number): number {
+  for (let i = 1; i < BARREL_PROFILE.length; i++) {
+    const [r0, y0] = BARREL_PROFILE[i - 1]
+    const [r1, y1] = BARREL_PROFILE[i]
+    if (y <= y1) return r0 + ((r1 - r0) * (y - y0)) / (y1 - y0)
+  }
+  return BARREL_PROFILE[BARREL_PROFILE.length - 1][0]
+}
+export function barrel(sealed = false, liquid = '', fill = 0, composting = false): THREE.Group {
+  const lathe = (key: string, inset: number): THREE.BufferGeometry =>
+    geometry(key, () => new THREE.LatheGeometry(BARREL_PROFILE.map(([r, y]) => new THREE.Vector2(r - inset, y)), 14))
+  const outside = new THREE.Mesh(lathe('barrelOut', 0), material(PALETTE.wood))
+  const inside = new THREE.Mesh(lathe('barrelIn', BARREL_WALL), bothSides(PALETTE.bark))
+  const topRadius = BARREL_PROFILE[BARREL_PROFILE.length - 1][0]
+  const rim = new THREE.Mesh(geometry('barrelRim', () => new THREE.RingGeometry(topRadius - BARREL_WALL, topRadius, 14, 1)), bothSides(PALETTE.woodLight))
+  rim.rotation.x = -Math.PI / 2
+  rim.position.y = BARREL_TOP
+  for (const mesh of [outside, inside]) {
+    mesh.castShadow = true
+    mesh.receiveShadow = true
+  }
+  const bottom = (0.27 - BARREL_WALL) * 2
+  const made = group(outside, inside, rim, part(cylinder(14), PALETTE.barkDark, [0, 0.04, 0], [bottom, 0.08, bottom]))
+  // Dark grooves between the staves, up the outside: thin strips that follow its bellied outline all the way up, lying
+  // on the staves (a narrow slice of the same outline, a hair further out).
+  const groove = geometry('barrelGroove', () => new THREE.LatheGeometry(BARREL_PROFILE.slice(0).map(([r, y]) => new THREE.Vector2(r + 0.003, Math.min(BARREL_TOP - 0.01, Math.max(0.01, y)))), 1, 0, 0.035))
+  for (let i = 0; i < 10; i++) {
+    const strip = new THREE.Mesh(groove, bothSides(PALETTE.bark))
+    strip.rotation.y = (i / 10) * Math.PI * 2
+    strip.receiveShadow = true
+    made.add(strip)
+  }
+  // The hoops: open bands lying on the staves, each sloping with the outline where it sits (open, so they never cover
+  // what is inside).
+  for (const y of [0.13, 0.61]) {
+    const half = 0.035
+    const bottomR = barrelRadius(y - half) + 0.006
+    const topR = barrelRadius(y + half) + 0.006
+    const hoop = new THREE.Mesh(geometry(`barrelHoop${y}`, () => new THREE.CylinderGeometry(topR, bottomR, half * 2, 14, 1, true)), bothSides(PALETTE.barkDark))
+    hoop.position.set(0, y, 0)
+    hoop.castShadow = true
+    made.add(hoop)
+  }
   if (sealed) {
-    made.add(part(cylinder(12), PALETTE.woodLight, [0, 0.735, 0], [0.64, 0.04, 0.64]))
-    made.add(part(box(), PALETTE.bark, [0, 0.775, 0], [0.3, 0.05, 0.07]))
+    const lid = (topRadius + 0.01) * 2
+    made.add(part(cylinder(14), PALETTE.woodLight, [0, BARREL_TOP + 0.015, 0], [lid, 0.04, lid]))
+    made.add(part(box(), PALETTE.bark, [0, BARREL_TOP + 0.055, 0], [0.3, 0.05, 0.07]))
     return made
   }
   if (liquid && fill > 0) {
-    const surface = new THREE.Mesh(cylinder(12), material(LIQUID_COLORS[liquid] ?? 0x3a74b0))
-    surface.position.set(0, 0.08 + 0.6 * Math.min(1, fill), 0)
-    surface.scale.set(0.57, 0.02, 0.57)
+    const y = 0.08 + (BARREL_TOP - 0.14) * Math.min(1, fill)
+    const r = barrelRadius(y) - BARREL_WALL - 0.004
+    const surface = new THREE.Mesh(cylinder(14), material(liquidLook(liquid).color))
+    surface.position.set(0, y, 0)
+    surface.scale.set(r * 2, 0.02, r * 2)
     made.add(surface)
   }
   if (composting) {
-    made.add(part(lump(), PALETTE.soil, [0, 0.62, 0], [0.5, 0.18, 0.5]))
-    made.add(part(lump(), PALETTE.leafDark, [0.1, 0.68, -0.05], [0.12, 0.08, 0.12]))
-    for (const [fx, fy, fz] of [[0.12, 0.95, 0.05], [-0.1, 1.05, -0.08], [0.02, 1.15, 0.12]]) made.add(part(ball(), 0x1c1a16, [fx, fy, fz], [0.035, 0.035, 0.035]))
+    made.add(part(lump(), PALETTE.soil, [0, 0.64, 0], [0.46, 0.18, 0.46]))
+    made.add(part(lump(), PALETTE.leafDark, [0.1, 0.7, -0.05], [0.12, 0.08, 0.12]))
+    for (const [fx, fy, fz] of [[0.12, 0.97, 0.05], [-0.1, 1.07, -0.08], [0.02, 1.17, 0.12]]) made.add(part(ball(), 0x1c1a16, [fx, fy, fz], [0.035, 0.035, 0.035]))
   }
+  return made
+}
+
+// A well, after its icon: a round wall of grey stones with water deep inside (the colour of a pond), two wooden posts holding a pitched
+// roof of planks, and a crossbar between them with a rope wound on it, a bucket hanging from it over the water.
+const WELL_WATER = new THREE.MeshStandardMaterial({ color: POND_COLOR, roughness: 1, metalness: 0 })
+export function well(): THREE.Group {
+  const made = group()
+  const shades = [PALETTE.stone, PALETTE.stoneDark, 0x7b7f81, 0x9a9ca0]
+  // The wall: a solid ring under courses of stones laid round it.
+  const wall = new THREE.Mesh(geometry('wellWall', () => new THREE.CylinderGeometry(0.36, 0.38, 0.42, 14, 1, true)), bothSides(0x55595b))
+  wall.position.y = 0.21
+  wall.castShadow = true
+  wall.receiveShadow = true
+  made.add(wall)
+  for (let course = 0; course < 3; course++) {
+    const count = 12
+    for (let i = 0; i < count; i++) {
+      const turn = ((i + (course % 2) * 0.5) / count) * Math.PI * 2
+      const stone = part(lump(), shades[(i + course * 2) % shades.length], [Math.cos(turn) * 0.37, 0.07 + course * 0.14, Math.sin(turn) * 0.37], [0.22, 0.15, 0.12])
+      stone.rotation.y = -turn + Math.PI / 2
+      made.add(stone)
+    }
+  }
+  // The coping round the top, and the water down inside.
+  made.add(part(geometry('wellCoping', () => new THREE.TorusGeometry(0.36, 0.05, 5, 14)), 0x9a9ca0, [0, 0.43, 0], [1, 1, 1], [Math.PI / 2, 0, 0]))
+  // Lit like the ponds' water on the ground (not darkened by the wall's shadow), so it is the same blue.
+  const water = new THREE.Mesh(cylinder(14), WELL_WATER)
+  water.position.set(0, 0.16, 0)
+  water.scale.set(0.66, 0.02, 0.66)
+  made.add(water)
+  // The posts, the crossbar with its rope, and the bucket.
+  for (const side of [-1, 1]) made.add(part(box(), PALETTE.bark, [side * 0.33, 0.46, 0], [0.07, 0.92, 0.07]))
+  made.add(stick(PALETTE.wood, [-0.38, 0.7, 0], [0.38, 0.7, 0], 0.05, 6))
+  made.add(part(cylinder(8), PALETTE.rope, [0, 0.7, 0], [0.08, 0.2, 0.08], [0, 0, Math.PI / 2]))
+  made.add(stick(PALETTE.rope, [0, 0.68, 0], [0, 0.56, 0], 0.012, 4))
+  made.add(part(cylinder(8), PALETTE.wood, [0, 0.5, 0], [0.12, 0.12, 0.12]))
+  made.add(part(cylinder(8), PALETTE.barkDark, [0, 0.53, 0], [0.13, 0.02, 0.13]))
+  // The roof: two steep slopes meeting along a ridge over the crossbar, narrow enough that the water shows. Each slope
+  // is a row of planks running down it, side by side with thin gaps between, each a little different in shade, length
+  // and lie, held together by two battens across them, pegged at each plank; a ridge beam caps the top.
+  const planks = 6
+  const span = 0.86
+  const shadesOf = [PALETTE.wood, PALETTE.woodLight, 0x8a6640, PALETTE.wood, 0xa87c4e, 0x94693f]
+  for (const side of [-1, 1]) {
+    const slope = group()
+    slope.position.set(0, 0.86, side * 0.14)
+    slope.rotation.x = side * 0.75
+    for (let i = 0; i < planks; i++) {
+      const x = -span / 2 + (i + 0.5) * (span / planks)
+      const long = 0.36 + ((i * 7 + (side > 0 ? 3 : 0)) % 5) * 0.012
+      const plank = part(box(), shadesOf[(i + (side > 0 ? 2 : 0)) % shadesOf.length], [x, ((i * 5) % 3) * 0.003, side * (long - 0.36) * 0.4], [span / planks - 0.012, 0.03, long])
+      plank.rotation.set(0, ((i * 3) % 5 - 2) * 0.012, ((i % 3) - 1) * 0.03)
+      slope.add(plank)
+    }
+    // The battens across the planks, near the top and the foot of the slope, and a peg through each into each plank.
+    for (const z of [-0.11, 0.11]) {
+      slope.add(part(box(), PALETTE.bark, [0, 0.026, z], [span + 0.04, 0.024, 0.045]))
+      for (let i = 0; i < planks; i++) {
+        slope.add(part(box(), PALETTE.barkDark, [-span / 2 + (i + 0.5) * (span / planks), 0.04, z], [0.014, 0.008, 0.014]))
+      }
+    }
+    made.add(slope)
+  }
+  made.add(part(box(), PALETTE.barkDark, [0, 0.985, 0], [0.92, 0.055, 0.06]))
   return made
 }
 
@@ -619,7 +1039,8 @@ export function sleepingBag(): THREE.Group {
   return group(
     part(box(), PALETTE.bagDark, [0, 0.05, 0.04], [0.5, 0.1, 0.86]),
     part(box(), PALETTE.bag, [0, 0.11, 0.1], [0.46, 0.06, 0.66]),
-    part(box(), PALETTE.bagLight, [0, 0.12, -0.2], [0.46, 0.04, 0.1]),
+    // The folded-back top: a little higher and wider than the bag, so no face of it lies in the bag's (no flicker).
+    part(box(), PALETTE.bagLight, [0, 0.135, -0.2], [0.48, 0.03, 0.1]),
     part(box(), PALETTE.pillow, [0, 0.1, -0.32], [0.34, 0.08, 0.16]),
   )
 }
@@ -661,53 +1082,102 @@ export function machine(color: number): THREE.Group {
 
 // ---- people and animals
 
-// The player: a caveman in a fur tunic, with shaggy hair and a beard, facing +x. Its arms are named, to swing.
+// The player: a caveman in a fur tunic, with shaggy hair and a beard, facing +x. Its arms and legs are named, to swing
+// as it walks and fights; its body (`body`, everything above the hips) to lean and sway.
 export function caveman(): THREE.Group {
-  const made = group(
-    part(box(), PALETTE.skin, [0, 0.16, -0.08], [0.1, 0.32, 0.1]),
-    part(box(), PALETTE.skin, [0, 0.16, 0.08], [0.1, 0.32, 0.1]),
-    part(cylinder(7), PALETTE.fur, [0, 0.46, 0], [0.38, 0.36, 0.34]),
-    part(box(), PALETTE.furLight, [0.12, 0.5, 0.02], [0.08, 0.1, 0.12]),
-    part(ball(), PALETTE.skin, [0, 0.78, 0], [0.26, 0.28, 0.26]),
-    part(blob(), PALETTE.hair, [-0.04, 0.86, 0], [0.32, 0.22, 0.32]),
-    part(blob(), PALETTE.hair, [0.1, 0.71, 0], [0.12, 0.14, 0.18]),
-    part(ball(), 0x1c1a16, [0.12, 0.8, -0.06], [0.04, 0.04, 0.04]),
-    part(ball(), 0x1c1a16, [0.12, 0.8, 0.06], [0.04, 0.04, 0.04]),
+  const made = group()
+  // Each leg: a hip that swings it to and fro (`leg-left`, `leg-right`: 0 hangs straight down, more swings it forward),
+  // and a knee in it that bends the shin back (`knee-left`, `knee-right`), with the foot at its end, where a boot goes
+  // (`armor-foot-left`, `armor-foot-right`, see `wear`).
+  for (const side of [-1, 1]) {
+    const name = side < 0 ? 'left' : 'right'
+    const hip = new THREE.Group()
+    hip.position.set(0, 0.42, side * 0.058)
+    hip.name = `leg-${name}`
+    hip.add(part(box(), PALETTE.skin, [0, -0.105, 0], [0.08, 0.22, 0.08]))
+    const knee = new THREE.Group()
+    knee.position.set(0, -0.21, 0)
+    knee.name = `knee-${name}`
+    knee.add(part(box(), PALETTE.skin, [0, -0.1, 0], [0.075, 0.21, 0.075]))
+    const foot = new THREE.Group()
+    foot.position.set(0, -0.21, 0)
+    foot.name = `armor-foot-${name}`
+    knee.add(part(box(), PALETTE.hide, [0.025, 0.018, 0], [0.12, 0.036, 0.08]), foot)
+    hip.add(knee)
+    made.add(hip)
+  }
+  const body = group(
+    // Lean and in proportion, so armour on top of it does not make it bulky: long legs, hips, a flat torso wider at the
+    // shoulders than the waist (a fitted fur tunic), a neck, and a head no bigger than it should be, with its hair.
+    part(box(), PALETTE.fur, [0, 0.45, 0], [0.15, 0.1, 0.24]),
+    part(box(), PALETTE.fur, [0, 0.6, 0], [0.14, 0.22, 0.25]),
+    part(box(), PALETTE.fur, [0, 0.72, 0], [0.15, 0.08, 0.32]),
+    part(box(), PALETTE.furLight, [0.072, 0.63, 0.02], [0.01, 0.1, 0.09]),
+    part(box(), PALETTE.skin, [0, 0.8, 0], [0.07, 0.06, 0.07]),
+    part(ball(), PALETTE.skin, [0, 0.9, 0], [0.18, 0.2, 0.17]),
+    part(blob(), PALETTE.hair, [-0.03, 0.96, 0], [0.21, 0.14, 0.21]),
+    part(blob(), PALETTE.hair, [0.07, 0.84, 0], [0.07, 0.09, 0.11]),
+    part(ball(), 0x1c1a16, [0.087, 0.915, -0.042], [0.03, 0.03, 0.03]),
+    part(ball(), 0x1c1a16, [0.087, 0.915, 0.042], [0.03, 0.03, 0.03]),
   )
   // Each arm: a shoulder that turns about the upright (`arm-left`, `arm-right`), and in it a joint that swings the arm
-  // up and down (`...-pitch`: 0 hangs down, π/2 points straight ahead, π straight up), with the hand at its end
+  // up and down (`...-pitch`: 0 hangs down, π/2 points straight ahead, π straight up), with the fist at its end
   // (`hand-left`, `hand-right`), where what is held goes. The right arm is on the +z side (the model faces +x).
   for (const side of [-1, 1]) {
     const name = side < 0 ? 'left' : 'right'
     const shoulder = new THREE.Group()
-    shoulder.position.set(0, 0.6, side * 0.22)
+    shoulder.position.set(0, 0.74, side * 0.19)
     shoulder.name = `arm-${name}`
     const pitch = new THREE.Group()
     pitch.name = `arm-${name}-pitch`
-    pitch.add(part(box(), PALETTE.skin, [0, -0.13, 0], [0.09, 0.28, 0.09]))
+    pitch.add(part(box(), PALETTE.skin, [0, -0.15, 0], [0.065, 0.3, 0.065]))
+    pitch.add(part(box(), PALETTE.skin, [0.005, -0.325, 0], [0.075, 0.07, 0.075]))
     // Where body armour's sleeve goes (see `wear`), so it swings with the arm.
     const sleeve = new THREE.Group()
     sleeve.name = `armor-sleeve-${name}`
     pitch.add(sleeve)
     const hand = new THREE.Group()
-    hand.position.set(0, -0.27, 0)
+    hand.position.set(0.005, -0.325, 0)
     hand.name = `hand-${name}`
     pitch.add(hand)
     shoulder.add(pitch)
-    made.add(shoulder)
+    body.add(shoulder)
   }
-  // Where armour goes, filled in by `wear`.
-  for (const slot of ['head', 'body', 'feet']) {
+  // Where armour goes, filled in by `wear` (boots go on the feet).
+  for (const slot of ['head', 'body']) {
     const worn = new THREE.Group()
     worn.name = `armor-${slot}`
-    made.add(worn)
+    body.add(worn)
   }
+  // Everything above the hips turns about them (to lean into a stride), so it is held up there.
+  body.position.y = -HIP_HEIGHT
+  const torso = group(body)
+  torso.position.y = HIP_HEIGHT
+  torso.name = 'body'
+  made.add(torso)
   return made
 }
+
+// How high a caveman's hips are, where its legs swing from and its body leans (tiles).
+export const HIP_HEIGHT = 0.42
 
 // Dresses a caveman (see `caveman`) in a piece of armour, by its item key and colour, in its slot; or takes off what
 // is there (no key). Pieces without a model of their own are drawn in their item's colour.
 export function wear(person: THREE.Object3D, slot: 'head' | 'body' | 'feet', key: string | undefined, color = 0x8a5a3a): void {
+  if (slot === 'feet') {
+    // A boot on each foot, so it steps with it: up over the ankle, the toe out in front.
+    for (const side of ['left', 'right']) {
+      const foot = person.getObjectByName(`armor-foot-${side}`)
+      if (!foot) continue
+      foot.clear()
+      if (!key) continue
+      const dark = new THREE.Color(color).multiplyScalar(0.7).getHex()
+      foot.add(part(box(), color, [0.01, 0.07, 0], [0.105, 0.14, 0.095]))
+      foot.add(part(box(), color, [0.04, 0.03, 0], [0.15, 0.06, 0.095]))
+      foot.add(part(box(), dark, [0.01, 0.145, 0], [0.11, 0.02, 0.1]))
+    }
+    return
+  }
   const worn = person.getObjectByName(`armor-${slot}`)
   if (!worn) return
   worn.clear()
@@ -717,44 +1187,44 @@ export function wear(person: THREE.Object3D, slot: 'head' | 'body' | 'feet', key
   if (slot === 'head') {
     if (key === 'wolf-helmet') {
       // A wolf's head worn as a hood: grey fur over the scalp, pricked ears, the muzzle over the brow.
-      worn.add(part(blob(), PALETTE.wolf, [-0.03, 0.87, 0], [0.36, 0.26, 0.36]))
-      worn.add(part(box(), PALETTE.wolfPale, [0.14, 0.9, 0], [0.12, 0.08, 0.14]))
-      worn.add(part(box(), PALETTE.nose, [0.21, 0.9, 0], [0.03, 0.04, 0.05]))
-      worn.add(part(cone(4), PALETTE.wolfBlack, [-0.02, 1.03, -0.09], [0.06, 0.12, 0.04]))
-      worn.add(part(cone(4), PALETTE.wolfBlack, [-0.02, 1.03, 0.09], [0.06, 0.12, 0.04]))
-      worn.add(part(box(), PALETTE.wolf, [-0.17, 0.72, 0], [0.08, 0.26, 0.3]))
-    } else worn.add(part(blob(), color, [-0.02, 0.88, 0], [0.32, 0.2, 0.32]))
+      worn.add(part(blob(), PALETTE.wolf, [-0.02, 0.97, 0], [0.24, 0.17, 0.24]))
+      worn.add(part(box(), PALETTE.wolfPale, [0.1, 0.99, 0], [0.1, 0.06, 0.11]))
+      worn.add(part(box(), PALETTE.nose, [0.155, 0.99, 0], [0.025, 0.03, 0.04]))
+      worn.add(part(cone(4), PALETTE.wolfBlack, [-0.02, 1.09, -0.07], [0.05, 0.09, 0.035]))
+      worn.add(part(cone(4), PALETTE.wolfBlack, [-0.02, 1.09, 0.07], [0.05, 0.09, 0.035]))
+      worn.add(part(box(), PALETTE.wolf, [-0.11, 0.84, 0], [0.05, 0.18, 0.2]))
+    } else worn.add(part(blob(), color, [-0.02, 0.98, 0], [0.23, 0.14, 0.23]))
     return
   }
   if (slot === 'body') {
-    // A leather tunic: over the whole body from the shoulders to the hips, its front a lighter panel, with shoulder
-    // pads, sleeves down the upper arms, a belt, and a skirt of flaps over the tops of the legs.
+    // A leather tunic, fitted close over the body from the shoulders to the hips (barely bigger than the fur under it),
+    // its front a lighter panel, with low shoulder pads, sleeves down the upper arms, a belt, and a short skirt of flaps.
     const dark = new THREE.Color(color).multiplyScalar(0.62).getHex()
     const light = new THREE.Color(color).lerp(new THREE.Color(0xd9a070), 0.25).getHex()
-    worn.add(part(cylinder(8), color, [0, 0.47, 0], [0.44, 0.36, 0.4]))
-    worn.add(part(box(), light, [0.19, 0.48, 0], [0.04, 0.28, 0.2]))
+    worn.add(part(box(), color, [0, 0.61, 0], [0.16, 0.25, 0.27]))
+    worn.add(part(box(), color, [0, 0.725, 0], [0.165, 0.075, 0.335]))
+    worn.add(part(box(), light, [0.081, 0.62, 0], [0.01, 0.18, 0.12]))
     // The collar, round the neck.
-    worn.add(part(cylinder(8), dark, [0, 0.655, 0], [0.3, 0.04, 0.28]))
-    // Shoulder pads, over the tops of the arms.
-    for (const z of [-0.2, 0.2]) worn.add(part(blob(), dark, [0, 0.63, z], [0.18, 0.09, 0.15]))
+    worn.add(part(box(), dark, [0, 0.77, 0], [0.12, 0.025, 0.14]))
+    // Shoulder pads, low over the tops of the arms.
+    for (const z of [-0.18, 0.18]) worn.add(part(box(), dark, [0, 0.765, z], [0.11, 0.035, 0.08]))
     // The belt, with its buckle.
-    worn.add(part(cylinder(8), PALETTE.barkDark, [0, 0.31, 0], [0.45, 0.05, 0.41]))
-    worn.add(part(box(), PALETTE.brass, [0.225, 0.31, 0], [0.02, 0.05, 0.06]))
-    // The skirt: flaps hanging from the belt all round, over the tops of the legs, a little splayed.
+    worn.add(part(box(), PALETTE.barkDark, [0, 0.49, 0], [0.165, 0.04, 0.27]))
+    worn.add(part(box(), PALETTE.brass, [0.084, 0.49, 0], [0.01, 0.035, 0.04]))
+    // The skirt: flaps hanging close from the belt all round, over the tops of the legs.
     for (let i = 0; i < 8; i++) {
       const turn = (i / 8) * Math.PI * 2
-      const flap = part(box(), i % 2 === 0 ? color : dark, [Math.cos(turn) * 0.17, 0.21, Math.sin(turn) * 0.15], [0.03, 0.17, 0.13])
-      flap.rotation.set(0, -turn, -0.18)
+      const flap = part(box(), i % 2 === 0 ? color : dark, [Math.cos(turn) * 0.08, 0.42, Math.sin(turn) * 0.125], [0.02, 0.11, 0.08])
+      flap.rotation.set(0, -turn, -0.06)
       worn.add(flap)
     }
     // A sleeve on each upper arm, with a dark cuff.
     for (const sleeve of sleeves) {
-      sleeve?.add(part(box(), color, [0, -0.07, 0], [0.13, 0.17, 0.13]))
-      sleeve?.add(part(box(), dark, [0, -0.155, 0], [0.135, 0.03, 0.135]))
+      sleeve?.add(part(box(), color, [0, -0.08, 0], [0.08, 0.16, 0.08]))
+      sleeve?.add(part(box(), dark, [0, -0.165, 0], [0.084, 0.02, 0.084]))
     }
     return
   }
-  for (const z of [-0.08, 0.08]) worn.add(part(box(), color, [0.01, 0.06, z], [0.15, 0.13, 0.13]))
 }
 
 // What a player holds in a hand (see `caveman`): a model of the weapon or tool, by its item key, pointing on from the
@@ -792,6 +1262,14 @@ export function heldModel(key: string): THREE.Group | undefined {
         part(cylinder(5), PALETTE.wood, [0, -0.3, 0], [0.04, 1.3, 0.04]),
         part(cone(4), key === 'flint-spear' ? PALETTE.stoneDark : PALETTE.woodLight, [0, -1.02, 0], [0.07, 0.16, 0.07], [Math.PI, 0, 0]),
       )
+    case 'oar':
+      // A long shaft with a knob at the top, and a broad flat blade at its foot.
+      return group(
+        part(cylinder(6), PALETTE.woodLight, [0, -0.45, 0], [0.045, 1.2, 0.045]),
+        part(box(), PALETTE.wood, [0, 0.16, 0], [0.07, 0.04, 0.07]),
+        part(box(), PALETTE.woodLight, [0, -1.2, 0], [0.18, 0.36, 0.03]),
+        part(box(), PALETTE.wood, [0, -1.02, 0], [0.1, 0.08, 0.04]),
+      )
     case 'bow': {
       // Two limbs bent forward from the grip, and the string between their tips.
       const made = group(
@@ -808,11 +1286,22 @@ export function heldModel(key: string): THREE.Group | undefined {
       return made
     }
     case 'sling': {
-      // A cord out to the side of the hand with the pouch on its end (the hand turns it round when it is whirled).
-      return group(
-        part(box(), PALETTE.rope, [0.2, -0.02, 0], [0.4, 0.02, 0.02]),
-        part(ball(), PALETTE.hide, [0.42, -0.02, 0], [0.08, 0.06, 0.08]),
-      )
+      // Two thin cords from the fist (a loop round a finger) down to a leather pouch cupping a stone. The cords and pouch
+      // hang from a pivot (`sling-cords`) along the hand's -y, so they hang down from the fist; turned a quarter round
+      // (see three-view's `pose`), they stand straight out to the side, to be whirled round. The stone (`sling-stone`)
+      // is gone once it has been let fly.
+      const cords = new THREE.Group()
+      cords.name = 'sling-cords'
+      const length = 0.24
+      for (const z of [-1, 1]) cords.add(stick(PALETTE.rope, [0, 0, z * 0.006], [0, -length, z * 0.034], 0.012, 4))
+      const pouch = part(geometry('slingPouch', () => new THREE.SphereGeometry(0.5, 7, 4, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2)), PALETTE.hide, [0, -length - 0.004, 0], [0.075, 0.07, 0.09])
+      pouch.material = bothSides(PALETTE.hide)
+      cords.add(pouch)
+      cords.add(part(box(), PALETTE.barkDark, [0, -length + 0.002, 0], [0.072, 0.012, 0.086]))
+      const stone = part(lump(), PALETTE.stoneDark, [0, -length - 0.006, 0], [0.06, 0.055, 0.06])
+      stone.name = 'sling-stone'
+      cords.add(stone)
+      return group(part(geometry('slingLoop', () => new THREE.TorusGeometry(0.5, 0.18, 4, 8)), PALETTE.rope, [0, 0, 0], [0.06, 0.06, 0.06], [0, Math.PI / 2, 0]), cords)
     }
     default:
       return undefined
@@ -921,9 +1410,11 @@ export function wolf(male: boolean): THREE.Group {
   return made
 }
 
-// A skeleton: bones, a skull with dark eyes, and a rusty blade held out in front.
+// A skeleton: bones, a skull with dark eyes, and a rusty sword held out in front. All of it is in a group (`body`) so it
+// can crouch and lean into a charge; the sword arm in its own (`weapon-arm`, from the shoulder) so it can be raised to
+// swing or held out to charge; and its eyes (`fury`) blaze red while it charges and dashes.
 export function skeleton(): THREE.Group {
-  const made = group(
+  const body = group(
     // The spine and ribs.
     part(box(), PALETTE.bone, [0, 0.62, 0], [0.06, 0.42, 0.06]),
     part(box(), PALETTE.bone, [0, 0.72, 0], [0.12, 0.05, 0.3]),
@@ -935,14 +1426,34 @@ export function skeleton(): THREE.Group {
     part(box(), PALETTE.boneDark, [0.06, 0.86, 0], [0.16, 0.06, 0.16]),
     part(box(), PALETTE.eye, [0.13, 0.98, -0.055], [0.02, 0.06, 0.05]),
     part(box(), PALETTE.eye, [0.13, 0.98, 0.055], [0.02, 0.06, 0.05]),
-    // The arms, one held out with a blade.
+    // The left arm hanging.
     part(box(), PALETTE.bone, [0.02, 0.6, -0.19], [0.05, 0.3, 0.05], [0.15, 0, 0]),
-    part(box(), PALETTE.bone, [0.16, 0.7, 0.18], [0.3, 0.05, 0.05]),
-    part(box(), PALETTE.rust, [0.42, 0.72, 0.18], [0.36, 0.04, 0.07]),
-    part(box(), PALETTE.barkDark, [0.27, 0.7, 0.18], [0.06, 0.1, 0.12]),
   )
-  for (const lz of [-0.07, 0.07]) made.add(part(box(), PALETTE.bone, [0, 0.19, lz], [0.06, 0.4, 0.06]))
-  return made
+  // The right arm, a rusty sword in its fist: a wrapped grip, a crossguard, and a broad, notched blade.
+  const arm = group(
+    part(box(), PALETTE.bone, [0.14, 0, 0], [0.28, 0.05, 0.05]),
+    part(box(), PALETTE.rope, [0.3, 0.02, 0], [0.12, 0.045, 0.045]),
+    part(box(), PALETTE.rust, [0.37, 0.02, 0], [0.03, 0.05, 0.2]),
+    part(box(), 0x9a8c7a, [0.66, 0.02, 0], [0.56, 0.025, 0.09]),
+    part(box(), PALETTE.rust, [0.6, 0.02, 0.03], [0.14, 0.03, 0.035]),
+    part(cone(4), 0x9a8c7a, [0.98, 0.02, 0], [0.09, 0.12, 0.025], [0, 0, -Math.PI / 2]),
+  )
+  arm.position.set(0.02, 0.7, 0.18)
+  arm.name = 'weapon-arm'
+  body.add(arm)
+  // The eyes ablaze, over the dark ones, shown only while it charges.
+  const fury = group(...[-0.055, 0.055].map((z) => {
+    const eye = new THREE.Mesh(box(), new THREE.MeshBasicMaterial({ color: 0xff2a3a }))
+    eye.position.set(0.135, 0.98, z)
+    eye.scale.set(0.03, 0.08, 0.07)
+    return eye
+  }))
+  fury.name = 'fury'
+  fury.visible = false
+  body.add(fury)
+  for (const lz of [-0.07, 0.07]) body.add(part(box(), PALETTE.bone, [0, 0.19, lz], [0.06, 0.4, 0.06]))
+  body.name = 'body'
+  return group(body)
 }
 
 // A skeleton archer: a skeleton with a bow held out in its left hand, a quiver of arrows on its back, and its right
@@ -1002,14 +1513,44 @@ export function frostLich(): THREE.Group {
     part(cone(4), PALETTE.ice, [0, 1.3, -0.08], [0.06, 0.18, 0.06]),
     part(cone(4), PALETTE.ice, [0.04, 1.33, 0], [0.07, 0.24, 0.07]),
     part(cone(4), PALETTE.ice, [0, 1.3, 0.08], [0.06, 0.18, 0.06]),
-    // Bony hands, and the staff.
+    // A bony hand.
     part(box(), PALETTE.bone, [0.24, 0.72, -0.26], [0.06, 0.24, 0.06], [0.4, 0, 0.3]),
-    part(cylinder(6), PALETTE.barkDark, [0.3, 0.72, 0.3], [0.05, 1.5, 0.05]),
-    part(box(), PALETTE.bone, [0.3, 0.8, 0.3], [0.08, 0.08, 0.08]),
-    part(blob(), PALETTE.iceDeep, [0.3, 1.52, 0.3], [0.2, 0.26, 0.2]),
-    part(blob(), PALETTE.ice, [0.3, 1.55, 0.3], [0.12, 0.16, 0.12]),
   )
+  // The staff in the other hand, in its own group (`staff`), turning about the hand that holds it (the group's middle,
+  // at the hand: `baseY` up), to be raised or levelled as it casts, its crystal glowing then (`glow`). Forward is +x.
+  const hand = { x: 0.3, y: 0.8, z: 0.3 }
+  const staff = group(
+    part(cylinder(6), PALETTE.barkDark, [0, 0.72 - hand.y, 0], [0.05, 1.5, 0.05]),
+    part(box(), PALETTE.bone, [0, 0, 0], [0.08, 0.08, 0.08]),
+    part(blob(), PALETTE.iceDeep, [0, 1.52 - hand.y, 0], [0.2, 0.26, 0.2]),
+    part(blob(), PALETTE.ice, [0, 1.55 - hand.y, 0], [0.12, 0.16, 0.12]),
+  )
+  staff.position.set(hand.x, hand.y, hand.z)
+  staff.userData.baseY = hand.y
+  staff.name = 'staff'
+  const glow = new THREE.Mesh(ball(), new THREE.MeshBasicMaterial({ color: 0xbfe8ff, transparent: true, opacity: 0.55, depthWrite: false }))
+  glow.position.set(0, 1.54 - hand.y, 0)
+  glow.scale.setScalar(0.4)
+  glow.name = 'glow'
+  glow.visible = false
+  staff.add(glow)
+  made.add(staff)
   return made
+}
+
+// A frozen wisp, called up by the frost lich: a glowing knot of ice, a bright core in it, trailing shards. It floats,
+// and the view bobs it.
+export function frostWisp(): THREE.Group {
+  const glow = new THREE.Mesh(ball(), new THREE.MeshBasicMaterial({ color: 0xd8f2ff, transparent: true, opacity: 0.35, depthWrite: false }))
+  glow.position.set(0, 0.55, 0)
+  glow.scale.setScalar(0.55)
+  return group(
+    glow,
+    part(blob(), PALETTE.iceDeep, [0, 0.55, 0], [0.32, 0.36, 0.32], [0.3, 0.5, 0.2]),
+    part(blob(), PALETTE.ice, [0.02, 0.57, 0], [0.2, 0.22, 0.2]),
+    part(cone(4), PALETTE.ice, [-0.2, 0.5, 0.06], [0.06, 0.22, 0.06], [0, 0, Math.PI / 2 + 0.3]),
+    part(cone(4), PALETTE.iceDeep, [-0.22, 0.6, -0.06], [0.05, 0.18, 0.05], [0, 0, Math.PI / 2 - 0.2]),
+  )
 }
 
 // The ice door that seals the frost lich's hall: a slab of blue ice filling the doorway, frosted, with dark bars of
@@ -1078,10 +1619,52 @@ export function dungeonExit(): THREE.Group {
   return made
 }
 
+// ---- rafts
+
+// A raft (see rafts.ts), 1.5 tiles a side, its middle at the model's, floating with its deck just over the ground's
+// level (so whoever stands on it stands as on land) and its logs half under the water: seven logs side by side along
+// x, each a little different in length and shade, lashed together with rope at both ends over two beams across under
+// them.
+export function raft(): THREE.Group {
+  const made = group()
+  const logs = 7
+  const size = 1.5
+  const thick = size / logs
+  const shades = [PALETTE.bark, 0x7a5636, PALETTE.barkDark, 0x6f4d2f, PALETTE.bark, 0x80593a, 0x5e4128]
+  for (let i = 0; i < logs; i++) {
+    const z = -size / 2 + thick * (i + 0.5)
+    const long = size - ((i * 5) % 3) * 0.03
+    const log = part(cylinder(7), shades[i], [((i * 3) % 3 - 1) * 0.012, 0.02 - thick / 2, z], [thick * 0.98, long, thick * 0.98], [0, 0, Math.PI / 2])
+    log.rotation.x = i * 0.7
+    made.add(log)
+    // The cut ends, paler.
+    for (const end of [-1, 1]) made.add(part(cylinder(7), PALETTE.woodLight, [end * (long / 2 + 0.002), 0.02 - thick / 2, z], [thick * 0.8, 0.006, thick * 0.8], [0, 0, Math.PI / 2]))
+  }
+  for (const x of [-0.55, 0.55]) {
+    made.add(part(box(), PALETTE.barkDark, [x, -0.17, 0], [0.12, 0.08, size * 0.96]))
+    made.add(part(box(), PALETTE.rope, [x, 0.025, 0], [0.06, 0.02, size * 1.01]))
+    for (let i = 0; i < logs; i++) made.add(part(box(), PALETTE.rope, [x, 0.02 - thick / 2, -size / 2 + thick * (i + 0.5)], [0.065, thick * 1.04, 0.025]))
+  }
+  // A short stick standing up from its middle, for a rope (RAFT_POST_HEIGHT tall), with a groove cut round its top.
+  made.add(part(cylinder(6), PALETTE.wood, [0, 0.03 + RAFT_POST_HEIGHT / 2, 0], [0.07, RAFT_POST_HEIGHT, 0.07]))
+  made.add(part(cylinder(6), PALETTE.barkDark, [0, RAFT_POST_HEIGHT - 0.04, 0], [0.075, 0.025, 0.075]))
+  return made
+}
+
+// How tall the post in a raft's middle is (tiles): where a rope on it is tied.
+export const RAFT_POST_HEIGHT = 0.42
+
 // ---- what flies
 
-// An arrow, a spear (longer), or a sling stone, pointing along +x.
+// An arrow, a thrown spear, a sling stone, a shard of ice or an icicle, pointing along +x.
 export function projectile(kind: 'arrow' | 'spear' | 'stone' | 'shard' | 'icicle'): THREE.Group {
+  if (kind === 'spear') {
+    return group(
+      part(cylinder(5), PALETTE.wood, [0, 0, 0], [0.05, 1.2, 0.05], [0, 0, Math.PI / 2]),
+      part(cone(4), PALETTE.stoneDark, [0.66, 0, 0], [0.09, 0.2, 0.06], [0, 0, -Math.PI / 2]),
+      part(box(), PALETTE.rope, [0.52, 0, 0], [0.07, 0.065, 0.065]),
+    )
+  }
   if (kind === 'stone') return group(part(lump(), PALETTE.stoneDark, [0, 0, 0], [0.14, 0.12, 0.14]))
   // A shard of ice, long and sharp, along +x.
   if (kind === 'shard') {
@@ -1094,12 +1677,11 @@ export function projectile(kind: 'arrow' | 'spear' | 'stone' | 'shard' | 'icicle
   if (kind === 'icicle') {
     return group(part(cone(5), PALETTE.ice, [0, 0.35, 0], [0.3, 0.9, 0.3], [Math.PI, 0, 0]), part(cone(5), PALETTE.iceDeep, [0.06, 0.55, 0.04], [0.14, 0.5, 0.14], [Math.PI, 0, 0]))
   }
-  const length = kind === 'spear' ? 1.3 : 0.6
+  const length = 0.6
   return group(
     part(cylinder(5), PALETTE.wood, [0, 0, 0], [0.04, length, 0.04], [0, 0, Math.PI / 2]),
     part(cone(4), PALETTE.stoneDark, [length / 2 + 0.06, 0, 0], [0.08, 0.14, 0.08], [0, 0, -Math.PI / 2]),
-    ...(kind === 'arrow' ? [part(box(), 0xf2efe6, [-length / 2 + 0.06, 0, 0], [0.12, 0.08, 0.01])] : []),
+    part(box(), 0xf2efe6, [-length / 2 + 0.06, 0, 0], [0.12, 0.08, 0.01]),
   )
 }
 
-export const WATER_COLOR = PALETTE.water

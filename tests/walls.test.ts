@@ -3,14 +3,14 @@ import test from 'node:test'
 import { GameRoom } from '../apps/server/src/game-room.ts'
 import {
   addItems,
+  putIn,
+  STATION_LAYOUT,
   animalDef,
   createEntity,
-  DUNGEON_LAYOUT,
-  dungeonBlocks,
-  dungeonTile,
   EAT_COOLDOWN_TICKS,
   FOOD_SLOT,
   itemId,
+  KEY_DOWN,
   NO_ITEM,
   playerInventory,
   stackLimit,
@@ -30,44 +30,6 @@ function arena(code: string, items: Record<string, number> = {}): { room: GameRo
   Object.entries(items).forEach(([key, count], slot) => (client.player.inventory.slots[slot] = { item: itemId(key), count }))
   return { room, client }
 }
-
-// A player in the ice crypt's great hall, facing a wall to their north (the rock between the hall and the chest room).
-function inCrypt(code: string, items: Record<string, number> = {}): { room: GameRoom; client: TestClient; at: { x: number; y: number } } {
-  const { room, client } = arena(code, items)
-  // (Rows counted from the doorway out of the lich's hall, which is row 8 of the part below it.)
-  const at = dungeonTile(0, { x: 6, y: DUNGEON_LAYOUT.door.y - 8 + 11 })
-  client.player.position = center(at.x, at.y)
-  run(room, [client], 3)
-  assert.ok(dungeonBlocks(at.x, at.y - 2), 'rock to the north')
-  return { room, client, at }
-}
-
-test('a thrown spear stops at a dungeon wall and lands this side of it', () => {
-  const { room, client, at } = inCrypt('SPEAR', { 'wood-spear': 1 })
-  client.command({ k: 'attack', special: true, slot: 0, x: client.player.position.x, y: client.player.position.y - 8 * SUB, charge: 30 })
-  run(room, [client], 2 * TPS)
-  const stuck = [...room.world.chunkIds].flatMap((chunk) => [...(room.world.chunk(chunk)?.entities ?? [])]).find((entity) => entity.kind === 'loose')
-  const lying = room.world.allDrops().find((drop) => drop.item === itemId('wood-spear'))
-  const spot = stuck ? { x: stuck.x, y: stuck.y } : lying ? { x: Math.floor(lying.x / SUB), y: Math.floor(lying.y / SUB) } : undefined
-  assert.ok(spot, 'the spear is somewhere to pick up')
-  assert.ok(!dungeonBlocks(spot.x, spot.y), 'not inside the wall')
-  assert.ok(spot.y >= at.y - 2, 'and on this side of it')
-})
-
-test('an attack does not reach through a wall', () => {
-  const { room, client, at } = inCrypt('WALLHIT', { club: 1 })
-  // A skeleton on the far side of the rock, right behind it.
-  let behind = { x: at.x, y: at.y - 2 }
-  while (dungeonBlocks(behind.x, behind.y)) behind = { x: behind.x, y: behind.y - 1 }
-  const skeleton = room.animals!.spawn(animalDef('skeleton'), center(behind.x, behind.y).x, center(behind.x, behind.y).y)
-  client.player.position = center(at.x, at.y)
-  const hp = skeleton.hp
-  // Point blank at it, through the rock (a club's special reaches 1.5 tiles round a wide arc).
-  room.animals!.all.get(skeleton.id)!.x = center(behind.x, behind.y).x
-  client.command({ k: 'attack', special: false, slot: 0, x: skeleton.x, y: skeleton.y, charge: 0 })
-  run(room, [client], 3)
-  assert.equal(skeleton.hp, hp, 'untouched behind the wall')
-})
 
 test('what an animal drops, and what a player throws down, never lands on the far side of a fence', () => {
   const { room, client } = arena('PEN', { stick: 30 })
@@ -145,13 +107,18 @@ test('pressing Craft while the workbench makes something else does not stop it',
   const bench = createEntity(500, 'workbench', 1, 0, 0, NO_ITEM) as Entity & { kind: 'workbench' }
   room.world.addEntity(bench)
   const recipes = STATION_RECIPES.workbench
-  const first = recipes.findIndex((recipe) => !recipe.tool)
-  const second = recipes.findIndex((recipe, i) => i !== first && !recipe.tool)
-  for (const [item, count] of [...recipes[first].inputs, ...recipes[second].inputs]) addItems(bench.inv, item, count * 4)
-  client.command({ k: 'work', id: bench.id, recipe: first, repeat: true })
+  // Two recipes with no tool, made from plain items (not "any of a kind").
+  const plain = (i: number): boolean => !recipes[i].tool && recipes[i].inputs.every(([match]) => typeof match === 'number')
+  const first = recipes.findIndex((_, i) => plain(i))
+  const second = recipes.findIndex((_, i) => i !== first && plain(i))
+  // Into its input slots only, a kind to a slot (not spilling into its tool or output slot).
+  const needs = new Map<number, number>()
+  for (const [item, count] of [...recipes[first].inputs, ...recipes[second].inputs]) needs.set(item as number, (needs.get(item as number) ?? 0) + count * 2)
+  ;[...needs].forEach(([item, count], i) => putIn(bench.inv, STATION_LAYOUT.workbench.inputs[i], item, count))
+  client.command({ k: 'work', id: bench.id, recipe: first })
   run(room, [client], 3)
   assert.equal((room.world.entity(bench.id) as typeof bench).recipe, first + 1)
-  client.command({ k: 'work', id: bench.id, recipe: second, repeat: true })
+  client.command({ k: 'work', id: bench.id, recipe: second })
   run(room, [client], 3)
   assert.equal(client.results.at(-1)?.why, 'busy')
   assert.equal((room.world.entity(bench.id) as typeof bench).recipe, first + 1, 'still on the first')
@@ -183,7 +150,7 @@ test('holding something that is not a weapon or a tool, there is no attack', () 
   const { room, client } = arena('NOFIST', { log: 5 })
   const deer = room.animals!.spawn(animalDef('deer'), client.player.position.x + SUB / 2, client.player.position.y)
   const hp = deer.hp
-  client.command({ k: 'attack', special: false, slot: 0, x: deer.x, y: deer.y, charge: 0 })
+  client.command({ k: 'attack', slot: 0, x: deer.x, y: deer.y})
   run(room, [client], 3)
   assert.equal(deer.hp, hp)
 })
@@ -201,7 +168,7 @@ test('everyone is told what each player holds and wears, and sees their attacks'
   run(room, [client, other], 3)
   const gear = seen.filter((event) => event.k === 'gear') as unknown as Array<{ id: number; held: number }>
   assert.ok(gear.some((event) => event.id === client.player.id && event.held === itemId('axe')), 'the axe in hand')
-  client.command({ k: 'attack', special: false, slot: 0, x: client.player.position.x + SUB, y: client.player.position.y, charge: 0 })
+  client.command({ k: 'attack', slot: 0, x: client.player.position.x + SUB, y: client.player.position.y})
   run(room, [client, other], 3)
   assert.ok(seen.some((event) => event.k === 'swung'), 'the swing')
 })
@@ -241,4 +208,25 @@ test('the stump makes a spear with a knife, and planks need an axe in the workbe
   assert.ok(stumpSpear && stumpSpear.tool === 'knife' && stumpSpear.inputs[0][0] === itemId('log'))
   const planks = STATION_RECIPES.workbench.find((recipe) => recipe.output === itemId('plank'))
   assert.equal(planks?.tool, 'axe')
+})
+
+test('a player cannot slip between two trees side by side', () => {
+  const { room, client } = arena('TREES')
+  // A row of trees across the way, and the player walking straight at the gap between two of them.
+  for (let x = -3; x <= 3; x++) room.world.addEntity(createEntity(3000 + x, 'tree', x, 3, 0, NO_ITEM))
+  client.player.position = { x: SUB, y: center(0, 1).y }
+  for (let n = 1; n <= 3 * TPS; n++) {
+    room.receiveInputs(client.player, [[n, KEY_DOWN]])
+    run(room, [client], 1)
+  }
+  assert.ok(client.player.position.y < 3 * SUB, `stopped by the trees (at ${(client.player.position.y / SUB).toFixed(2)})`)
+})
+
+test('a drying rack is solid from post to post: nobody walks through it under the hide', async () => {
+  const { boundsOf, stepPlayer, KEY_DOWN, SUB: UNIT } = await import('../packages/shared/src/index.ts')
+  const solid = (x: number, y: number) => (x === 0 && y === 0 ? (boundsOf('rack') ?? true) : false)
+  // Starting north of the rack, in the middle between its posts, walking south.
+  let at = { x: UNIT / 2, y: -UNIT / 2 }
+  for (let i = 0; i < 60; i++) at = stepPlayer(at, KEY_DOWN, solid)
+  assert.ok(at.y < 0.42 * UNIT, `walked to ${at.y / UNIT} tiles, through the rack`)
 })

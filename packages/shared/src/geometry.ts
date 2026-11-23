@@ -8,12 +8,6 @@ export const WEST: Direction = 2
 export const NORTH: Direction = 3
 export const DIR_X: readonly number[] = [1, 0, -1, 0]
 export const DIR_Y: readonly number[] = [0, 1, 0, -1]
-export const DIRECTION_NAMES: readonly string[] = ['east', 'south', 'west', 'north']
-
-export function isDirection(value: unknown): value is Direction {
-  return value === 0 || value === 1 || value === 2 || value === 3
-}
-
 export function opposite(dir: Direction): Direction {
   return ((dir + 2) & 3) as Direction
 }
@@ -56,6 +50,11 @@ export function chunkOfTile(x: number, y: number): number {
 // The tile a fixed-point position is on.
 export function tileOfUnits(units: number): number {
   return floorDiv(units, SUB)
+}
+
+// The middle of a tile, in units.
+export function tileMiddle(x: number, y: number): { x: number; y: number } {
+  return { x: x * SUB + SUB / 2, y: y * SUB + SUB / 2 }
 }
 
 // A tile's place inside its chunk, 0 to CHUNK_SIZE² - 1, row by row.

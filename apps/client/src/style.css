@@ -324,29 +324,6 @@ input {
   font-family: var(--mono);
 }
 
-.keys {
-  position: absolute;
-  top: 0.75rem;
-  right: 0.75rem;
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 0.35rem 0.8rem;
-  max-width: 50%;
-  padding: 0.35rem 0.6rem;
-  border: 1px solid var(--line);
-  background: var(--panel);
-  color: var(--muted);
-  font-size: 0.8rem;
-  pointer-events: none;
-}
-
-.key-hint {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-}
-
 kbd {
   padding: 0.05rem 0.35rem;
   border: 1px solid var(--line-strong);
@@ -450,8 +427,8 @@ kbd {
 }
 
 .hotbar-icon {
-  width: 44px;
-  height: 44px;
+  width: 48px;
+  height: 48px;
   margin-top: 4px;
 }
 
@@ -886,6 +863,95 @@ kbd {
 }
 
 /* What the player has just picked up, over the hotbar on the right. */
+/* Who comes and goes, under the bar at the top left. */
+.notice-feed {
+  position: absolute;
+  top: 3.4rem;
+  left: 0.75rem;
+  display: grid;
+  justify-items: start;
+  gap: 0.25rem;
+  pointer-events: none;
+}
+
+.notice-line {
+  padding: 0.2rem 0.6rem;
+  border-left: 3px solid #7fc4ff;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 0.85rem;
+  transition: opacity 0.6s;
+}
+
+.notice-line.is-fading {
+  opacity: 0;
+}
+
+/* Who is playing, held open with Tab. */
+.player-list {
+  position: absolute;
+  top: 18%;
+  left: 50%;
+  min-width: 18rem;
+  max-width: min(28rem, 90%);
+  padding: 0.9rem 1.1rem;
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.player-list[hidden] {
+  display: none;
+}
+
+.player-list-title {
+  margin: 0 0 0.6rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.player-list-names {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.player-list-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.5rem;
+  border-left: 3px solid var(--line);
+}
+
+.player-list-row.is-you {
+  border-left-color: var(--accent);
+}
+
+.player-list-name {
+  flex: 1;
+  font-weight: 700;
+}
+
+.player-list-tag {
+  padding: 0.05rem 0.4rem;
+  border: 1px solid var(--line-strong);
+  color: var(--muted);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+}
+
+.player-list-tag.is-you {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .pickup-feed {
   position: absolute;
   right: 0.9rem;
@@ -908,21 +974,22 @@ kbd {
   opacity: 0;
 }
 
-/* A book of recipes: a list that scrolls, grouped by category, and the one picked under it. */
+/* A book of recipes: a grid of their pictures that scrolls, under a short heading for each group, and the one picked
+   under it. */
 .recipe-book {
-  width: 17rem;
+  width: 22rem;
 }
 
 .recipe-list {
-  max-height: 13.5rem;
+  max-height: 16rem;
   overflow-y: auto;
   margin: 0 -0.75rem;
-  padding: 0 0.75rem;
+  padding: 0 0.75rem 0.5rem;
   border-bottom: 1px solid var(--line);
 }
 
 .recipe-category {
-  margin: 0.5rem 0 0.25rem;
+  margin: 0.55rem 0 0.3rem;
   color: var(--muted);
   font-size: 0.7rem;
   font-weight: 700;
@@ -930,36 +997,83 @@ kbd {
   text-transform: uppercase;
 }
 
-.recipe-row {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  width: 100%;
-  margin-bottom: 2px;
-  padding: 0.2rem 0.4rem;
-  border: 1px solid transparent;
+.recipe-category:first-child {
+  margin-top: 0.1rem;
+}
+
+.recipe-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, 44px);
+  gap: 3px;
+}
+
+.recipe-tile {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid var(--line);
   background: var(--slot);
-  text-align: left;
-  font-size: 0.85rem;
   cursor: pointer;
 }
 
-.recipe-row .slot-icon {
-  width: 24px;
-  height: 24px;
+.recipe-tile .slot-icon {
+  width: 32px;
+  height: 32px;
 }
 
-.recipe-row:hover {
+.recipe-tile:hover {
   border-color: var(--line-strong);
 }
 
-.recipe-row.is-selected {
-  border-color: var(--accent);
+.recipe-tile.is-selected {
+  border: 2px solid var(--accent);
   background: var(--panel-raised);
 }
 
-.recipe-row.is-locked {
-  opacity: 0.4;
+.recipe-tile.is-locked .slot-icon {
+  opacity: 0.35;
+}
+
+.recipe-tile-count {
+  position: absolute;
+  right: 2px;
+  bottom: 0;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+/* A dry recipe in a barrel: on its row, a drop struck through. */
+
+.no-liquid {
+  position: relative;
+}
+
+.no-liquid::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: -30%;
+  width: 160%;
+  height: 2px;
+  background: #d9483b;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
+  transform: translateY(-50%) rotate(90deg);
+}
+
+.recipe-tile-heat {
+  position: absolute;
+  top: 0;
+  right: 1px;
+  color: #ff8a2a;
+  font-family: var(--mono);
+  font-size: 0.6rem;
+  font-weight: 700;
+  pointer-events: none;
 }
 
 .recipe-detail {
@@ -973,8 +1087,8 @@ kbd {
 }
 
 .recipe-detail-img {
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
 }
 
 .recipe-detail-name {
@@ -997,12 +1111,52 @@ kbd {
 }
 
 .recipe-need .slot-icon {
-  width: 20px;
-  height: 20px;
+  width: 16px;
+  height: 16px;
 }
 
 .recipe-need-name {
   flex: 1;
+}
+
+/* A liquid as itself: a drop of it. */
+.liquid-drop {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border-radius: 50% 0 50% 50%;
+  transform: rotate(-45deg) scale(0.8);
+  box-shadow: inset -2px -2px 0 rgba(0, 0, 0, 0.25), inset 2px 2px 0 rgba(255, 255, 255, 0.3);
+}
+
+.liquid-drop.is-water {
+  background: #4d8fd1;
+}
+
+.liquid-drop.is-salt {
+  background: #3f8aa0;
+}
+
+.liquid-drop.is-tannin {
+  background: #7a4a22;
+}
+
+.liquid-drop.is-milk {
+  background: #f0ece0;
+}
+
+.recipe-detail-img.liquid-drop {
+  width: 32px;
+  height: 32px;
+}
+
+/* The heat a recipe needs: a little flame, and on its row in the list, the degrees. */
+.heat-icon {
+  display: inline-block;
+  width: 14px;
+  height: 18px;
+  border-radius: 50% 50% 50% 50% / 60% 60% 40% 40%;
+  background: radial-gradient(circle at 50% 70%, #ffe08a 0 30%, #ff8a2a 31% 70%, #d9483b 71%);
 }
 
 .recipe-need-count {
@@ -1046,9 +1200,8 @@ kbd {
 .station-inputs {
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 0.6rem;
-  padding: 0.5rem;
-  border: 1px dashed var(--line);
 }
 
 .station-slot {
@@ -1061,37 +1214,65 @@ kbd {
   grid-template-columns: 48px;
 }
 
-.station-label {
-  width: 3.4rem;
-  color: var(--muted);
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+/* A station: its tool slot to the left of the slots it works from, marked only by a small knife in its corner. */
+.station-inputs-tooled {
+  flex-direction: row;
+  gap: 0.75rem;
 }
 
-.station-slot-output {
-  padding: 0.5rem;
-  border: 1px solid var(--accent);
-}
-
-.station-arrow {
+.station-input-column {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  width: 4.5rem;
-  gap: 0.2rem;
+  gap: 0.6rem;
 }
 
-.station-arrow-head {
-  color: var(--muted);
-  font-size: 1.6rem;
-  line-height: 1;
+/* A station's four input slots, two by two. */
+.station-input-square {
+  display: grid;
+  grid-template-columns: repeat(2, auto);
+  gap: 0.6rem;
 }
 
-.station-arrow .progress {
-  width: 100%;
-  margin: 0;
+.station-slot-tool .slot::after {
+  content: '';
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 12px;
+  height: 12px;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M3 21l7-7' stroke='%23a89a86' stroke-width='3' stroke-linecap='round'/%3E%3Cpath d='M10 14 20 3c1 3 0 7-6 13z' fill='%23c9ccd2'/%3E%3C/svg%3E") center / contain no-repeat;
+  opacity: 0.75;
+  pointer-events: none;
+}
+
+/* A campfire's flame, between what cooks and the fuel: it burns down as the fuel does. */
+.station-flame {
+  position: relative;
+  width: 22px;
+  height: 22px;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2c1 4 6 6 6 12a6 6 0 0 1-12 0c0-3 2-5 3-7 0 2 1 3 2 3 0-3 0-5 1-8z' fill='%23555a63'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+.station-flame-fill {
+  position: absolute;
+  inset: 0;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2c1 4 6 6 6 12a6 6 0 0 1-12 0c0-3 2-5 3-7 0 2 1 3 2 3 0-3 0-5 1-8z' fill='%23f08a2c'/%3E%3C/svg%3E") center / contain no-repeat;
+  clip-path: inset(calc(100% * (1 - var(--burn, 0))) 0 0 0);
+}
+
+/* The progress arrow, pointing at what comes out, filling from its tail as the work goes on. */
+.station-arrow {
+  position: relative;
+  width: 4.6rem;
+  height: 2rem;
+  clip-path: polygon(0 32%, 62% 32%, 62% 0, 100% 50%, 62% 100%, 62% 68%, 0 68%);
+  background: var(--line);
+}
+
+.station-arrow .progress-fill {
+  position: absolute;
+  inset: 0;
+  height: auto;
 }
 
 /* The name of what is under the mouse. */
@@ -1168,6 +1349,10 @@ kbd {
   background: #ece6d6;
 }
 
+.gauge-fill.is-salt {
+  background: #3f8aa0;
+}
+
 .gauge-fill.is-tannin {
   background: #8a5a2a;
 }
@@ -1213,38 +1398,156 @@ kbd {
   text-align: center;
 }
 
-/* Armour and the ammunition slot, side by side over the inventory. */
+/* Health and, beside it, how warm the body is. */
+.vitals {
+  display: grid;
+  grid-template-columns: 1fr 5.5rem;
+  gap: 4px;
+}
+
+.body-bar {
+  position: relative;
+  height: 14px;
+  background: var(--slot);
+  border: 1px solid var(--line-strong);
+}
+
+.body-fill {
+  height: 100%;
+  transform-origin: left;
+  transition: background-color 0.4s;
+}
+
+.body-fill.is-warm {
+  background: #e08a3a;
+}
+
+.body-fill.is-cold {
+  background: #8cc4ef;
+}
+
+.body-fill.is-freezing {
+  background: #4a7ec4;
+}
+
+.body-fill.is-deadly {
+  background: #3a3f9e;
+}
+
+.body-text {
+  position: absolute;
+  inset: 0;
+  font-size: 0.65rem;
+  font-weight: 700;
+  line-height: 12px;
+  text-align: center;
+}
+
+/* Armour on the left over the inventory; the ammunition, food and trash slots on the right. */
 .gear-row {
   display: flex;
   justify-content: space-between;
   gap: 1rem;
+  margin-bottom: 0.6rem;
+}
+
+.gear-side {
+  display: flex;
+  gap: 3px;
 }
 
 .slot-grid.is-ammo {
   grid-template-columns: 48px;
 }
 
+/* What goes in a special slot, drawn faintly in it while it is empty. */
+.slot-mark {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
+.slot-mark svg {
+  width: 28px;
+  height: 28px;
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.55;
+}
+
+.marked-slot:not(.is-empty) .slot-mark {
+  display: none;
+}
+
+/* The trash: a red bin, so nothing is put there by mistake. */
+
+/* A bin, drawn: its lid (with a handle) and its body; small in the corner once something is in it. */
+.trash-mark {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 16px;
+  height: 18px;
+  transform: translate(-50%, -40%);
+  border: 2px solid #e0705f;
+  border-top: none;
+  border-radius: 0 0 3px 3px;
+  pointer-events: none;
+  opacity: 0.85;
+}
+
+.trash-mark::before {
+  content: "";
+  position: absolute;
+  left: -5px;
+  right: -5px;
+  top: -4px;
+  height: 2px;
+  background: #e0705f;
+}
+
+.trash-mark::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  top: -7px;
+  height: 3px;
+  border: 2px solid #e0705f;
+  border-bottom: none;
+}
+
+.trash-slot:not(.is-empty) .trash-mark {
+  left: auto;
+  top: 4px;
+  right: 3px;
+  width: 8px;
+  height: 9px;
+  transform: none;
+  border-width: 1px;
+  opacity: 0.9;
+}
+
+.trash-slot:not(.is-empty) .trash-mark::before {
+  left: -3px;
+  right: -3px;
+  top: -2px;
+  height: 1px;
+}
+
+.trash-slot:not(.is-empty) .trash-mark::after {
+  display: none;
+}
+
 /* What the player wears: a slot each for the head, body and feet. */
 .armour-row {
   display: flex;
   gap: 3px;
-  margin-bottom: 0.6rem;
-}
-
-.armour-label {
-  position: absolute;
-  inset: auto 0 2px;
-  text-align: center;
-  pointer-events: none;
-  color: var(--muted);
-  font-size: 0.6rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.armour-slot:not(.is-empty) .armour-label {
-  display: none;
 }
 
 .menu-note {
@@ -1339,7 +1642,7 @@ kbd {
   padding: 0.5rem 0;
 }
 
-/* Making a world: its size and how ragged its coasts are. */
+/* Making a world: its size. */
 .terrain-row {
   margin-bottom: 0.9rem;
 }
@@ -1351,20 +1654,6 @@ kbd {
 
 select.field-input {
   color: var(--text);
-}
-
-.field-range {
-  flex: 1;
-  min-width: 0;
-  accent-color: var(--accent);
-}
-
-.field-value {
-  width: 2.2rem;
-  align-self: center;
-  color: var(--text);
-  text-align: right;
-  font-variant-numeric: tabular-nums;
 }
 
 /* The snow blowing over the world in the cold (drawn by snowstorm-view.ts). */
@@ -1473,4 +1762,107 @@ select.field-input {
   background: linear-gradient(to bottom, #9fd6ff, #3f7fc4);
   transform-origin: left;
   transition: transform 0.15s;
+}
+
+/* The map (M): a card in the middle of the screen, the world on it a pixel to a tile, scaled up sharp. */
+.map-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(6, 10, 14, 0.55);
+  pointer-events: none;
+}
+
+.map-overlay[hidden] {
+  display: none;
+}
+
+.map-card {
+  display: grid;
+  justify-items: center;
+  gap: 0.5rem;
+  padding: 0.8rem 1rem;
+  border: 1px solid var(--line-strong);
+  background: var(--panel);
+}
+
+.map-title {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.map-canvas {
+  max-width: 80vw;
+  max-height: 75vh;
+  image-rendering: pixelated;
+  cursor: grab;
+  touch-action: none;
+  /* The overlay lets clicks through to the world; the map itself takes them, to be dragged. */
+  pointer-events: auto;
+}
+
+.map-canvas.is-panning {
+  cursor: grabbing;
+}
+
+.map-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+/* A tool is one of its kind: no count in the tool slot (the knife mark sits in that corner). */
+.station-slot-tool .slot-count {
+  display: none;
+}
+
+/* What a machine is doing, small, at the foot of its panel. */
+.machine-status {
+  margin: 0.45rem 0 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-style: italic;
+}
+
+/* Scroll bars in the panels' colours: thin, a dark track and a bar like a slot's edge. */
+.recipe-list,
+.controls-scroll,
+.world-list {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) var(--slot);
+}
+
+.recipe-list::-webkit-scrollbar,
+.controls-scroll::-webkit-scrollbar,
+.world-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.recipe-list::-webkit-scrollbar-track,
+.controls-scroll::-webkit-scrollbar-track,
+.world-list::-webkit-scrollbar-track {
+  background: var(--slot);
+}
+
+.recipe-list::-webkit-scrollbar-thumb,
+.controls-scroll::-webkit-scrollbar-thumb,
+.world-list::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border: 1px solid var(--slot);
+}
+
+.recipe-list::-webkit-scrollbar-thumb:hover,
+.controls-scroll::-webkit-scrollbar-thumb:hover,
+.world-list::-webkit-scrollbar-thumb:hover {
+  background: var(--accent-dark);
+}
+
+/* What is being made by hand, under the crafting book. */
+.recipe-book .hand-craft {
+  margin-top: 0.6rem;
 }

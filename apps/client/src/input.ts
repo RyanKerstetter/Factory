@@ -21,20 +21,14 @@ export class HeldKeys {
     this.held.clear()
   }
 
-  // With `turned` (the isometric view, whose screen is turned 45° from the world's grid), up on the screen is north-west
-  // in the world, right is north-east, and so on, so the keys go the way they point on the screen.
-  movement(turned = false): number {
+  // The movement keys held, as the bits an input is made of (see movement.ts).
+  movement(): number {
     let keys = 0
     for (const code of this.held) {
       const action = this.settings.actionOf(code)
       if (action) keys |= MOVEMENT[action] ?? 0
     }
-    if (!turned) return keys
-    const right = (keys & KEY_RIGHT ? 1 : 0) - (keys & KEY_LEFT ? 1 : 0)
-    const down = (keys & KEY_DOWN ? 1 : 0) - (keys & KEY_UP ? 1 : 0)
-    const east = right + down
-    const south = down - right
-    return (east > 0 ? KEY_RIGHT : east < 0 ? KEY_LEFT : 0) | (south > 0 ? KEY_DOWN : south < 0 ? KEY_UP : 0)
+    return keys
   }
 }
 

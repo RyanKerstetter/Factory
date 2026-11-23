@@ -53,7 +53,7 @@ export function createMenuView(
     made.autocomplete = 'off'
     return made
   }
-  const label = (text: string, target: HTMLInputElement): HTMLLabelElement => {
+  const label = (text: string, target: HTMLElement): HTMLLabelElement => {
     const made = element('label', 'field-label', text)
     made.htmlFor = target.id
     return made
@@ -80,20 +80,8 @@ export function createMenuView(
     sizeSelect.append(option)
   }
   sizeSelect.value = DEFAULT_TERRAIN.size
-  const bumpInput = element('input', 'field-range')
-  bumpInput.id = 'menu-bumpiness'
-  bumpInput.type = 'range'
-  bumpInput.min = '0'
-  bumpInput.max = '100'
-  bumpInput.step = '5'
-  bumpInput.value = `${DEFAULT_TERRAIN.bumpiness}`
-  const bumpValue = element('span', 'field-value', bumpInput.value)
-  bumpInput.addEventListener('input', () => (bumpValue.textContent = bumpInput.value))
-  const terrain = (): TerrainSettings => ({ size: sizeSelect.value as WorldSize, bumpiness: Number(bumpInput.value) })
-  const sizeLabel = element('label', 'field-label', 'World size')
-  sizeLabel.htmlFor = sizeSelect.id
-  const bumpLabel = element('label', 'field-label', 'Coastline bumpiness')
-  bumpLabel.htmlFor = bumpInput.id
+  const terrain = (): TerrainSettings => ({ size: sizeSelect.value as WorldSize })
+  const sizeLabel = label('World size', sizeSelect)
   const createButton = button('btn btn-primary', 'Create game', () => handlers.onCreate(playerName(), worldInput.value, seedInput.value, terrain()))
   onEnter(worldInput, createButton)
   onEnter(seedInput, createButton)
@@ -105,7 +93,7 @@ export function createMenuView(
     'menu-pane',
     label('World name', worldInput),
     worldInput,
-    element('div', 'field-row terrain-row', element('div', 'field-stack', sizeLabel, sizeSelect), element('div', 'field-stack', bumpLabel, element('div', 'field-row', bumpInput, bumpValue))),
+    element('div', 'field-row terrain-row', element('div', 'field-stack', sizeLabel, sizeSelect)),
     label('World seed', seedInput),
     element('div', 'field-row', seedInput, createButton),
     element('p', 'menu-note', 'The world is kept on the server, saved every minute: load it again any time from Load game.'),
@@ -161,39 +149,37 @@ export function createMenuView(
     element('div', 'world-row', element('div', 'world-text', element('span', 'world-name', title), element('span', 'world-details', details)), ...actions)
   const empty = (text: string): HTMLElement => element('p', 'menu-note world-empty', text)
 
+  // A list of worlds asked of the server: "Looking…" while it is, then a row for each (or why there are none). How many
+  // times each list has been asked for is kept, so an answer that comes after a newer ask is not shown over it.
+  const asks = new Map<HTMLElement, number>()
+  const fillList = async <T>(list: HTMLElement, ask: () => Promise<T[] | string>, none: string, toRow: (world: T) => HTMLElement): Promise<void> => {
+    const asked = (asks.get(list) ?? 0) + 1
+    asks.set(list, asked)
+    list.replaceChildren(empty('Looking…'))
+    const found = await ask()
+    if (asks.get(list) !== asked) return
+    if (typeof found === 'string') list.replaceChildren(empty(found))
+    else list.replaceChildren(...(found.length === 0 ? [empty(none)] : found.map(toRow)))
+  }
   const refresh = async (tab: MenuTab): Promise<void> => {
     if (tab === 'load') {
-      savedList.replaceChildren(empty('Looking…'))
-      const saved = await handlers.listSaved()
-      if (typeof saved === 'string') return void savedList.replaceChildren(empty(saved))
-      savedList.replaceChildren(
-        ...(saved.length === 0
-          ? [empty('No saved worlds that are not running. Create one, or import one from a file.')]
-          : saved.map((world) =>
-              row(
-                world.name,
-                `Saved ${date(world.savedAt)}${world.players.length ? ` · ${world.players.join(', ')}` : ''}`,
-                button('btn btn-small btn-primary', 'Load', () => handlers.onLoad(playerName(), world.code)),
-                button('btn btn-small', 'Export', () => handlers.onExport(world.code)),
-                button('btn btn-small btn-danger', 'Delete', () => handlers.onDelete(world.code, world.name)),
-              ),
-            )),
+      await fillList(savedList, handlers.listSaved, 'No saved worlds that are not running. Create one, or import one from a file.', (world) =>
+        row(
+          world.name,
+          `Saved ${date(world.savedAt)}${world.players.length ? ` · ${world.players.join(', ')}` : ''}`,
+          button('btn btn-small btn-primary', 'Load', () => handlers.onLoad(playerName(), world.code)),
+          button('btn btn-small', 'Export', () => handlers.onExport(world.code)),
+          button('btn btn-small btn-danger', 'Delete', () => handlers.onDelete(world.code, world.name)),
+        ),
       )
     } else if (tab === 'join') {
-      runningList.replaceChildren(empty('Looking…'))
-      const running = await handlers.listRunning()
-      if (typeof running === 'string') return void runningList.replaceChildren(empty(running))
-      runningList.replaceChildren(
-        ...(running.length === 0
-          ? [empty('Nobody is playing right now. Create a world, or load one.')]
-          : running.map((world) =>
-              row(
-                world.name,
-                `${world.code} · ${world.players === 0 ? 'nobody in it' : world.playerNames.join(', ')}`,
-                button('btn btn-small btn-primary', 'Join', () => handlers.onJoin(playerName(), world.code)),
-                button('btn btn-small', 'Export', () => handlers.onExport(world.code)),
-              ),
-            )),
+      await fillList(runningList, handlers.listRunning, 'Nobody is playing right now. Create a world, or load one.', (world) =>
+        row(
+          world.name,
+          `${world.code} · ${world.players === 0 ? 'nobody in it' : world.playerNames.join(', ')}`,
+          button('btn btn-small btn-primary', 'Join', () => handlers.onJoin(playerName(), world.code)),
+          button('btn btn-small', 'Export', () => handlers.onExport(world.code)),
+        ),
       )
     }
   }

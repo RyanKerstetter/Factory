@@ -8,12 +8,52 @@ export const KEY_UP = 1
 export const KEY_DOWN = 2
 export const KEY_LEFT = 4
 export const KEY_RIGHT = 8
-// Held while charging a shot or a throw, and for ATTACK_SLOW_TICKS after any attack: the player moves at
-// CHARGE_SPEED_PERCENT of its speed.
+// Held for ATTACK_SLOW_TICKS after an attack (its windup too): the player moves at ATTACK_SPEED_PERCENT of its speed.
 export const KEY_SLOW = 16
-export const ATTACK_SLOW_TICKS = 15
-export const ALL_KEYS = KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_SLOW
+export const ATTACK_SLOW_TICKS = 9
+export const ATTACK_SPEED_PERCENT = 70
+// Held while the attack button is held down to charge an attack (see weapons.ts): the player moves at
+// CHARGE_SPEED_PERCENT of its speed.
+export const KEY_CHARGE = 32
 export const CHARGE_SPEED_PERCENT = 45
+
+// A push: the player is moved along an angle this tick instead of walking (the keys are not played): a melee attack's
+// step forward, a knife's dash (see `lungeOf` in weapons.ts). It goes in the input with the keys, so the page and the
+// server move the player the same, on the same input. Its angle is one of PUSH_ANGLES (bits 6 to 11), and how far it
+// goes this tick PUSH_STEP units for each of its level (bits 12 to 15, 1 to 15; 0 is no push). The server only lets a
+// player push so far in a while (see the room's push allowance), so a page cannot fly about.
+const PUSH_ANGLE_SHIFT = 6
+const PUSH_ANGLES = 64
+const PUSH_LEVEL_SHIFT = 12
+const PUSH_LEVELS = 16
+export const PUSH_STEP = 9
+const PUSH_BITS = ((PUSH_ANGLES - 1) << PUSH_ANGLE_SHIFT) | ((PUSH_LEVELS - 1) << PUSH_LEVEL_SHIFT)
+// The furthest one tick's push goes, in units.
+export const PUSH_MAX = (PUSH_LEVELS - 1) * PUSH_STEP
+export const ALL_KEYS = KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_SLOW | KEY_CHARGE | PUSH_BITS
+
+// Keys with a push along `angle` (radians) of `speed` units (rounded to a whole PUSH_STEP, at least one, at most
+// PUSH_MAX) added.
+export function withPush(keys: number, angle: number, speed: number): number {
+  const level = Math.max(1, Math.min(PUSH_LEVELS - 1, Math.round(speed / PUSH_STEP)))
+  const turn = ((Math.round((angle / (Math.PI * 2)) * PUSH_ANGLES) % PUSH_ANGLES) + PUSH_ANGLES) % PUSH_ANGLES
+  return (keys & ~PUSH_BITS) | (turn << PUSH_ANGLE_SHIFT) | (level << PUSH_LEVEL_SHIFT)
+}
+
+// The push in some keys: how far it moves the player this tick along x and y (units), and how far that is; undefined
+// for none.
+export function pushOf(keys: number): { dx: number; dy: number; length: number } | undefined {
+  const level = (keys >> PUSH_LEVEL_SHIFT) & (PUSH_LEVELS - 1)
+  if (level === 0) return undefined
+  const angle = (((keys >> PUSH_ANGLE_SHIFT) & (PUSH_ANGLES - 1)) / PUSH_ANGLES) * Math.PI * 2
+  const length = level * PUSH_STEP
+  return { dx: Math.round(Math.cos(angle) * length), dy: Math.round(Math.sin(angle) * length), length }
+}
+
+// Keys with any push taken out.
+export function withoutPush(keys: number): number {
+  return keys & ~PUSH_BITS
+}
 
 export type PlayerPosition = { x: number; y: number }
 
@@ -31,12 +71,6 @@ const WHOLE_TILE: readonly Box[] = [[0, 0, SUB, SUB]]
 
 const MIN_UNITS = WORLD_MIN_TILE * SUB
 const MAX_UNITS = (WORLD_MAX_TILE + 1) * SUB - 1
-
-// Whether anything on a tile is solid at all.
-export function isSolidAt(solid: IsSolid, x: number, y: number): boolean {
-  const found = solid(x, y)
-  return found === true || (Array.isArray(found) && found.length > 0)
-}
 
 // Calls `each` with every solid box in the tiles from tx0, ty0 to tx1, ty1, in world units: [left, top, right, bottom).
 function eachBox(solid: IsSolid, tx0: number, ty0: number, tx1: number, ty1: number, each: (box: Box) => void): void {
@@ -65,17 +99,65 @@ export function keysDirection(keys: number): { dx: number; dy: number } {
 // player freezing in the cold: see cold.ts).
 export function stepPlayer(start: PlayerPosition, keys: number, solid?: IsSolid, slow?: IsSlow, speedPercent = 100): PlayerPosition {
   const position = solid ? pushOut(start, solid) : start
+  // Pushed (a lunge, a dash): moved along the push instead of walking, stopping against anything solid.
+  const push = pushOf(keys)
+  if (push) return solid ? moveBox(position, push.dx, push.dy, PLAYER_HALF_SIZE, solid) : { x: clampUnits(position.x + push.dx), y: clampUnits(position.y + push.dy) }
   const { dx, dy } = keysDirection(keys)
   if (dx === 0 && dy === 0) return position
-  let speed = dx !== 0 && dy !== 0 ? PLAYER_SPEED_DIAGONAL : PLAYER_SPEED
-  if (speedPercent !== 100) speed = Math.floor((speed * speedPercent) / 100)
-  if (slow && slow(floorDiv(position.x, SUB), floorDiv(position.y, SUB))) speed = Math.floor((speed * BUSH_SPEED_PERCENT) / 100)
-  if (keys & KEY_SLOW) speed = Math.floor((speed * CHARGE_SPEED_PERCENT) / 100)
+  const speed = walkSpeed(keys, speedPercent, slow !== undefined && slow(floorDiv(position.x, SUB), floorDiv(position.y, SUB)))
   let x = clampUnits(position.x + dx * speed)
   if (solid && x !== position.x) x = stopAlong(position.x, x, position.y, solid, false)
   let y = clampUnits(position.y + dy * speed)
   if (solid && y !== position.y) y = stopAlong(position.y, y, x, solid, true)
+  // Walking straight into the very edge of something (the corner of a stump beside a workbench): slip round it.
+  if (solid && dy === 0 && dx !== 0 && x === position.x) return { x, y: slipAround(position.x, position.y, dx * speed, speed, solid, false) }
+  if (solid && dx === 0 && dy !== 0 && y === position.y) return { x: slipAround(position.y, position.x, dy * speed, speed, solid, true), y }
   return { x, y }
+}
+
+// How far a player walks in a tick along each axis it moves on (units), for its keys: slower going diagonally, at
+// `speedPercent` (the cold), through a bush (`slowed`), just after an attack and while charging one.
+function walkSpeed(keys: number, speedPercent: number, slowed: boolean): number {
+  const { dx, dy } = keysDirection(keys)
+  let speed = dx !== 0 && dy !== 0 ? PLAYER_SPEED_DIAGONAL : PLAYER_SPEED
+  if (speedPercent !== 100) speed = Math.floor((speed * speedPercent) / 100)
+  if (slowed) speed = Math.floor((speed * BUSH_SPEED_PERCENT) / 100)
+  if (keys & KEY_SLOW) speed = Math.floor((speed * ATTACK_SPEED_PERCENT) / 100)
+  if (keys & KEY_CHARGE) speed = Math.floor((speed * CHARGE_SPEED_PERCENT) / 100)
+  return speed
+}
+
+// How far a tick of keys moves a player, along x and y (units), with nothing in the way: its push if it has one, else
+// its walk (see `stepPlayer`). What a player on a raft moves by.
+export function walkDelta(keys: number, speedPercent = 100): { dx: number; dy: number } {
+  const push = pushOf(keys)
+  if (push) return { dx: push.dx, dy: push.dy }
+  const { dx, dy } = keysDirection(keys)
+  if (dx === 0 && dy === 0) return { dx: 0, dy: 0 }
+  const speed = walkSpeed(keys, speedPercent, false)
+  return { dx: dx * speed, dy: dy * speed }
+}
+
+// How near the edge of what it walks into (units) a player is slid round it rather than stopped.
+export const CORNER_SLIP = 64
+
+// A player walking straight along one axis (y if `vertical`), stopped dead by something it only just catches the edge
+// of: where it goes across instead, to slip round the edge. `along`/`across` are where it is, `move` how far it tried to
+// go along, `speed` how far it moves across at most this tick. If moving across by up to CORNER_SLIP (the way that is
+// less far, the lower way on a tie) would leave its way clear, it moves that way; otherwise it stays where it is.
+function slipAround(along: number, across: number, move: number, speed: number, solid: IsSolid, vertical: boolean): number {
+  const STEP = 4
+  for (let offset = STEP; offset <= CORNER_SLIP; offset += STEP) {
+    for (const side of [-1, 1]) {
+      const to = clampUnits(across + side * offset)
+      // Its way along must be clear from there, and its way across to there too.
+      if (stopAlong(along, clampUnits(along + move), to, solid, vertical) === along) continue
+      const nudge = clampUnits(across + side * Math.min(offset, speed))
+      if (stopAlong(across, nudge, along, solid, !vertical) !== nudge) continue
+      return nudge
+    }
+  }
+  return across
 }
 
 // Moves a square `half` units from its middle to each side by dx, dy, stopping against anything solid it was not over
@@ -176,9 +258,10 @@ export function playerOverlapsTile(position: PlayerPosition, x: number, y: numbe
 }
 
 // Two round things on top of each other (an animal and a player, or two animals) are pushed apart: each by its share of
-// how far they overlap, the lighter one more, at most PUSH_PER_TICK a tick so it is a nudge, not a jump. `half` is how
-// far each reaches from its middle. Gives how far each moves, or undefined if they do not overlap.
-export const PUSH_PER_TICK = 12
+// how far they overlap, the lighter one more, at most PUSH_PER_TICK a tick (a firm shove: more than anything walks in a
+// tick, so nothing can push its way onto another). `half` is how far each reaches from its middle. Gives how far each
+// moves, or undefined if they do not overlap.
+export const PUSH_PER_TICK = 48
 export function pushApart(
   a: PlayerPosition,
   aHalf: number,

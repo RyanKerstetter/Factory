@@ -1,12 +1,15 @@
-import { TPS } from './constants.ts'
-import { floorDiv } from './geometry.ts'
-import { hashInts } from './rng.ts'
+import { hashInts, valueNoise } from './rng.ts'
 import { DUNGEON_AIR, isInDungeons } from './dungeon.ts'
+import { WORLD_GEN } from './world-gen-data.ts'
+import { CHUNK_SIZE } from './constants.ts'
+import { chunkId } from './geometry.ts'
 
-// The land: a chain of biomes, one per step of progression, each a rough, bumpy disc, in a sea that fills the rest of
-// the world. A biome overlaps the biome before it and the one after it in the chain (so they join side by side, with
-// no bridge), and keeps well clear of every other one, so the only way between biomes that are not next to each other
-// in the progression is through the ones between them (or over the sea, later).
+// The land: a chain of biomes, one per step of progression, each an island of its own (a rough, bumpy disc) in a sea
+// that goes on for ever. Each lies a short way over the sea from the one before it in the chain (`islands` in
+// data/world-gen.json): their coasts wander in and out freely, but only a little on the sides that face each other, so
+// the sea between can never close (see `wanderAt`); the only way over is by raft. The shallow sea (the shelf) reaches
+// further out on the sides facing a neighbour and joins up across the gap (see `shelfWidthAt`), so it shows the way
+// over. Islands not next to each other in the chain keep well clear of each other.
 //
 // It is all worked out from the world's seed and its TerrainSettings, the same on the server and on every page: the
 // sites are whole numbers, and each tile is tested with whole-number noise and Math.sqrt (which every JavaScript engine
@@ -28,24 +31,29 @@ export type BiomeDef = {
   // What grows back by itself here (see GameRoom.spreadWild), and whether ponds form.
   regrows: ReadonlyArray<'grass' | 'bush'>
   ponds: boolean
+  // Whether plants take root in its ground (grass, berries, saplings: planted or spreading); not in the mountains'
+  // rock and snow. Its beaches never (see `canGrowAt`).
+  soil: boolean
 }
 
 export const BIOMES: readonly BiomeDef[] = [
-  { key: 'forest', name: 'Forest', radiusPercent: 100, temperature: { edge: 16, core: 16, curve: 1 }, regrows: ['grass', 'bush'], ponds: true },
-  { key: 'mountain', name: 'Mountains', radiusPercent: 95, temperature: { edge: 12, core: -58, curve: 2.2 }, regrows: [], ponds: false },
+  { key: 'forest', name: 'Forest', radiusPercent: 100, temperature: { edge: 16, core: 16, curve: 1 }, regrows: ['grass', 'bush'], ponds: false, soil: true },
+  { key: 'mountain', name: 'Mountains', radiusPercent: 95, temperature: { edge: 12, core: -58, curve: 2.2 }, regrows: [], ponds: false, soil: false },
 ]
 
-export function biomeDef(key: BiomeKey): BiomeDef {
-  return BIOMES.find((biome) => biome.key === key)!
-}
-
-// How far two biomes next to each other in the chain cut into each other: the distance between their middles is the
-// sum of their radii, less this percentage of the smaller radius. Higher joins them along a wider front.
-export const BIOME_OVERLAP_PERCENT = 28
+// The islands, from data/world-gen.json: how ragged every coast is (`bumpiness`, 0 near round to 100 deep bays and long
+// points); the least sea between neighbours (`gap`, tiles) and how far their facing coasts wander (`facingBump`,
+// tiles); and the shelf: how wide it is (`shelf`, tiles from land), how much wider on a side facing a neighbour
+// (`shelfFacing`), and how wide (each side) the shallows joining two neighbours are at their narrowest (`shelfJoin`).
+const ISLANDS = WORLD_GEN.islands
 // The least sea, in tiles, between two biomes that are not next to each other in the chain.
 const OCEAN_GAP = 24
 // How far the bumpiest coast (bumpiness 100) reaches in and out of a biome's radius, in percent of the radius.
 const MAX_BUMP_PERCENT = 45
+// The coast facing a neighbour reaches out only `facingBump` within 30° of the line to the neighbour's middle, freely
+// past 70°, and between the two in between (see `wanderAt`).
+const COS_FACING = Math.cos((30 * Math.PI) / 180)
+const COS_FREE = Math.cos((70 * Math.PI) / 180)
 
 // ---- what a game picks when it is made
 
@@ -59,15 +67,14 @@ export const WORLD_SIZES: Readonly<Record<WorldSize, { label: string; radius: nu
 }
 export const WORLD_SIZE_KEYS = Object.keys(WORLD_SIZES) as WorldSize[]
 
-// `bumpiness`: how ragged the coasts are, 0 (near round) to 100 (deep bays and long points).
-export type TerrainSettings = { size: WorldSize; bumpiness: number }
-export const DEFAULT_TERRAIN: Readonly<TerrainSettings> = { size: 'medium', bumpiness: 60 }
+export type TerrainSettings = { size: WorldSize }
+export const DEFAULT_TERRAIN: Readonly<TerrainSettings> = { size: 'medium' }
 
-// Settings put right: a size that is one of the presets, and a whole-number bumpiness from 0 to 100.
+// Settings put right: a size that is one of the presets (anything else, like the bumpiness older games chose, is
+// dropped: every world is as bumpy now).
 export function cleanTerrain(settings: Partial<TerrainSettings> | undefined): TerrainSettings {
   const size = settings?.size && settings.size in WORLD_SIZES ? settings.size : DEFAULT_TERRAIN.size
-  const raw = typeof settings?.bumpiness === 'number' && Number.isFinite(settings.bumpiness) ? settings.bumpiness : DEFAULT_TERRAIN.bumpiness
-  return { size, bumpiness: Math.max(0, Math.min(100, Math.round(raw))) }
+  return { size }
 }
 
 // ---- the layout
@@ -92,7 +99,7 @@ const made = new Map<string, Terrain>()
 // The terrain of a world (worked out once per seed and settings, then kept).
 export function terrainOf(seed: number, settings?: Partial<TerrainSettings>): Terrain {
   const clean = cleanTerrain(settings)
-  const key = `${seed}|${clean.size}|${clean.bumpiness}`
+  const key = `${seed}|${clean.size}`
   let terrain = made.get(key)
   if (!terrain) {
     terrain = { seed, settings: clean, sites: layOut(seed, clean) }
@@ -108,14 +115,15 @@ function layOut(seed: number, settings: TerrainSettings): BiomeSite[] {
   for (let index = 0; index < BIOMES.length; index++) {
     const biome = BIOMES[index]
     const radius = Math.max(16, Math.round((base * biome.radiusPercent) / 100))
-    const bump = Math.floor((radius * settings.bumpiness * MAX_BUMP_PERCENT) / 10_000)
+    const bump = Math.floor((radius * ISLANDS.bumpiness * MAX_BUMP_PERCENT) / 10_000)
     if (index === 0) {
       // The first biome is round the spawn.
       sites.push({ biome, index, x: 0, y: 0, radius, bump })
       continue
     }
     const before = sites[index - 1]
-    const apart = before.radius + radius - Math.floor((Math.min(before.radius, radius) * BIOME_OVERLAP_PERCENT) / 100)
+    // Far enough apart that their facing coasts, wandering out as far as they can, still leave `gap` of sea between.
+    const apart = before.radius + radius + ISLANDS.gap + facingBump(before.bump) + facingBump(bump)
     // Turn a little from the way the chain was going, trying the turns in an order of the seed's, and take the first
     // that keeps clear of every biome that is not next to this one.
     const turns = [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7, 8]
@@ -143,20 +151,38 @@ function layOut(seed: number, settings: TerrainSettings): BiomeSite[] {
 
 // ---- tiles
 
-// Smooth noise, 0 to 999, from values at the corners of a grid of `cell` tiles blended between them (whole numbers).
-function valueNoise(seed: number, salt: number, x: number, y: number, cell: number): number {
-  const cx = floorDiv(x, cell)
-  const cy = floorDiv(y, cell)
-  const fx = x - cx * cell
-  const fy = y - cy * cell
-  const corner = (ox: number, oy: number): number => hashInts(seed, cx + ox, cy + oy, salt) % 1000
-  const top = corner(0, 0) * (cell - fx) + corner(1, 0) * fx
-  const bottom = corner(0, 1) * (cell - fx) + corner(1, 1) * fx
-  return Math.floor((top * (cell - fy) + bottom * fy) / (cell * cell))
+// How far a coast facing a neighbour wanders, at most, for a site whose coast wanders `bump` elsewhere.
+function facingBump(bump: number): number {
+  return Math.min(bump, ISLANDS.facingBump)
+}
+
+// The sites next to a site in the chain (the islands it lies by).
+function neighboursOf(terrain: Terrain, site: BiomeSite): BiomeSite[] {
+  return [terrain.sites[site.index - 1], terrain.sites[site.index + 1]].filter((other) => other !== undefined)
+}
+
+// How far out past its radius a site's coast can reach at a point (tiles): its `bump`, but on a side facing a neighbour
+// (within 30° of the line to its middle: COS_FACING) only `facingBump`, easing from one to the other out to 70°
+// (COS_FREE). Its bays are not held in, only its points: so the coasts facing each other wiggle and bend like any
+// other, but can never reach across the gap between them.
+export function wanderAt(terrain: Terrain, site: BiomeSite, x: number, y: number): number {
+  const dx = x - site.x
+  const dy = y - site.y
+  const distance = Math.sqrt(dx * dx + dy * dy)
+  let wander = site.bump
+  if (distance === 0) return wander
+  for (const other of neighboursOf(terrain, site)) {
+    const ox = other.x - site.x
+    const oy = other.y - site.y
+    const cos = (dx * ox + dy * oy) / (distance * Math.sqrt(ox * ox + oy * oy))
+    const facing = Math.max(0, Math.min(1, (cos - COS_FREE) / (COS_FACING - COS_FREE)))
+    wander = Math.min(wander, site.bump + (facingBump(site.bump) - site.bump) * facing)
+  }
+  return wander
 }
 
 // How far inside a site's coast a tile is, in tiles (below 0 is outside it). The coast wanders in and out by up to
-// `bump`: broad bays and points, with smaller wiggles on them.
+// `bump` (out no further than `wanderAt`): broad bays and points, with smaller wiggles on them.
 function depthIn(terrain: Terrain, site: BiomeSite, x: number, y: number): number {
   const distance = Math.sqrt((x - site.x) ** 2 + (y - site.y) ** 2)
   if (site.bump === 0) return site.radius - distance
@@ -165,12 +191,12 @@ function depthIn(terrain: Terrain, site: BiomeSite, x: number, y: number): numbe
   const fine = valueNoise(terrain.seed, salt + 1, x, y, 7)
   // -1500 .. +1497, mostly near the middle.
   const wobble = (broad - 500) * 2 + (fine - 500)
-  return site.radius + Math.trunc((site.bump * wobble) / 1500) - distance
+  const out = Math.trunc((site.bump * wobble) / 1500)
+  return site.radius + (out > 0 ? Math.min(out, wanderAt(terrain, site, x, y)) : out) - distance
 }
 
-// The biome a tile is in, or undefined for the sea. Where two overlap, the tile is the one it is deeper inside; and
-// the middle of where two neighbours' plain circles overlap is always land, so however ragged their coasts are, they
-// are joined.
+// The biome a tile is in, or undefined for the sea. The islands never overlap (see `wanderAt`); were two ever to, the
+// tile would be the one it is deeper inside.
 export function biomeSiteAt(terrain: Terrain, x: number, y: number): BiomeSite | undefined {
   let best: BiomeSite | undefined
   let bestDepth = Number.NEGATIVE_INFINITY
@@ -184,31 +210,53 @@ export function biomeSiteAt(terrain: Terrain, x: number, y: number): BiomeSite |
       bestDepth = depth
     }
   }
-  if (best && bestDepth > 0) return best
-  // Between two neighbours: where their plain circles overlap, and a broad band along the line from one's middle to the
-  // other's, is always land, so no bay can cut them apart.
+  return best && bestDepth > 0 ? best : undefined
+}
+
+// ---- the shelf: the shallow sea by the land
+
+// How far out from land the shelf reaches at a sea tile (tiles; Infinity where it is shallow however far the land is):
+// `shelf`, more on a side facing a neighbouring island (by up to `shelfFacing`, the more the more squarely it faces it),
+// and all the way across between neighbours: an ellipse round the two islands' middles, `shelfJoin` wide each side
+// of the line between them at its narrowest (give or take a little, so its edges wander), so the shallows run from one
+// island to the other and show the way over.
+export function shelfWidthAt(terrain: Terrain, x: number, y: number): number {
   for (let i = 1; i < terrain.sites.length; i++) {
     const a = terrain.sites[i - 1]
     const b = terrain.sites[i]
-    const toA = (x - a.x) ** 2 + (y - a.y) ** 2
-    const toB = (x - b.x) ** 2 + (y - b.y) ** 2
-    const nearer = Math.sqrt(toA) * b.radius <= Math.sqrt(toB) * a.radius ? a : b
-    if (toA <= (a.radius - 2) ** 2 && toB <= (b.radius - 2) ** 2) return nearer
-    const band = Math.max(4, Math.floor((Math.min(a.radius, b.radius) * JOIN_BAND_PERCENT) / 100))
-    if (distanceToSegment(x, y, a, b) <= band) return nearer
+    const apart = Math.sqrt((b.x - a.x) ** 2 + (b.y - a.y) ** 2)
+    const join = ISLANDS.shelfJoin * (0.75 + valueNoise(terrain.seed, 640, x, y, 9) / 2000)
+    // The sum of the distances to the two middles that makes an ellipse `join` wide each side at its middle.
+    const most = Math.sqrt(apart * apart + 4 * join * join)
+    if (Math.sqrt((x - a.x) ** 2 + (y - a.y) ** 2) + Math.sqrt((x - b.x) ** 2 + (y - b.y) ** 2) <= most) return Infinity
   }
-  return undefined
+  // Off the coast of the island nearest (by how far out from its radius), wider the more squarely it faces a neighbour.
+  let nearest: BiomeSite | undefined
+  let nearestGap = Infinity
+  for (const site of terrain.sites) {
+    const gap = Math.sqrt((x - site.x) ** 2 + (y - site.y) ** 2) - site.radius
+    if (gap < nearestGap) {
+      nearest = site
+      nearestGap = gap
+    }
+  }
+  let width = ISLANDS.shelf
+  if (!nearest) return width
+  const dx = x - nearest.x
+  const dy = y - nearest.y
+  const distance = Math.sqrt(dx * dx + dy * dy)
+  for (const other of neighboursOf(terrain, nearest)) {
+    if (distance === 0) break
+    const ox = other.x - nearest.x
+    const oy = other.y - nearest.y
+    const cos = (ox * dx + oy * dy) / (distance * Math.sqrt(ox * ox + oy * oy))
+    if (cos > 0) width = Math.max(width, ISLANDS.shelf + ISLANDS.shelfFacing * cos * cos)
+  }
+  return width
 }
 
-// How wide the band of land along the line between neighbours' middles is, each side, in percent of the smaller radius.
-const JOIN_BAND_PERCENT = 15
-
-function distanceToSegment(x: number, y: number, a: { x: number; y: number }, b: { x: number; y: number }): number {
-  const dx = b.x - a.x
-  const dy = b.y - a.y
-  const along = Math.max(0, Math.min(1, ((x - a.x) * dx + (y - a.y) * dy) / (dx * dx + dy * dy)))
-  return Math.sqrt((x - a.x - along * dx) ** 2 + (y - a.y - along * dy) ** 2)
-}
+// The widest the shelf is anywhere but between neighbours (see `shelfWidthAt`).
+export const SHELF_MOST = ISLANDS.shelf + ISLANDS.shelfFacing
 
 export function biomeAt(terrain: Terrain, x: number, y: number): BiomeDef | undefined {
   return biomeSiteAt(terrain, x, y)?.biome
@@ -216,6 +264,41 @@ export function biomeAt(terrain: Terrain, x: number, y: number): BiomeDef | unde
 
 export function isSeaAt(terrain: Terrain, x: number, y: number): boolean {
   return biomeSiteAt(terrain, x, y) === undefined
+}
+
+// Whether a tile is sand: a beach, the land right along the sea (a tile beside it, not corner to corner) in a biome
+// with soil (the mountains' shore is rock). As the ground is drawn (ground-colors.ts) and walked on (sounds.ts).
+export function isSandAt(terrain: Terrain, x: number, y: number): boolean {
+  const site = biomeSiteAt(terrain, x, y)
+  if (!site || !site.biome.soil) return false
+  return isSeaAt(terrain, x + 1, y) || isSeaAt(terrain, x - 1, y) || isSeaAt(terrain, x, y + 1) || isSeaAt(terrain, x, y - 1)
+}
+
+// Whether plants can take root on a tile (grass, a berry bush, a sapling, planted or spreading there): land in a
+// biome with soil, and not its sand.
+export function canGrowAt(terrain: Terrain, x: number, y: number): boolean {
+  const site = biomeSiteAt(terrain, x, y)
+  return site !== undefined && site.biome.soil && !isSandAt(terrain, x, y)
+}
+
+// Every chunk with land in it, of any island (looked for every ISLAND_PROBE tiles), in order: what a world grows whole
+// when it is made.
+const ISLAND_PROBE = 2
+export function islandChunks(terrain: Terrain): number[] {
+  const chunks = new Set<number>()
+  for (const site of terrain.sites) {
+    const reach = site.radius + site.bump + CHUNK_SIZE
+    for (let cy = Math.floor((site.y - reach) / CHUNK_SIZE); cy <= Math.floor((site.y + reach) / CHUNK_SIZE); cy++) {
+      for (let cx = Math.floor((site.x - reach) / CHUNK_SIZE); cx <= Math.floor((site.x + reach) / CHUNK_SIZE); cx++) {
+        let land = false
+        for (let y = 0; y < CHUNK_SIZE && !land; y += ISLAND_PROBE) {
+          for (let x = 0; x < CHUNK_SIZE && !land; x += ISLAND_PROBE) land = biomeSiteAt(terrain, cx * CHUNK_SIZE + x, cy * CHUNK_SIZE + y) !== undefined
+        }
+        if (land) chunks.add(chunkId(cx, cy))
+      }
+    }
+  }
+  return [...chunks].sort((a, b) => a - b)
 }
 
 // ---- temperature
@@ -232,11 +315,6 @@ export function airTemperatureAt(terrain: Terrain, x: number, y: number): number
   const { edge, core, curve } = site.biome.temperature
   if (site.index === 0 || edge === core) return edge
   return edge + (core - edge) * Math.pow(depthShare(terrain, site, x, y), curve)
-}
-
-// The air temperature on a tile, in whole °C (see airTemperatureAt).
-export function temperatureAt(terrain: Terrain, x: number, y: number): number {
-  return Math.round(airTemperatureAt(terrain, x, y))
 }
 
 // How far into a biome after the first a point is, 0 (where it meets the biome before it) to 1 (its far side), along
@@ -297,19 +375,18 @@ export function seaWithin(terrain: Terrain, x: number, y: number, distance: numb
 }
 
 // The way into the dungeon: deep in the mountains' snow, DUNGEON_SHARE of the way in, on the nearest tile to there that
-// is well clear of the sea.
-const DUNGEON_SHARE = 0.84
-// The skeletons' camps: one in each CAMP_CELL square of the mountains, CAMP_CHANCE percent of the time, where the air is
-// from CAMP_WARMEST down to CAMP_COLDEST °C, well clear of the sea and at least CAMP_APART tiles from the way into the
-// dungeon.
-const CAMP_CELL = 34
-const CAMP_CHANCE = 60
-const CAMP_WARMEST = 6
-const CAMP_COLDEST = -24
-const CAMP_APART = 30
+// is well clear of the sea. The skeletons' camps: one in each CAMP_CELL square of the mountains, CAMP_CHANCE percent of
+// the time, where the air is from CAMP_WARMEST down to CAMP_COLDEST °C, well clear of the sea and at least CAMP_APART
+// tiles from the way into the dungeon. All from data/world-gen.json.
+const DUNGEON_SHARE = WORLD_GEN.dungeon.share
+const CAMP_CELL = WORLD_GEN.camps.cell
+const CAMP_CHANCE = WORLD_GEN.camps.chance
+const CAMP_WARMEST = WORLD_GEN.camps.warmest
+const CAMP_COLDEST = WORLD_GEN.camps.coldest
+const CAMP_APART = WORLD_GEN.camps.apartFromDungeon
 // Nothing grows within these many tiles of a camp's middle, or of the way into the dungeon.
-export const CAMP_CLEARING = 4
-export const ENTRANCE_CLEARING = 3
+export const CAMP_CLEARING = WORLD_GEN.camps.clearing
+export const ENTRANCE_CLEARING = WORLD_GEN.dungeon.clearing
 
 export type Landmarks = { entrance: { x: number; y: number } | undefined; camps: ReadonlyArray<{ x: number; y: number }> }
 const landmarksMade = new WeakMap<Terrain, Landmarks>()
@@ -375,45 +452,12 @@ function findLandmarks(terrain: Terrain): Landmarks {
   return { entrance, camps }
 }
 
-// ---- the cold
+// ---- the snow
 
-// A player's body warms and cools towards the temperature round them (see cold.ts): the air's, plus the warmth of the
-// armour they wear, or, by a lit campfire (within CAMPFIRE_WARMTH_RADIUS tiles), that CAMPFIRE_WARMTH degrees warmer
-// and never less than CAMPFIRE_COMFORT.
-// It starts at BODY_NORMAL and never goes above BODY_MAX. It cools by BODY_COOLING degrees a second, plus
-// BODY_COOLING_GAP percent of how much colder the air is than the body (so bitter cold bites faster), and warms
-// likewise by BODY_WARMING and BODY_WARMING_GAP percent.
-// Below COLD_AT a player is cold, and slows down more and more the colder their body is, to FREEZING_SPEED_PERCENT
-// at DEADLY_COLD_AT; below DEADLY_COLD_AT they lose COLD_DAMAGE health every COLD_DAMAGE_EVERY ticks.
-export const COLD_AT = 0
-export const FREEZING_AT = -10
-export const DEADLY_COLD_AT = -25
-export const FREEZING_SPEED_PERCENT = 45
-export const COLD_DAMAGE = 1
-export const COLD_DAMAGE_EVERY = 2 * TPS
-export const BODY_NORMAL = 16
-export const BODY_MAX = 20
-export const BODY_COOLING = 2
-export const BODY_COOLING_GAP = 14
-export const BODY_WARMING = 1.5
-export const BODY_WARMING_GAP = 12
-export const CAMPFIRE_WARMTH = 30
-export const CAMPFIRE_COMFORT = 18
-export const CAMPFIRE_WARMTH_RADIUS = 3
 // The snow is heaviest at SNOW_FULL_AT and below, and starts at SNOW_STARTS_AT (the air's temperature, not the
 // player's: a campfire warms you, but does not keep the snow out of your eyes). The ground is snowy from about there in.
 export const SNOW_STARTS_AT = -4
 export const SNOW_FULL_AT = -45
-
-export type ColdLevel = 'warm' | 'cold' | 'freezing' | 'deadly'
-
-// How the cold is treating a player, by their body's temperature.
-export function coldLevel(body: number): ColdLevel {
-  if (body < DEADLY_COLD_AT) return 'deadly'
-  if (body < FREEZING_AT) return 'freezing'
-  if (body < COLD_AT) return 'cold'
-  return 'warm'
-}
 
 // How heavy the snow is at an air temperature, 0 (none) to 1 (a whiteout).
 export function snowAt(temperature: number): number {

@@ -7,6 +7,7 @@ import {
   chunkOfTile,
   countOf,
   EAST,
+  fromRaft,
   KEY_RIGHT,
   PLAYER_SPAWN,
   ReliableReceiver,
@@ -30,7 +31,7 @@ function seeded(seed: number): () => number {
 
 // The factory's tests build near the spawn with no plants in the way (the world grows none in these rooms).
 // The factory's tests build a few chunks out from the spawn: a big, round forest keeps it all on land.
-const FACTORY = { plants: false, terrain: { size: 'huge', bumpiness: 0 } } as const
+const FACTORY = { plants: false, terrain: { size: 'huge' } } as const
 
 // Starts a production line with no ore to mine (deposits are off for now): the player is given some iron and puts it
 // into a chest at the start of the line, where an extractor pulls it out. Gives the source chest's tile.
@@ -186,4 +187,24 @@ test('replaying unanswered inputs on the server position lands where the predict
   const predicted = { ...local.position }
   local.reconcile(position, 6)
   assert.deepEqual(local.position, predicted)
+})
+
+test('aboard a moving raft, the raft moving on is not taken for a correction: only where the player stands on its deck is eased', () => {
+  const local = new LocalPlayer()
+  const pose = { x: 10 * SUB, y: 10 * SUB, angle: 0.3 }
+  local.rafts = () => [{ id: 1, pose: { ...pose } }]
+  local.place(fromRaft(pose, { x: 0, y: 0 }), { raft: 1, x: 0, y: 0 })
+  for (let tick = 0; tick < 30; tick++) {
+    pose.x += 20
+    pose.angle += 0.01
+    local.follow()
+    local.step(0)
+    // The server agrees: they stand where they stood on it.
+    local.reconcile(fromRaft(pose, { x: 0, y: 0 }), local.lastInput, { raft: 1, x: 0, y: 0 })
+    assert.deepEqual(local.smoothing(performance.now()), { x: 0, y: 0 }, `tick ${tick}: nothing to ease`)
+  }
+  // Put right on its deck: that is eased.
+  local.reconcile(fromRaft(pose, { x: 60, y: 0 }), local.lastInput, { raft: 1, x: 60, y: 0 })
+  const eased = local.smoothing(performance.now())
+  assert.ok(Math.abs(Math.hypot(eased.x, eased.y) - 60) < 2, `eased from where it was drawn (${Math.hypot(eased.x, eased.y).toFixed(1)})`)
 })

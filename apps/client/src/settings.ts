@@ -1,7 +1,7 @@
 // The player's settings: which keys do what, and how loud the game is. They are kept in this browser (localStorage),
 // so they last from one game to the next; anything missing or unreadable falls back to the default.
 
-// What a key can be bound to. The mouse buttons (punch, place), Escape (the menu) and the wheel (zoom) are fixed.
+// What a key can be bound to. The mouse buttons (attack, place), Escape (the menu) and the wheel (zoom) are fixed.
 export type Action =
   | 'up'
   | 'down'
@@ -19,6 +19,8 @@ export type Action =
   | 'hotbar9'
   | 'hand'
   | 'eat'
+  | 'players'
+  | 'map'
   | 'debug'
 
 export type ActionInfo = { action: Action; label: string; group: string }
@@ -40,7 +42,9 @@ export const ACTIONS: readonly ActionInfo[] = [
   { action: 'hotbar8', label: 'Hotbar slot 8', group: 'Inventory' },
   { action: 'hotbar9', label: 'Hotbar slot 9', group: 'Inventory' },
   { action: 'hand', label: 'Put away (bare hands)', group: 'Inventory' },
-  { action: 'eat', label: 'Eat what you hold', group: 'Inventory' },
+  { action: 'eat', label: 'Eat from the food slot', group: 'Inventory' },
+  { action: 'players', label: 'Who is playing (hold)', group: 'Other' },
+  { action: 'map', label: 'Map', group: 'Other' },
   { action: 'debug', label: 'Debug view', group: 'Other' },
 ]
 
@@ -56,7 +60,7 @@ export const DEFAULT_BINDINGS: Readonly<Bindings> = {
   down: ['KeyS', 'ArrowDown'],
   left: ['KeyA', 'ArrowLeft'],
   right: ['KeyD', 'ArrowRight'],
-  inventory: ['KeyE', 'Tab'],
+  inventory: ['KeyE', null],
   hotbar1: ['Digit1', null],
   hotbar2: ['Digit2', null],
   hotbar3: ['Digit3', null],
@@ -68,6 +72,8 @@ export const DEFAULT_BINDINGS: Readonly<Bindings> = {
   hotbar9: ['Digit9', null],
   hand: ['KeyQ', null],
   eat: ['KeyF', null],
+  players: ['Tab', null],
+  map: ['KeyM', null],
   debug: ['F3', null],
 }
 
@@ -77,24 +83,20 @@ export const RESERVED_KEYS: ReadonlySet<string> = new Set(['Escape'])
 const STORAGE_KEY = 'factory-game.settings'
 
 // The sound has a volume of its own for each kind of sound, under the master volume, which sets them all.
-export type VolumeChannel = 'master' | 'effects' | 'footsteps'
+export type VolumeChannel = 'master' | 'effects' | 'footsteps' | 'others'
 export type Volumes = Record<VolumeChannel, number>
 
 export const VOLUME_CHANNELS: ReadonlyArray<{ channel: VolumeChannel; label: string }> = [
   { channel: 'master', label: 'Master' },
   { channel: 'effects', label: 'Effects' },
   { channel: 'footsteps', label: 'Footsteps' },
+  { channel: 'others', label: 'Other players' },
 ]
 
-export const DEFAULT_VOLUMES: Readonly<Volumes> = { master: 0.5, effects: 1, footsteps: 0.8 }
+export const DEFAULT_VOLUMES: Readonly<Volumes> = { master: 0.5, effects: 1, footsteps: 0.8, others: 0.5 }
 
 // `volume` is the single volume of earlier versions, read as the master volume.
-type Stored = { bindings?: Partial<Record<string, unknown>>; volumes?: Partial<Record<string, unknown>>; volume?: unknown; muted?: unknown; view?: unknown }
-
-// How the world is drawn: in 3D, seen from above at an angle, or flat from straight above in 2D. A change
-// takes effect the next time a world is entered.
-export type ViewMode = '3d' | '2d'
-export const DEFAULT_VIEW: ViewMode = '3d'
+type Stored = { bindings?: Partial<Record<string, unknown>>; volumes?: Partial<Record<string, unknown>>; volume?: unknown; muted?: unknown }
 
 export class Settings {
   private bindings: Bindings = cloneBindings(DEFAULT_BINDINGS)
@@ -102,7 +104,6 @@ export class Settings {
   private listeners = new Set<() => void>()
   volumes: Volumes = { ...DEFAULT_VOLUMES }
   muted = false
-  view: ViewMode = DEFAULT_VIEW
 
   constructor() {
     this.load()
@@ -140,11 +141,6 @@ export class Settings {
 
   setMuted(muted: boolean): void {
     this.muted = muted
-    this.changed()
-  }
-
-  setView(view: ViewMode): void {
-    this.view = view
     this.changed()
   }
 
@@ -198,7 +194,6 @@ export class Settings {
     this.volumes.master = volume(stored.volume) ?? this.volumes.master
     for (const { channel } of VOLUME_CHANNELS) this.volumes[channel] = volume(stored.volumes?.[channel]) ?? this.volumes[channel]
     if (typeof stored.muted === 'boolean') this.muted = stored.muted
-    if (stored.view === '3d' || stored.view === '2d') this.view = stored.view
     const saved = stored.bindings
     if (!saved || typeof saved !== 'object') return
     for (const { action } of ACTIONS) {
@@ -207,11 +202,23 @@ export class Settings {
       const key = (value: unknown): string | null => (typeof value === 'string' && !RESERVED_KEYS.has(value) ? value : null)
       this.bindings[action] = [key(binding[0]), key(binding[1])]
     }
+    // An action new since the settings were saved keeps its default keys, taken from whatever had them (Tab, once the
+    // inventory's second key, is now who is playing).
+    for (const { action } of ACTIONS) {
+      if (Array.isArray(saved[action])) continue
+      for (const code of DEFAULT_BINDINGS[action]) {
+        if (!code) continue
+        for (const { action: other } of ACTIONS) {
+          if (other === action) continue
+          this.bindings[other] = this.bindings[other].map((bound) => (bound === code ? null : bound)) as Binding
+        }
+      }
+    }
   }
 
   private save(): void {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ bindings: this.bindings, volumes: this.volumes, muted: this.muted, view: this.view }))
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ bindings: this.bindings, volumes: this.volumes, muted: this.muted }))
     } catch {
       // Storage is off or full: the settings still hold for this visit.
     }

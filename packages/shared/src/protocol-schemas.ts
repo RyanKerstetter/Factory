@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { BUILDING_KINDS } from './buildings.ts'
+import type { Command } from './commands.ts'
 import { ALL_KEYS } from './movement.ts'
 
 // Checks for what a page sends the server, which the server trusts nothing of. Kept apart from protocol.ts so the
@@ -14,28 +15,36 @@ export const CommandSchema = z.discriminatedUnion('k', [
   z.object({ k: z.literal('build'), x: tile, y: tile, kind: z.enum(BUILDING_KINDS as [string, ...string[]]), dir: int.min(0).max(3) }),
   z.object({ k: z.literal('remove'), id: int.min(1) }),
   z.object({ k: z.literal('take'), id: int.min(1), item, max: int.min(1).max(100_000) }),
-  z.object({ k: z.literal('put'), id: int.min(1), item, max: int.min(1).max(100_000) }),
-  z.object({ k: z.literal('move'), from: int.min(0).max(255), to: int.min(0).max(255) }),
+  z.object({ k: z.literal('put'), id: int.min(1), item, max: int.min(1).max(100_000), slot: int.min(0).max(255).optional() }),
   z.object({ k: z.literal('slot'), from: slotRef, to: slotRef, count: int.min(1).max(100_000) }),
   z.object({ k: z.literal('drop'), from: slotRef, count: int.min(1).max(100_000), x: int, y: int }),
   z.object({ k: z.literal('punch'), id: int.min(1), slot: int.min(-1).max(255) }),
-  z.object({ k: z.literal('attack'), special: z.boolean(), slot: int.min(-1).max(255), x: int, y: int, charge: int.min(0).max(10_000), seen: int.min(0).optional(), input: int.min(0).optional(), dir: int.min(-7000).max(7000).optional() }),
+  z.object({ k: z.literal('attack'), slot: int.min(-1).max(255), x: int, y: int, seen: int.min(0).optional(), charged: z.literal(1).optional() }),
+  z.object({ k: z.literal('charge'), slot: int.min(-1).max(255) }),
   z.object({ k: z.literal('craft'), recipe: int.min(1).max(1_000) }),
-  z.object({ k: z.literal('work'), id: int.min(1), recipe: int.min(0).max(1_000).optional(), repeat: z.boolean().optional() }),
+  z.object({ k: z.literal('work'), id: int.min(1), recipe: int.min(0).max(1_000) }),
   z.object({ k: z.literal('apply'), x: tile, y: tile, slot: int.min(0).max(255) }),
   z.object({ k: z.literal('machine'), id: int.min(1), action: z.enum(['light', 'douse', 'seal', 'unseal']) }),
-  z.object({ k: z.literal('use'), id: int.min(0) }),
+  z.object({ k: z.literal('use'), id: int.min(0), hand: z.literal(true).optional() }),
   z.object({ k: z.literal('toggle'), id: int.min(1) }),
-  z.object({ k: z.literal('strike'), animal: int.min(1), slot: int.min(-1).max(255) }),
   z.object({ k: z.literal('interact'), animal: int.min(1), slot: int.min(-1).max(255) }),
+  z.object({ k: z.literal('raftRope'), raft: int.min(1), slot: int.min(-1).max(255) }),
+  z.object({ k: z.literal('tie'), fence: int.min(1), animal: int.min(1).optional(), raft: int.min(1).optional() }),
+  z.object({ k: z.literal('untie'), fence: int.min(1) }),
   z.object({ k: z.literal('place'), x: tile, y: tile, slot: int.min(0).max(255) }),
   z.object({ k: z.literal('pvp'), on: z.boolean() }),
+  z.object({ k: z.literal('respawn'), at: z.enum(['spawn', 'bed']) }),
   z.object({ k: z.literal('eat'), slot: int.min(0).max(255) }),
   z.object({ k: z.literal('sleep'), id: int.min(1) }),
   z.object({ k: z.literal('hold'), slot: int.min(-1).max(255) }),
   z.object({ k: z.literal('chest'), id: int.min(1), action: z.enum(['sort', 'stash']) }),
   z.object({ k: z.literal('rename'), id: int.min(1), name: z.string().max(64) }),
 ])
+
+// Every command a page can send (see Command in commands.ts) has its check above: this does not compile if one is
+// missing, or takes a field its check does not.
+const everyCommandChecked: [Command] extends [z.infer<typeof CommandSchema>] ? true : never = true
+void everyCommandChecked
 
 export const RequestMessageSchema = z.object({
   s: int.min(1),
@@ -53,7 +62,6 @@ export const JoinMessageSchema = z.object({
   code: z.string().min(1).max(12),
   name: z.string().max(24),
 })
-export type JoinMessage = z.infer<typeof JoinMessageSchema>
 
 export const AckMessageSchema = z.object({ s: int.min(0) })
 export const PingMessageSchema = z.object({ c: z.number().finite() })
@@ -62,5 +70,4 @@ export const NewGameSchema = z.object({
   name: z.string().max(40),
   seed: z.string().max(40).optional(),
   size: z.string().max(20).optional(),
-  bumpiness: z.number().finite().min(0).max(100).optional(),
 })

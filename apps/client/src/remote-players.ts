@@ -3,14 +3,19 @@
 const KEPT = 40
 // How far behind the newest position they are drawn, in ticks.
 export const REMOTE_DELAY_TICKS = 3
+// How far on (ticks) one is ever reckoned past the newest position sent (see `ahead`).
+const MAX_AHEAD = 6
 
 type Sample = { tick: number; x: number; y: number }
 export type RemotePosition = { id: number; x: number; y: number; dx: number; dy: number }
 
 export class RemotePlayers {
   private readonly samples = new Map<number, Sample[]>()
+  // The positions last worked out, and for which tick: asked for again and again in a frame, they are worked out once.
+  private worked: { tick: number; found: readonly RemotePosition[] } | undefined
 
   update(tick: number, players: ReadonlyArray<[number, number, number]>, skip: number): void {
+    this.worked = undefined
     const present = new Set<number>()
     for (const [id, x, y] of players) {
       if (id === skip) continue
@@ -25,7 +30,8 @@ export class RemotePlayers {
   }
 
   // Where each is at `tick` (a fraction), in units.
-  positionsAt(tick: number): RemotePosition[] {
+  positionsAt(tick: number): readonly RemotePosition[] {
+    if (this.worked?.tick === tick) return this.worked.found
     const found: RemotePosition[] = []
     for (const [id, list] of this.samples) {
       if (list.length === 0) continue
@@ -43,6 +49,25 @@ export class RemotePlayers {
       // Which way it is going, from the two positions it is drawn between (0, 0 when it stands still).
       found.push({ id, x: before.x + (after.x - before.x) * t, y: before.y + (after.y - before.y) * t, dx: after.x - before.x, dy: after.y - before.y })
     }
+    this.worked = { tick, found }
     return found
+  }
+
+  // Where one is reckoned to be `ahead` ticks after the newest position the server sent (at most MAX_AHEAD), going on
+  // as it went between the last two: for where something is now, not where it is drawn (a little in the past).
+  ahead(id: number, ahead: number): { x: number; y: number } | undefined {
+    const list = this.samples.get(id)
+    if (!list || list.length === 0) return undefined
+    const last = list[list.length - 1]
+    const before = list.length > 1 ? list[list.length - 2] : last
+    const span = last.tick - before.tick
+    if (span <= 0) return { x: last.x, y: last.y }
+    const lead = Math.min(MAX_AHEAD, ahead) / span
+    return { x: last.x + (last.x - before.x) * lead, y: last.y + (last.y - before.y) * lead }
+  }
+
+  // Where one is at `tick`, if it is known.
+  positionOf(id: number, tick: number): RemotePosition | undefined {
+    return this.positionsAt(tick).find((position) => position.id === id)
   }
 }

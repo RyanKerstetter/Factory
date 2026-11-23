@@ -3,8 +3,6 @@ import { button, element } from './dom.ts'
 
 export type SettingsView = {
   readonly root: HTMLElement
-  // Whether it is waiting for a key to bind, when Escape cancels that rather than leaving the settings.
-  readonly isListening: boolean
   // Brings what is shown up to date, and goes back to the first tab.
   refresh(): void
   dispose(): void
@@ -12,13 +10,13 @@ export type SettingsView = {
 
 // The mouse buttons, Escape and the wheel cannot be rebound; they are listed so every control is in one place.
 const FIXED: ReadonlyArray<[string, string]> = [
-  ['Punch / break', 'Left mouse'],
+  ['Attack / break', 'Left mouse'],
   ['Place / plant / open', 'Right mouse'],
   ['Zoom', 'Mouse wheel'],
   ['Menu', 'Esc'],
 ]
 
-type Tab = 'controls' | 'audio' | 'graphics' | 'game'
+type Tab = 'controls' | 'audio' | 'game'
 
 // The settings of the game being played, kept by the server: who the host is, and whether players can hurt each
 // other, which only the host can change.
@@ -37,7 +35,7 @@ export function createSettingsView(settings: Settings, onBack: () => void, game?
 
   const tabButtons = new Map<Tab, HTMLButtonElement>()
   const tabBar = element('div', 'tabs')
-  const tabs: Array<[Tab, string]> = [['controls', 'Controls'], ['audio', 'Audio'], ['graphics', 'Graphics'], ...(game ? [['game', 'Game'] as [Tab, string]] : [])]
+  const tabs: Array<[Tab, string]> = [['controls', 'Controls'], ['audio', 'Audio'], ...(game ? [['game', 'Game'] as [Tab, string]] : [])]
   for (const [id, label] of tabs) {
     const tabButton = button('tab', label, () => show(id))
     tabButton.setAttribute('role', 'tab')
@@ -95,26 +93,6 @@ export function createSettingsView(settings: Settings, onBack: () => void, game?
   const resetAudio = button('btn btn-small', 'Reset to defaults', () => settings.resetAudio())
   const audioPanel = element('div', 'settings-panel', element('div', 'audio-rows', ...audioRows), element('div', 'settings-actions', resetAudio))
 
-  // ---- graphics
-
-  const viewChoice = element('select', 'select')
-  for (const [value, label] of [['3d', '3D'], ['2d', '2D (top down)']] as const) {
-    const option = element('option', '', label)
-    option.value = value
-    viewChoice.append(option)
-  }
-  viewChoice.addEventListener('change', () => settings.setView(viewChoice.value === '2d' ? '2d' : '3d'))
-  const graphicsPanel = element(
-    'div',
-    'settings-panel',
-    element(
-      'div',
-      'audio-rows',
-      element('label', 'settings-row', element('span', 'controls-label', 'View'), viewChoice),
-      element('p', 'settings-note', 'A new view takes effect the next time you enter a world.'),
-    ),
-  )
-
   // ---- game (the server's, for everyone in it)
 
   const pvpBox = element('input', 'checkbox')
@@ -158,7 +136,6 @@ export function createSettingsView(settings: Settings, onBack: () => void, game?
       input.disabled = settings.muted
     }
     mute.checked = settings.muted
-    viewChoice.value = settings.view
     if (game) {
       const { host, pvp, isHost } = game.get()
       pvpBox.checked = pvp
@@ -174,7 +151,7 @@ export function createSettingsView(settings: Settings, onBack: () => void, game?
       tabButton.classList.toggle('is-active', id === tab)
       tabButton.setAttribute('aria-selected', String(id === tab))
     }
-    body.replaceChildren(tab === 'controls' ? controlsPanel : tab === 'audio' ? audioPanel : tab === 'game' ? gamePanel : graphicsPanel)
+    body.replaceChildren(tab === 'controls' ? controlsPanel : tab === 'audio' ? audioPanel : gamePanel)
   }
 
   const listen = (action: Action, which: 0 | 1, keyButton: HTMLButtonElement): void => {
@@ -191,8 +168,8 @@ export function createSettingsView(settings: Settings, onBack: () => void, game?
     fill()
   }
 
-  // Before anything else hears it (the game listens to keys on the window too), a key pressed while waiting for one
-  // is taken for the binding.
+  // Before anything else hears it (the game and the menu listen to keys on the window too), a key pressed while waiting
+  // for one is taken for the binding: Escape then cancels the binding rather than leaving the settings.
   const onKeyDown = (event: KeyboardEvent): void => {
     if (!listening) return
     event.preventDefault()
@@ -221,9 +198,6 @@ export function createSettingsView(settings: Settings, onBack: () => void, game?
 
   return {
     root,
-    get isListening() {
-      return listening !== undefined
-    },
     refresh() {
       fill()
       show('controls')
