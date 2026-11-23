@@ -27,11 +27,16 @@ import { element } from './dom.ts'
 // players have built, each a little picture PX pixels a side), and the camps and the way into the dungeon show once
 // found. What stands on ground the page has loaded is drawn as it is now (`things`); elsewhere, as the seed grew it.
 // It shows round the player, and dragging it with the left button looks around, as far as you like (a double click, or
-// opening it again, brings it back to the player).
+// opening it again, brings it back to the player). The mouse wheel (or its + and - buttons) zooms it in and out, from
+// ZOOM_MIN to ZOOM_MAX times its own size, about the mouse; the zoom is kept while the page is open.
 
 const CELL = 4
 // Pixels a side per tile in the map's picture.
 const PX = 4
+// How far the map zooms out and in (times PX pixels a tile), and how much each notch of the wheel or press of a button.
+const ZOOM_MIN = 0.25
+const ZOOM_MAX = 4
+const ZOOM_STEP = 1.25
 // How often the explored ground the page has loaded is drawn again, so a felled tree or a new fence shows.
 const REFRESH_MS = 2_000
 const REVEAL = WORLD_GEN.map.reveal
@@ -64,6 +69,9 @@ const WOOD_DARK: Rgb = [0x6b, 0x4a, 0x2c]
 const SOIL: Rgb = [0x4e, 0x36, 0x24]
 const SPROUT: Rgb = [0x7c, 0xb0, 0x4a]
 const FIRE: Rgb = [0xf0, 0x8a, 0x2c]
+const BONE: Rgb = [0xe6, 0xdf, 0xc8]
+const BLOOD: Rgb = [0x7a, 0x0f, 0x1a]
+const DARK_STONE: Rgb = [0x2c, 0x28, 0x30]
 type Glyph = { rows: readonly string[]; colors: Readonly<Record<string, Rgb>> }
 const GLYPHS: Partial<Record<BuildingKind, Glyph>> = {
   tree: { rows: ['.ll.', 'lLLL', 'LLLL', '.tt.'], colors: { l: LEAF_LIGHT, L: LEAF, t: TRUNK } },
@@ -77,6 +85,8 @@ const GLYPHS: Partial<Record<BuildingKind, Glyph>> = {
   campfire: { rows: ['....', '.ff.', 'sffs', 'ssss'], colors: { f: FIRE, s: STONE } },
   oven: { rows: ['.ss.', 'ssss', 'sffs', 'ssss'], colors: { f: FIRE, s: STONE } },
   well: { rows: ['wwww', '.ss.', 'sPPs', '.ss.'], colors: { w: WOOD, s: STONE, P: POND } },
+  altar: { rows: ['b..b', 'bRRb', 'sRRs', 'ssss'], colors: { b: BONE, R: BLOOD, s: DARK_STONE } },
+  pedestal: { rows: ['ssss', '.s..', '.s..', 'ssss'], colors: { s: STONE } },
 }
 // Anything else a player put down (a chest, the stations, a barrel...): a block of wood.
 const BUILT: Glyph = { rows: ['dddd', 'dwwd', 'dwwd', 'dddd'], colors: { d: WOOD_DARK, w: WOOD } }
@@ -120,7 +130,14 @@ export type MapView = {
 export function createMapView(container: HTMLElement): MapView {
   const canvas = element('canvas', 'map-canvas')
   const note = element('p', 'map-note')
-  const root = element('div', 'map-overlay', element('div', 'map-card', element('h2', 'map-title', 'Map'), canvas, note))
+  const zoomOut = element('button', 'map-zoom-button', '−')
+  const zoomIn = element('button', 'map-zoom-button', '+')
+  const zoomText = element('span', 'map-zoom-text')
+  zoomOut.type = zoomIn.type = 'button'
+  zoomOut.title = 'Zoom out'
+  zoomIn.title = 'Zoom in'
+  const zoomBar = element('div', 'map-zoom', zoomOut, zoomText, zoomIn)
+  const root = element('div', 'map-overlay', element('div', 'map-card', element('h2', 'map-title', 'Map'), canvas, element('div', 'map-foot', note, zoomBar)))
   root.hidden = true
   container.append(root)
   const context = canvas.getContext('2d')!
@@ -154,8 +171,10 @@ export function createMapView(container: HTMLElement): MapView {
   let dirty = false
   let savedAt = 0
   let landmarks: Array<{ x: number; y: number; kind: 'camp' | 'dungeon' }> = []
-  // How far the view has been dragged from round the player (pixels of the canvas), and the drag going on.
+  // How far the view has been dragged from round the player (tiles), the drag going on, and how far it is zoomed
+  // (times PX pixels a tile).
   let pan = { x: 0, y: 0 }
+  let zoom = 1
   let dragging: { id: number; x: number; y: number } | undefined
 
   const regionAt = (rx: number, ry: number, make: boolean): Region | undefined => {
@@ -327,10 +346,14 @@ export function createMapView(container: HTMLElement): MapView {
     canvas.height = Math.max(200, Math.round(container.clientHeight * 0.75))
     // PX pixels a tile, so what stands on the ground can be made out; round the player, or wherever it is dragged to
     // (the world goes on every way, so there are no edges to stop at).
-    const scale = PX
-    const ox = frame.me.x * scale - canvas.width / 2 + pan.x
-    const oy = frame.me.y * scale - canvas.height / 2 + pan.y
-    context.imageSmoothingEnabled = false
+    const scale = PX * zoom
+    const ox = (frame.me.x + pan.x) * scale - canvas.width / 2
+    const oy = (frame.me.y + pan.y) * scale - canvas.height / 2
+    // Zoomed out, the pictures are smoothed rather than losing whole rows of pixels.
+    context.imageSmoothingEnabled = zoom < 1
+    zoomText.textContent = `${Math.round(zoom * 100)}%`
+    zoomOut.disabled = zoom <= ZOOM_MIN
+    zoomIn.disabled = zoom >= ZOOM_MAX
     // Unexplored: dark fog; explored: the ground.
     context.fillStyle = '#0d1218'
     context.fillRect(0, 0, canvas.width, canvas.height)
@@ -338,7 +361,7 @@ export function createMapView(container: HTMLElement): MapView {
     for (let ry = Math.floor(oy / span); ry <= Math.floor((oy + canvas.height) / span); ry++) {
       for (let rx = Math.floor(ox / span); rx <= Math.floor((ox + canvas.width) / span); rx++) {
         const region = regionAt(rx, ry, false)
-        if (region) context.drawImage(region.picture, Math.round(rx * span - ox), Math.round(ry * span - oy), span, span)
+        if (region) context.drawImage(region.picture, Math.floor(rx * span - ox), Math.floor(ry * span - oy), Math.ceil(span) + 1, Math.ceil(span) + 1)
       }
     }
     const at = (x: number, y: number): [number, number] => [x * scale - ox, y * scale - oy]
@@ -386,7 +409,7 @@ export function createMapView(container: HTMLElement): MapView {
       context.stroke()
       context.restore()
     }
-    note.textContent = frame.away ? 'You are in the ice crypt, off the map.' : 'Explore to fill in the map. Drag to look around. M to close.'
+    note.textContent = frame.away ? 'You are in the ice crypt, off the map.' : 'Explore to fill in the map. Drag to look around, scroll to zoom. M to close.'
   }
 
   // Dragging the map with the left button looks around it.
@@ -402,7 +425,8 @@ export function createMapView(container: HTMLElement): MapView {
     if (!dragging || event.pointerId !== dragging.id) return
     // The canvas may be drawn bigger or smaller than its pixels.
     const ratio = canvas.width / Math.max(1, canvas.clientWidth)
-    pan = { x: pan.x - (event.clientX - dragging.x) * ratio, y: pan.y - (event.clientY - dragging.y) * ratio }
+    const scale = PX * zoom
+    pan = { x: pan.x - ((event.clientX - dragging.x) * ratio) / scale, y: pan.y - ((event.clientY - dragging.y) * ratio) / scale }
     dragging = { ...dragging, x: event.clientX, y: event.clientY }
     if (last) draw(last)
   })
@@ -413,6 +437,40 @@ export function createMapView(container: HTMLElement): MapView {
   }
   canvas.addEventListener('pointerup', endDrag)
   canvas.addEventListener('pointercancel', endDrag)
+  // Zooms by `factor`, keeping the spot under `at` (canvas pixels; the middle if not given) where it is.
+  const zoomBy = (factor: number, at?: { x: number; y: number }): void => {
+    const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom * factor))
+    if (next === zoom) return
+    const px = (at?.x ?? canvas.width / 2) - canvas.width / 2
+    const py = (at?.y ?? canvas.height / 2) - canvas.height / 2
+    // The tile under the point stays under it: pan + p / (PX * zoom) is the same before and after.
+    pan = { x: pan.x + px / (PX * zoom) - px / (PX * next), y: pan.y + py / (PX * zoom) - py / (PX * next) }
+    zoom = next
+    if (last) draw(last)
+  }
+  canvas.addEventListener(
+    'wheel',
+    (event) => {
+      event.preventDefault()
+      event.stopPropagation()
+      if (event.deltaY === 0) return
+      const rect = canvas.getBoundingClientRect()
+      const ratio = canvas.width / Math.max(1, rect.width)
+      // A notch (about 100 pixels) a step; a trackpad's small scrolls a little at a time.
+      // (Some browsers count in lines, about 33 pixels each, or pages.)
+      const pixels = event.deltaY * (event.deltaMode === 1 ? 33 : event.deltaMode === 2 ? 400 : 1)
+      const notches = Math.max(-3, Math.min(3, -pixels / 100))
+      zoomBy(ZOOM_STEP ** notches, { x: (event.clientX - rect.left) * ratio, y: (event.clientY - rect.top) * ratio })
+    },
+    { passive: false },
+  )
+  for (const [button, factor] of [[zoomIn, ZOOM_STEP], [zoomOut, 1 / ZOOM_STEP]] as const) {
+    button.addEventListener('pointerdown', (event) => event.stopPropagation())
+    button.addEventListener('click', (event) => {
+      event.stopPropagation()
+      zoomBy(factor)
+    })
+  }
   canvas.addEventListener('dblclick', () => {
     pan = { x: 0, y: 0 }
     if (last) draw(last)

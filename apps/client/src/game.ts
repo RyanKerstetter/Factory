@@ -54,6 +54,14 @@ import {
   withPush,
   type AttackArea,
   LIQUIDS,
+  ALTAR_GLOW_TICKS,
+  ALTAR_RECIPES,
+  altarBusy,
+  altarRoomFor,
+  altarSurroundings,
+  offeringsOf,
+  planRitual,
+  ritualFraction,
   MONSTER_MASS,
   monsterDef,
   NO_ITEM,
@@ -131,8 +139,10 @@ import type {
   OverlayView,
   PlayerView,
   PlayerPose,
+  RitualView,
   TrapView,
 } from './render3d/frame.ts'
+import { drawnAt, offeringWindows } from './ritual-timeline.ts'
 import { CROP_GROWTH_STAGES } from './render3d/models.ts'
 import { createThreeView } from './render3d/three-view.ts'
 import { HOTBAR_ACTIONS, Settings } from './settings.ts'
@@ -1174,7 +1184,8 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     zoomedAt = zoomNow
     view.look({ x: playerX / SUB, y: playerY / SUB }, zoom)
 
-    const buildings = visibleBuildings(remoteTick)
+    const rituals = ritualViews(alpha)
+    const buildings = visibleBuildings(remoteTick, rituals)
     const removing = prediction.removals()
     // The cold: frost creeping over the view as the body cools, and snow blowing in cold air (only a few flakes
     // drifting down in the ice crypt, out of the wind).
@@ -1203,6 +1214,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       }),
       attacks: attackView(now, playerX / SUB, playerY / SUB, remoteTick),
       overlay: overlay(buildings),
+      rituals,
       ...(debug ? { debug: debugView() } : {}),
     })
 
@@ -1581,8 +1593,47 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     return views
   }
 
-  const visibleBuildings = (remoteTick: number): BuildingView[] => {
+  // The altars in view in the middle of a ritual, or glowing after one (see ritual-timeline.ts for how it is shown).
+  const ritualViews = (alpha: number): RitualView[] => {
     const bounds = view.visible()
+    // Far enough out that the beams from pedestals and barrels in view are drawn.
+    const margin = 3
+    const found: RitualView[] = []
+    for (const chunkId of mirror.world.chunkIds) {
+      const { cx, cy } = chunkCoords(chunkId)
+      if ((cx + 1) * CHUNK_SIZE <= bounds.left - margin || cx * CHUNK_SIZE > bounds.right + margin) continue
+      if ((cy + 1) * CHUNK_SIZE <= bounds.top - margin || cy * CHUNK_SIZE > bounds.bottom + margin) continue
+      for (const entity of mirror.world.chunk(chunkId)!.entities) {
+        if (entity.kind !== 'altar' || (entity.recipe === 0 && entity.glow === 0)) continue
+        const busy = entity.recipe !== 0
+        found.push({
+          id: entity.id,
+          x: entity.x,
+          y: entity.y,
+          t: busy ? ritualFraction(entity, alpha) : 1,
+          offerings: offeringsOf(entity.offerings),
+          glow: busy ? 0 : Math.max(0, (entity.glow - alpha) / ALTAR_GLOW_TICKS),
+        })
+      }
+    }
+    return found
+  }
+
+  const visibleBuildings = (remoteTick: number, rituals: readonly RitualView[]): BuildingView[] => {
+    const bounds = view.visible()
+    // The liquid a ritual has taken from a barrel but not yet drawn off on its beam: the barrel still shows it, draining
+    // as it goes (by tile, "x,y").
+    const undrawn = new Map<string, { liquid: number; buckets: number }>()
+    for (const ritual of rituals) {
+      const windows = offeringWindows(ritual.offerings)
+      ritual.offerings.forEach((offering, i) => {
+        if (!offering.liquid) return
+        const spot = `${ritual.x + offering.dx},${ritual.y + offering.dy}`
+        const left = offering.count * (1 - drawnAt(windows[i], ritual.t))
+        const there = undrawn.get(spot)
+        undrawn.set(spot, { liquid: offering.liquid, buckets: (there?.buckets ?? 0) + left })
+      })
+    }
     // Where the players are, in units, for opening gates.
     const walkers = [local.position, ...remotes.positionsAt(remoteTick)]
     const tied = tiedFences()
@@ -1596,7 +1647,14 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       if (entity.kind === 'barrel') {
         const plan = barrelPlan(entity)
         const composting = plan.ready && plan.recipe?.output === itemByKey('compost')?.id
-        return { ...entity, barrel: { sealed: entity.sealed === 1, liquid: LIQUIDS[entity.liquid] ?? '', fill: entity.amount / BARREL_CAPACITY, composting } }
+        const drawing = undrawn.get(`${entity.x},${entity.y}`)
+        const liquid = entity.amount > 0 ? entity.liquid : (drawing?.liquid ?? 0)
+        const amount = Math.min(BARREL_CAPACITY, entity.amount + (drawing?.buckets ?? 0))
+        return { ...entity, barrel: { sealed: entity.sealed === 1, liquid: LIQUIDS[liquid] ?? '', fill: amount / BARREL_CAPACITY, composting } }
+      }
+      if (entity.kind === 'pedestal' || entity.kind === 'altar') {
+        const on = entity.inv.slots[0]
+        return isFilled(on) ? { ...entity, shown: on.item } : entity
       }
       if (entity.kind === 'rack') {
         const rack = entity.inv.slots[RACK_OUTPUT].count > 0 ? 'done' : entity.inv.slots[RACK_INPUT].count > 0 ? 'drying' : 'empty'
@@ -1884,6 +1942,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   // while what is in it is enough.
   const machineRecipe = (id: number, index: number, times: number): void => {
     const machine = mirror.world.entity(id)
+    if (machine?.kind === 'altar') return startRitual(machine, index)
     if (!machine || !isStation(machine)) return
     const recipe = STATION_RECIPES[machine.kind][index]
     if (!recipe) return
@@ -1905,6 +1964,18 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     const more = timesAfford(player, inputs, times)
     if (more > 0) for (const [item, need] of inputs) if (typeof item === 'number') send({ k: 'put', id, item, max: need * more })
     send({ k: 'work', id, recipe: index })
+  }
+
+  // What is on the pedestals and in the barrels round an altar.
+  const surroundingsOf = (altar: Entity): ReturnType<typeof altarSurroundings> => altarSurroundings(altar.x, altar.y, (x, y) => mirror.world.entityAt(x, y))
+
+  // The Craft button under one of an altar's rituals: it starts if everything it takes is round the altar, nothing else is
+  // under way there, and there is room on it for what it makes (the server takes it all, and the altar does the rest).
+  const startRitual = (altar: Extract<Entity, { kind: 'altar' }>, index: number): void => {
+    const recipe = ALTAR_RECIPES[index]
+    if (!recipe || altarBusy(altar) || !altarRoomFor(altar, recipe) || !planRitual(recipe, surroundingsOf(altar))) return craftFailed()
+    sounds.play('craft/one')
+    send({ k: 'work', id: altar.id, recipe: index })
   }
 
   // A hand recipe, `times` times (as many as the player can make, with Infinity).
@@ -2008,7 +2079,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   }
 
   const machinePanel = (opened: Entity, player: Inventory, inv: Inventory): { machine?: MachineView } => {
-    const machine = machineView(opened, player, inv)
+    const machine = machineView(opened, player, inv, opened.kind === 'altar' ? surroundingsOf(opened) : undefined)
     return machine ? { machine } : {}
   }
 

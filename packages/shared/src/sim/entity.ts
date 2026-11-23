@@ -18,6 +18,7 @@ import {
   stepCampfire,
   stepRack,
 } from '../machines.ts'
+import { stepAltar } from '../altar.ts'
 import { isStationKind, STATION_LAYOUT, STATION_RECIPES, stationCan, stationMake, stationSlotsFor, type StationKind } from '../stations.ts'
 import { stepLane, type BeltShape, type LaneItem } from './belt.ts'
 import type { Hasher } from './hash.ts'
@@ -81,6 +82,12 @@ export type BarrelEntity = EntityBase & {
 }
 // A drying rack (see machines.ts).
 export type RackEntity = EntityBase & { kind: 'rack'; hp: number; inv: Inventory; progress: number; heat: number; border: number }
+// A pedestal: one slot, for anything, which an altar beside it can draw on (see altar.ts).
+export type PedestalEntity = EntityBase & { kind: 'pedestal'; hp: number; inv: Inventory }
+// An altar (see altar.ts): its one slot, the ritual it is working through (its index in ALTAR_RECIPES, plus one; 0 for
+// none) and how far, how long it still glows after one, and what the ritual took from where (its offerings, sent after
+// its numbers).
+export type AltarEntity = EntityBase & { kind: 'altar'; hp: number; inv: Inventory; recipe: number; progress: number; glow: number; offerings: number[] }
 
 // The machines: buildings whose state is their slots and a row of numbers, in this order (how they are sent, saved
 // and hashed), and how many slots each has. A new machine is a kind here, its entity type above, and what it does each
@@ -94,8 +101,12 @@ const MACHINE_FIELDS = {
   oven: FIRE_FIELDS,
   barrel: ['hp', 'liquid', 'amount', 'sealed', 'process', 'progress', 'heat', 'border'],
   rack: ['hp', 'progress', 'heat', 'border'],
+  pedestal: ['hp'],
+  altar: ['hp', 'recipe', 'progress', 'glow'],
 } as const
 export type MachineKind = keyof typeof MACHINE_FIELDS
+// How many numbers an altar has before its offerings.
+export const ALTAR_NUMBERS = MACHINE_FIELDS.altar.length
 export const MACHINE_SLOTS: Readonly<Record<MachineKind, number>> = {
   stump: STATION_LAYOUT.stump.slots,
   workbench: STATION_LAYOUT.workbench.slots,
@@ -103,8 +114,10 @@ export const MACHINE_SLOTS: Readonly<Record<MachineKind, number>> = {
   oven: CAMPFIRE_SLOTS,
   barrel: BARREL_SLOTS,
   rack: RACK_SLOTS,
+  pedestal: 1,
+  altar: 1,
 }
-export type MachineEntity = StationEntity | CampfireEntity | BarrelEntity | RackEntity
+export type MachineEntity = StationEntity | CampfireEntity | BarrelEntity | RackEntity | PedestalEntity | AltarEntity
 
 export function isMachineKind(kind: string): kind is MachineKind {
   return Object.hasOwn(MACHINE_FIELDS, kind)
@@ -205,6 +218,8 @@ export function createEntity(id: number, kind: BuildingKind, x: number, y: numbe
     case 'oven':
     case 'barrel':
     case 'rack':
+    case 'pedestal':
+    case 'altar':
       return machineFrom(kind, id, x, y, createInventory(MACHINE_SLOTS[kind]), MACHINE_FIELDS[kind].map((field) => (field === 'hp' ? hp : 0)))
   }
 }
@@ -212,6 +227,8 @@ export function createEntity(id: number, kind: BuildingKind, x: number, y: numbe
 function machineFrom(kind: MachineKind, id: number, x: number, y: number, inv: Inventory, values: readonly number[]): MachineEntity {
   const machine: Record<string, unknown> = { id, kind, x, y, dir: 0, inv }
   MACHINE_FIELDS[kind].forEach((field, i) => (machine[field] = values[i] ?? 0))
+  // An altar's offerings come after its numbers.
+  if (kind === 'altar') machine.offerings = values.slice(MACHINE_FIELDS.altar.length)
   return machine as MachineEntity
 }
 
@@ -223,7 +240,8 @@ export function withMachine(machine: MachineEntity, changes: Readonly<Record<str
 }
 
 function machineValues(machine: MachineEntity): number[] {
-  return MACHINE_FIELDS[machine.kind].map((field) => (machine as unknown as Record<string, number>)[field])
+  const values = MACHINE_FIELDS[machine.kind].map((field) => (machine as unknown as Record<string, number>)[field])
+  return machine.kind === 'altar' ? [...values, ...machine.offerings] : values
 }
 
 // Phase A for one building: what it does on its own, without anything around it.
@@ -256,6 +274,9 @@ export function stepEntity(entity: Entity): void {
       return
     case 'rack':
       stepRack(entity)
+      return
+    case 'altar':
+      stepAltar(entity)
       return
     default:
       // Everything else only changes when something is done to it (or on a random tick: see `randomTick`).
@@ -324,15 +345,25 @@ function slotsFor(entity: Entity & { inv: Inventory }, item: ItemId): { slots: r
       return { slots: BARREL_SOLIDS, limit }
     case 'rack':
       return rackRecipe(item) ? { slots: [RACK_INPUT], limit: 1 } : undefined
+    case 'pedestal':
+    case 'altar':
+      // One slot, for anything.
+      return { slots: [0], limit }
     default:
       return undefined
   }
 }
 
+// Whether a building takes nothing in and gives nothing out for now: a sealed barrel, an altar in the middle of a
+// ritual.
+export function isClosed(entity: Entity): boolean {
+  return (entity.kind === 'barrel' && entity.sealed !== 0) || (entity.kind === 'altar' && entity.recipe !== 0)
+}
+
 // How many of `item` slot `index` of a building takes by hand (0: none: not that item, or an output slot, or a sealed
 // barrel).
 export function slotLimitIn(entity: Entity, index: number, item: ItemId): number {
-  if (!hasInventory(entity) || (entity.kind === 'barrel' && entity.sealed)) return 0
+  if (!hasInventory(entity) || isClosed(entity)) return 0
   if (!entity.inv.slots[index]) return 0
   const route = slotsFor(entity, item)
   if (!route) return entity.kind === 'chest' || entity.kind === 'feeder' || entity.kind === 'miner' ? stackLimit(item, entity.inv.stack) : 0
@@ -342,7 +373,7 @@ export function slotLimitIn(entity: Entity, index: number, item: ItemId): number
 // How many of `item`, up to `wanted`, a building would take by hand.
 export function roomInBuilding(entity: Entity, item: ItemId, wanted: number): number {
   if (!hasInventory(entity)) return 0
-  if (entity.kind === 'barrel' && entity.sealed) return 0
+  if (isClosed(entity)) return 0
   const route = slotsFor(entity, item)
   if (!route) return entity.kind === 'chest' || entity.kind === 'feeder' || entity.kind === 'miner' ? roomFor(entity.inv, item, wanted) : 0
   let room = 0
@@ -378,7 +409,7 @@ export function addToBuilding(entity: Entity, item: ItemId, count: number): numb
 
 // Takes up to `count` of `item` out of a building. Gives how many came out. A sealed barrel gives nothing.
 export function takeFromBuilding(entity: Entity, item: ItemId, count: number): number {
-  if (!hasInventory(entity) || (entity.kind === 'barrel' && entity.sealed)) return 0
+  if (!hasInventory(entity) || isClosed(entity)) return 0
   return removeItems(entity.inv, item, count)
 }
 
@@ -496,6 +527,8 @@ export function entityToState(entity: Entity): EntityState {
     case 'oven':
     case 'barrel':
     case 'rack':
+    case 'pedestal':
+    case 'altar':
       return { id, kind: entity.kind, x, y, dir, inv: inventoryToWire(entity.inv), n: machineValues(entity) }
   }
 }
@@ -542,6 +575,8 @@ export function entityFromState(state: EntityState): Entity {
     case 'oven':
     case 'barrel':
     case 'rack':
+    case 'pedestal':
+    case 'altar':
       return machineFrom(state.kind, id, x, y, inventoryFromWire(state.inv), state.n)
   }
 }
@@ -603,6 +638,8 @@ export function hashEntity(hasher: Hasher, entity: Entity): void {
     case 'oven':
     case 'barrel':
     case 'rack':
+    case 'pedestal':
+    case 'altar':
       for (const value of machineValues(entity)) hasher.int(value)
       hashInventory(hasher, entity.inv)
       return

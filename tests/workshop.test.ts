@@ -32,6 +32,12 @@ import {
   oneKindEach,
   stepEntity,
   type BarrelEntity,
+  BARREL_CAPACITY,
+  bucketFor,
+  LIQUIDS,
+  monsterDef,
+  ALTAR_RECIPES,
+  offeringsOf,
 } from '../packages/shared/src/index.ts'
 import { differingChunks, run, TestClient } from './helpers.ts'
 
@@ -411,6 +417,94 @@ test('flour and water mix into dough in an open barrel: four flour and a bucket 
   assert.deepEqual([barrel.inv.slots[BARREL_OUTPUT].item, barrel.inv.slots[BARREL_OUTPUT].count], [itemId('dough'), 2])
   assert.equal(barrel.inv.slots[BARREL_SOLIDS[0]].count, 2, 'four flour went into each')
   assert.equal(barrel.amount, 0, 'and a bucket of water')
+})
+
+test('any meat in a sealed, heated barrel turns into a bucket of blood each; not with another liquid in it, nor past full', () => {
+  const recipe = BARREL_RECIPES.find((one) => one.liquidOut === LIQUIDS.indexOf('blood'))!
+  assert.ok(recipe, 'the barrel makes blood')
+  const barrel = createEntity(1, 'barrel', 0, 0, 0, 0) as BarrelEntity
+  barrel.inv.slots[BARREL_SOLIDS[0]] = { item: itemId('steak'), count: 2 }
+  assert.equal(barrelPlan(barrel).ready, false, 'it has to be sealed')
+  barrel.sealed = 1
+  assert.equal(barrelPlan(barrel).ready, false, 'and heated')
+  barrel.heat = recipe.heat
+  assert.equal(barrelPlan(barrel).ready, true)
+  for (let i = 0; i < 2 * recipe.ticks; i++) stepEntity(barrel)
+  assert.equal(barrel.liquid, LIQUIDS.indexOf('blood'))
+  assert.equal(barrel.amount, 2, 'a bucket for each steak')
+  assert.equal(barrel.inv.slots[BARREL_SOLIDS[0]].count, 0)
+  assert.equal(bucketFor(barrel.liquid), itemId('blood-bucket'), 'drawn off in a bucket of blood')
+  // Chicken is meat too, and adds to the blood already in it.
+  barrel.inv.slots[BARREL_SOLIDS[0]] = { item: itemId('raw-chicken'), count: 1 }
+  for (let i = 0; i < recipe.ticks; i++) stepEntity(barrel)
+  assert.equal(barrel.amount, 3)
+  // Full: it stops.
+  barrel.inv.slots[BARREL_SOLIDS[0]] = { item: itemId('raw-chicken'), count: 1 }
+  barrel.amount = BARREL_CAPACITY
+  for (let i = 0; i < recipe.ticks; i++) stepEntity(barrel)
+  assert.equal(barrel.amount, BARREL_CAPACITY)
+  assert.equal(barrel.inv.slots[BARREL_SOLIDS[0]].count, 1, 'the chicken waits')
+  // With water in it, meat makes nothing.
+  barrel.liquid = LIQUID_WATER
+  barrel.amount = 2
+  assert.equal(barrelPlan(barrel).recipe, undefined)
+})
+
+test('the workbench makes a pedestal from 5 stone and an altar from stone, essence, bone and a lich core; the frost lich drops only its core', () => {
+  const pedestal = STATION_RECIPES.workbench.find((candidate) => candidate.output === itemId('pedestal'))!
+  assert.deepEqual(pedestal.inputs, [[itemId('stone'), 5]])
+  const altar = STATION_RECIPES.workbench.find((candidate) => candidate.output === itemId('altar'))!
+  assert.deepEqual(new Set(altar.inputs.map(([item]) => item)), new Set(['stone', 'essence', 'bone', 'lich-core'].map(itemId)))
+  assert.deepEqual(monsterDef('frost-lich').drops, [{ item: itemId('lich-core'), min: 1, max: 1 }])
+  const { room, client } = workshop('ALTAR', { altar: 1, pedestal: 1 })
+  const tile = { x: Math.floor(client.player.position.x / 256) + 2, y: Math.floor(client.player.position.y / 256) }
+  assert.equal(place(room, client, 0, tile.x, tile.y).kind, 'altar')
+  assert.equal(place(room, client, 1, tile.x + 2, tile.y).kind, 'pedestal')
+  assert.deepEqual(differingChunks(room, client), [])
+})
+
+test('an altar takes a ritual from the pedestals and barrels round it all at once, works through it on its own, and makes a lich core', () => {
+  const ritual = ALTAR_RECIPES.find((recipe) => recipe.output === itemId('lich-core'))!
+  assert.ok(ritual, 'the altar makes a lich core')
+  const kinds = ['fang', 'leather', 'essence', 'bone', 'charcoal', 'breakfast-sandwich', 'compost', 'feather']
+  const need = (key: string): number => ritual.inputs.find(([match]) => match === itemId(key))![1]
+  const items: Record<string, number> = { altar: 1, pedestal: 8, barrel: 1 }
+  for (const key of kinds) items[key] = need(key)
+  const { room, client } = workshop('RITUAL', items)
+  const buckets = 8
+  for (let i = 0; i < buckets; i++) client.player.inventory.slots[11 + i] = { item: itemId('blood-bucket'), count: 1 }
+  const tile = { x: Math.floor(client.player.position.x / SUB) + 4, y: Math.floor(client.player.position.y / SUB) }
+  const altar = place(room, client, 0, tile.x, tile.y)
+  // Seven pedestals round it, one two tiles off (still in its reach), and the barrel beside it.
+  const spots = [[-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [0, 2]]
+  const pedestals = spots.map(([dx, dy]) => place(room, client, 1, tile.x + dx, tile.y + dy))
+  const barrel = place(room, client, 2, tile.x - 1, tile.y)
+  kinds.forEach((key, i) => client.command({ k: 'put', id: pedestals[i].id, item: itemId(key), max: need(key) }))
+  run(room, [client], 3)
+  // Without the blood it does not start.
+  client.command({ k: 'work', id: altar.id, recipe: ritual.index })
+  run(room, [client], 3)
+  assert.equal(client.results.at(-1)?.why, 'ritualLacking')
+  for (let i = 0; i < buckets; i++) client.command({ k: 'apply', x: barrel.x, y: barrel.y, slot: 11 + i })
+  run(room, [client], 3)
+  assert.equal(at(room, barrel.id).amount, buckets)
+  client.command({ k: 'work', id: altar.id, recipe: ritual.index })
+  run(room, [client], 3)
+  // Everything is taken at once, and the altar keeps where it came from.
+  for (const pedestal of pedestals) assert.equal(at(room, pedestal.id).inv.slots[0].count, 0, 'the pedestals are bare')
+  assert.equal(at(room, barrel.id).amount, 0, 'the barrel is drained')
+  const busy = room.world.entity(altar.id) as Extract<Entity, { kind: 'altar' }>
+  assert.equal(busy.recipe, ritual.index + 1)
+  assert.equal(offeringsOf(busy.offerings).length, kinds.length + 1, 'an offering from each pedestal, and the barrel')
+  // Nothing goes on it while it works.
+  client.command({ k: 'work', id: altar.id, recipe: ritual.index })
+  run(room, [client], ritual.ticks)
+  assert.equal(client.results.at(-1)?.why, 'busy')
+  const done = room.world.entity(altar.id) as Extract<Entity, { kind: 'altar' }>
+  assert.deepEqual([done.inv.slots[0].item, done.inv.slots[0].count], [itemId('lich-core'), 1], 'the lich core is on the altar')
+  assert.equal(done.recipe, 0)
+  assert.equal(done.offerings.length, 0)
+  assert.deepEqual(differingChunks(room, client), [], 'the page worked it through just the same')
 })
 
 test('an oven bakes dough into bread, and cooks twice as fast as a campfire; a campfire will not take dough', () => {

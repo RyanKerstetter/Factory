@@ -35,14 +35,14 @@ import { itemFromKey, type ItemId } from './items.ts'
 //     degrees):
 //     - `blizzard` (close): a whirl `radius` tiles round it for `duration`, hurting everyone in it `damage` every
 //       `every` seconds, through any armour.
-//     - `wisps` (close): `perPlayer` frozen wisps for each player, one after another over `over` seconds, on a ring
+//     - `wisps` (close): `perPlayer` waves of frozen wisps over `over` seconds, each wave one for every player at once, on a ring
 //       halfway out to the wall, never within `clear` tiles of a player nor `apart` of another wisp (see `frost-wisp`
 //       for how fast they go and how hard they hit).
 //     - `icicles` (far): one falls where each player stands and `extra` more within `spread` tiles of them, shown
 //       `warning` seconds before they land, each hurting everyone within `radius` for `damage`.
 //     - `shards` (far): `count` shards of ice fanned `arc` wide at each player, flying at `speed` tiles a second for
 //       `duration`, each for `damage`.
-//     - `summon`: `perPlayer` skeleton archers for each player round the edge of the hall, `chance` of the time once
+//     - `summon`: `base` skeleton archers for one player, and `perExtraPlayer` more for each player after the first, round the edge of the hall, `chance` of the time once
 //       those it called last are dead and it has cast `afterCasts` times since.
 // - `drops`: what it drops when killed, `min` to `max` of each item.
 export type BladeSwing = { reach: number; arc: number; windup: number; damage: number; knockback: number }
@@ -77,7 +77,7 @@ export type LichSpells = {
   wisps: { perPlayer: number; over: number; clear: number; apart: number }
   icicles: { warning: number; radius: number; damage: number; extra: number; spread: number }
   shards: { count: number; arc: number; speed: number; duration: number; damage: number }
-  summon: { chance: number; afterCasts: number; perPlayer: number }
+  summon: { chance: number; afterCasts: number; base: number; perExtraPlayer: number }
 }
 
 export type MonsterDef = {
@@ -237,7 +237,7 @@ function spellsOf(a: Fields, fail: Fail): LichSpells {
   const wisps = part('wisps', ['perPlayer', 'over', 'clear', 'apart'])
   const icicles = part('icicles', ['warning', 'radius', 'damage', 'extra', 'spread'])
   const shards = part('shards', ['count', 'arc', 'speed', 'duration', 'damage'])
-  const summon = part('summon', ['chance', 'afterCasts', 'perPlayer'])
+  const summon = part('summon', ['chance', 'afterCasts', 'base', 'perExtraPlayer'])
   return {
     castEvery: secondsField(a, 'castEvery', fail),
     castTime: secondsField(a, 'castTime', fail),
@@ -272,7 +272,8 @@ function spellsOf(a: Fields, fail: Fail): LichSpells {
     summon: {
       chance: numberField(summon, 'chance', fail),
       afterCasts: wholeField(summon, 'afterCasts', fail),
-      perPlayer: wholeField(summon, 'perPlayer', fail),
+      base: wholeField(summon, 'base', fail),
+      perExtraPlayer: wholeField(summon, 'perExtraPlayer', fail),
     },
   }
 }

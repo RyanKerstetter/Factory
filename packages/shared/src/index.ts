@@ -1,3 +1,4 @@
+export * from './altar.ts'
 export * from './animals.ts'
 export * from './buildings.ts'
 export * from './coast.ts'

@@ -63,8 +63,8 @@ function parseStations(data: unknown): Record<StationKind, StationRecipe[]> {
   const speed: Record<Includable, number> = { player: PLAYER_CRAFT_SPEED, stump: 1, workbench: 1 }
   for (const [station, entry] of Object.entries(data)) {
     // The player's recipes are read in recipes.ts; the fires' (the campfire's and the oven's), the barrel's and the
-    // drying rack's in machines.ts.
-    if (station === 'player' || station === 'fire' || station === 'oven' || station === 'barrel' || station === 'rack') continue
+    // drying rack's in machines.ts; the altar's in altar.ts.
+    if (station === 'player' || station === 'fire' || station === 'oven' || station === 'barrel' || station === 'rack' || station === 'altar') continue
     const fail = failIn(`data/stations.json, ${station}`)
     if (!isStationKind(station)) fail('there is no station of that name')
     const kind = station as StationKind

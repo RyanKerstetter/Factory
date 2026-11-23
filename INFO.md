@@ -244,9 +244,9 @@ friend is in now.
   **hall** (a great round chamber, `BOSS_HALL_RADIUS` tiles from its middle to its wall) a glowing **line**. Whoever
   crosses it starts the fight: the door shuts behind everyone in the lich's rooms (nobody else gets in, but whoever is
   in the waiting room can still go on in and fight), the lich wakes, and its health shows across the top of the screen,
-  as a number (hp / max) and a bar marked off every 50 hp (`BOSS_NOTCH` in `game.ts`). It has 1200 hp with one player
-  there, and 80% of that more for each player after the first (`BOSS_HP_PER_PLAYER`: 1.8 times for two, 2.6 times for
-  three).
+  as a number (hp / max) and a bar marked off every 50 hp (`BOSS_NOTCH` in `game.ts`). It has its `hp` in `data/monsters.json` (800) with one player
+  there, and 80% of that more for each player after the first (`BOSS_HP_PER_PLAYER`: 1.8 times for two, 1440; 2.6 times for
+  three, 2080).
 - **The fight** (`apps/server/src/frost-lich.ts`). The lich never moves from the middle of its hall (nothing knocks it
   about or stuns it): you move round it, dodging what it casts. Every `CAST_EVERY` (3.2 s) it casts a spell: for
   `CAST_TICKS` (a second) it raises its glowing staff, which tells you the spell: **held high overhead for icicles**, **levelled at you for
@@ -256,15 +256,15 @@ friend is in now.
   starts, it picks by where the players are: if more are within `closeRange` (5.5 tiles) of it than further off
   (a tie either way, at random), one of its close spells, else one of its far ones:
   - **close**: a **blizzard**, a whirl of cold wind out to the close range for 4 seconds (it shows where as the cast
-    comes), hurting everyone in it 8 every half second, armour or not; or **frozen wisps**, 4 for each player, one after
-    another over 6 seconds, on a ring halfway out to the wall (anywhere else in the hall if no spot there will do),
+    comes), hurting everyone in it 8 every half second, armour or not; or **frozen wisps**, 4 waves of them over 6 seconds,
+    each wave one wisp for every player at once (so 4 for each player in all), on a ring halfway out to the wall (anywhere else in the hall if no spot there will do),
     never within 5 tiles of a player: each drifts after the nearest player, slower than you run, pushing the other
     wisps away rather than bunching up, and bursts against them (26), and is gone after 15 seconds;
   - **far**: **icicles** falling from the ceiling where each player stands (and 4 more near), a blue ring
     showing where each will land just under a second before (40 each); or a **shotgun** of 6 ice shards fanned at each
     player (18 each);
-  - and now and then (a quarter of its casts), instead, it **calls up skeleton archers**: 3 for each
-    player, round the edge of the hall, set on the players at once (a purple ring shows where as the cast comes). It
+  - and now and then (a quarter of its casts), instead, it **calls up skeleton archers**: 3 for one
+    player, and 2 more for each player after the first (5 for two, 7 for three), round the edge of the hall, set on the players at once (a purple ring shows where as the cast comes). It
     calls up no more until every one of those is dead and it has cast 10 times since.
   Every number here is the lich's `attack` in `data/monsters.json`, to tweak.
 - The lich's rooms start at `BOSS_AIR` (−40°C: you need the wolf helmet, leather armour and boots not to be slowed) and
@@ -298,7 +298,7 @@ The keys are the defaults; every key can be changed in **Esc → Settings → Co
 | 1 – 9 | Pick a hotbar slot |
 | E | Your inventory |
 | Tab (hold) | Who is playing: everyone in the world by name (the host and you marked), under the world's name and code. A line at the top left, under the world's name, says when someone joins or leaves |
-| M | The map: the world as far as you have explored it (within `map.reveal` tiles of where you have been, 12, in `data/world-gen.json`; kept in this browser, for each world and name, a 64-tile square at a time, so it goes on as far as you sail), with everyone on it, and the trees, bushes, rocks and what players have built drawn on it as little pictures (`GLYPHS` in `map-view.ts`; as they are now where the page has the ground loaded, else as the seed grew them); drag it with the left button to look around (a double click brings it back to you); nothing to make first |
+| M | The map: the world as far as you have explored it (within `map.reveal` tiles of where you have been, 12, in `data/world-gen.json`; kept in this browser, for each world and name, a 64-tile square at a time, so it goes on as far as you sail), with everyone on it, and the trees, bushes, rocks and what players have built drawn on it as little pictures (`GLYPHS` in `map-view.ts`; as they are now where the page has the ground loaded, else as the seed grew them); drag it with the left button to look around (a double click brings it back to you); scroll the mouse wheel over it, or press its + and − buttons, to zoom in and out (from a quarter to four times its size, about the mouse; kept until the page is closed); nothing to make first |
 | Mouse wheel | Zoom |
 | Esc | Close panels, open the menu (Settings, Respawn, invite link, leave), or go back from the settings |
 | F3 | Debug view: the numbers at the top left, and hitboxes: every body's round space (players yellow, animals blue, monsters red) and the solid parts of what stands on the ground round you (magenta) |
@@ -454,6 +454,30 @@ The keys are the defaults; every key can be changed in **Esc → Settings → Co
   anywhere, like a pond: right click it with an empty bucket for a bucket of water. Its model and picture follow
   `icons/buildings/well.png`: a round stone wall, two posts, a pitched roof and a bucket on a rope. Each slope of the
   roof is a row of planks with thin gaps between, held together by two battens pegged across them, under a ridge beam.
+- **Pedestal** (workbench: 5 stone): a carved stone pedestal, after `icons/buildings/pedestal.png`: dark slate on a
+  flared foot, a slim column and a wide square top. It has one slot, for a stack of anything, and what is on it floats
+  over it, bobbing and spinning (drawn as its icon, a flat picture that turns: `item-pictures.ts`).
+- **Altar** (workbench: 20 stone, 10 essence, 8 bone and a lich core): after `icons/buildings/altar.png`: a slab of dark
+  stone set with bone, an empty stone basin, and two great curved bone horns hooking in over it, streaked with blood. The
+  lich core is what the frost lich drops, and all it drops. It has one slot too, floating over it like a pedestal's.
+  - **Rituals** (`packages/shared/src/altar.ts`; `"altar"` in `data/stations.json`: `inputs`, `liquids` by name and
+    buckets, `output`, `count`, `seconds`). The altar draws on the pedestals and barrels in the 5 × 5 square on it
+    (`ALTAR_REACH`): its panel lists its rituals, each ingredient counted on the pedestals round it and each liquid in
+    the barrels. Pick one with everything there (and the altar's slot clear) and press **Craft**: the server takes it all
+    at once, off the pedestals and out of the barrels, and writes down on the altar what came from where (its
+    `offerings`, sent after its numbers, OFFERING_SIZE each); the altar then works through it on its own, with nobody
+    at it, and what it makes lands in its slot. While it does, it takes nothing in and gives nothing out (`isClosed`,
+    like a sealed barrel), and broken, it gives back the items it took (the blood is spilt). The one ritual now: a
+    **lich core**, from 4 fangs, 4 leather, 8 essence, 8 bones, 4 charcoal, 4 breakfast sandwiches, 4 compost, 8
+    feathers and 8 buckets of blood, in 15 seconds.
+  - **How it looks** (`ritual-timeline.ts`, `render3d/ritual-effects.ts`): a ring of light marks its reach on the
+    ground. Each pedestal in turn, round the altar clockwise from the north, sends its item to it: a white beam with
+    sparks running along it, the item lifted off and drawn along to circle over the altar, spinning (until its turn it
+    still floats over its pedestal, though the server has taken it). Then each barrel in turn: a red beam to the basin,
+    drops running down it, the barrel draining as the basin fills with blood. At the end the items circle in faster
+    and closer, the blood rises out of the basin in a column into them and a white core swells between them; then a
+    flash, a shockwave over the ground, sparks thrown out and a pillar of light (the altar's `glow`, ALTAR_GLOW_TICKS),
+    and what it made floats over the altar.
 - **Bucket** (workbench): right click a pond (or a well) with it to fill it with fresh water, or the sea for salt water, and a barrel to pour it in (or, empty, to fill it from
   the barrel); right click bare ground to empty it out. **Ponds** are part of the ground, worked out from the seed (`waterAt` in `world-gen.ts`); nothing grows,
   is built or walks on them.
@@ -522,6 +546,10 @@ The keys are the defaults; every key can be changed in **Esc → Settings → Co
     one or the other, and only fresh water waters a plot or makes tannin.
   - **Dough**: four flour and a bucket of water mix into a dough every 10 seconds, in an open barrel, no heat needed.
     Bake it in an oven for bread (20 health).
+  - **Blood**: any raw meat (steak, chicken: `#meat`) in a sealed barrel kept at 200° (a campfire beside it) turns into a
+    bucket of blood every 30 seconds, one for each piece of meat. It is a liquid like the rest: draw it off with an empty
+    bucket for a bucket of blood. It is made from solids alone (`liquidOut` in the recipe: `count` buckets of it each
+    time), so only in a barrel with no other liquid in it (or blood already), and not past full.
 
 ### Fighting
 

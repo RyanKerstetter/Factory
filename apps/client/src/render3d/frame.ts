@@ -1,4 +1,4 @@
-import type { BeltShape, BuildingKind, Direction, ItemId, LichSpell, Terrain } from '../../../../packages/shared/src/index.ts'
+import type { BeltShape, BuildingKind, Direction, ItemId, LichSpell, Offering, Terrain } from '../../../../packages/shared/src/index.ts'
 
 // Everything the world is drawn from on one frame, as plain data worked out by game.ts, so nothing here knows about
 // the network or the simulation. Positions are in tiles.
@@ -37,6 +37,8 @@ export type BuildingView = {
   rack?: 'empty' | 'drying' | 'done'
   // A garden plot: how watered it is, 0 to 100.
   water?: number
+  // A pedestal or an altar: what is on it, floating over it.
+  shown?: ItemId
 }
 // A shape painted on the ground: polygons (tiles), in a colour, filled and outlined this strongly (0 to 1).
 export type GroundMark = { polygons: Array<Array<{ x: number; y: number }>>; color: number; fill: number; stroke: number }
@@ -174,6 +176,9 @@ export type OverlayView = {
   // A name shown over the building under the mouse (a chest's), at its tile.
   label?: { x: number; y: number; text: string }
 }
+// An altar's ritual under way, or just over (see altar.ts and ritual-timeline.ts): the altar's tile, how far through it is
+// (0 to 1), what it took from where, and how much of its glow afterwards is left (1 down to 0; 0 while it goes on).
+export type RitualView = { id: number; x: number; y: number; t: number; offerings: readonly Offering[]; glow: number }
 export type DebugView = {
   chunks: readonly number[]
   desynced: readonly number[]
@@ -200,5 +205,6 @@ export type WorldFrame = {
   rafts: readonly RaftView[]
   attacks: AttackView
   overlay: OverlayView
+  rituals: readonly RitualView[]
   debug?: DebugView
 }

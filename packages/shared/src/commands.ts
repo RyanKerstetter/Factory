@@ -33,7 +33,7 @@ export type Command =
   | { k: 'craft'; recipe: number }
   // Start a work station (the stump, the workbench) on recipe `recipe` (its index in the station's list in
   // stations.json), putting the tool it needs in from the player's inventory; it makes it for as long as what is in it
-  // is enough, while the player stays at it (see `use`).
+  // is enough, while the player stays at it (see `use`). At an altar: start ritual `recipe` (see altar.ts).
   | { k: 'work'; id: number; recipe: number }
   // Use what is in slot `slot` on a tile: fill a bucket at a pond (fresh water) or the sea (salt water) or from a barrel,
   // pour one into a barrel, water a garden plot, or empty it on bare ground.
@@ -114,6 +114,8 @@ export const REFUSALS = {
   barrelFull: 'The barrel is full, or has something else in it.',
   barrelEmpty: 'There is nothing in the barrel to take.',
   noWork: 'Put a tool and something it works on in first.',
+  ritualLacking: 'The pedestals and barrels round the altar do not hold everything that takes.',
+  altarFull: 'Take what is on the altar off it first.',
   animalGone: 'That animal is gone.',
   leadTaken: 'That is on someone else\'s rope, or tied up.',
   noMilk: 'That cow has no milk yet.',

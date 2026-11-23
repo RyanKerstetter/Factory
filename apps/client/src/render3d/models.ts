@@ -841,7 +841,7 @@ export function oven(lit: boolean): THREE.Group {
 // A barrel, open at the top: a round-bellied cask of thick staves (its wall has an inside and an outside, and a rim
 // across the top between them), bound by two dark hoops. What is in it shows, a liquid at its level in its colour, or a
 // heap of rotting compost (with flies over it) while it is making compost; sealed, a lid with a handle covers it.
-const BARREL_TOP = 0.74
+export const BARREL_TOP = 0.74
 const BARREL_WALL = 0.05
 // Its outline from the bottom up: [radius, height], bellied out in the middle.
 const BARREL_PROFILE: ReadonlyArray<readonly [number, number]> = [
@@ -981,6 +981,86 @@ export function well(): THREE.Group {
     made.add(slope)
   }
   made.add(part(box(), PALETTE.barkDark, [0, 0.985, 0], [0.92, 0.055, 0.06]))
+  return made
+}
+
+// An altar, after its icon: a low slab of dark stone set with knuckles of bone, a deep basin of dark stone on it, empty
+// (a ritual fills it with blood: see ritual-effects.ts), and either side of it a great curved bone horn rising and
+// hooking in over the basin, streaked with blood from the tip down.
+const ALTAR = { stone: 0x2c2830, stoneLight: 0x433d48, stoneDark: 0x1b181e, blood: 0x7a0f1a, bloodDark: 0x5a0a14 }
+// The basin: open at the top, from its floor up to just under its rim, wider at the top (tiles, on the altar's middle).
+const BASIN = { bottom: 0.15, height: 0.22, top: 0.25, foot: 0.19, wall: 0.025 }
+export const ALTAR_BOWL = {
+  floor: 0.2,
+  brim: BASIN.bottom + BASIN.height - 0.025,
+  // How far across the inside of the basin is at a height.
+  radius: (y: number): number => BASIN.foot + ((y - BASIN.bottom) / BASIN.height) * (BASIN.top - BASIN.foot) - BASIN.wall,
+  color: ALTAR.blood,
+}
+// Where what is on an altar or a pedestal floats, over the middle of its tile (tiles up).
+export const ALTAR_HOLD_Y = 1.04
+export const PEDESTAL_HOLD_Y = 0.98
+export function altar(): THREE.Group {
+  const made = group()
+  // The slab, a lip of lighter stone round its top, and bone set into its front and back like the icon's pale knuckles.
+  made.add(part(box(), ALTAR.stone, [0, 0.07, 0], [0.78, 0.14, 0.62]))
+  made.add(part(box(), ALTAR.stoneLight, [0, 0.145, 0], [0.72, 0.03, 0.56]))
+  for (const z of [-0.31, 0.31]) {
+    for (const [x, s] of [[-0.26, 0.11], [-0.08, 0.08], [0.1, 0.1], [0.27, 0.09]] as const) {
+      made.add(part(lump(), x < 0 ? PALETTE.bone : PALETTE.boneDark, [x, 0.07, z], [s, s * 0.8, s * 0.55]))
+    }
+  }
+  // The basin: a squat bowl of dark stone, open at the top (its inside seen from above), a floor down in it, and its rim.
+  const basin = new THREE.Mesh(
+    geometry('altarBasin', () => new THREE.CylinderGeometry(BASIN.top, BASIN.foot, BASIN.height, 10, 1, true)),
+    bothSides(ALTAR.stoneDark),
+  )
+  basin.position.y = BASIN.bottom + BASIN.height / 2
+  basin.castShadow = true
+  basin.receiveShadow = true
+  made.add(basin)
+  const floorAcross = ALTAR_BOWL.radius(ALTAR_BOWL.floor) * 2 + 0.02
+  made.add(part(cylinder(10), 0x120f14, [0, ALTAR_BOWL.floor - 0.01, 0], [floorAcross, 0.02, floorAcross]))
+  made.add(part(geometry('altarRim', () => new THREE.TorusGeometry(0.24, 0.035, 5, 10)), ALTAR.stoneLight, [0, 0.37, 0], [1, 1, 1], [Math.PI / 2, 0, 0]))
+  // A spill down the front of the basin and pooled on the slab.
+  made.add(part(box(), ALTAR.blood, [0.06, 0.27, 0.215], [0.07, 0.18, 0.02], [0.12, 0, 0]))
+  made.add(part(ball(), ALTAR.bloodDark, [0.07, 0.165, 0.25], [0.16, 0.02, 0.1]))
+  // The horns: each a run of bone segments, thick at the foot and tapering, rising outward from the slab's ends, then
+  // curling in over the basin, with a socket of dark stone at the foot and blood running down from the tip.
+  const curve: Array<[number, number]> = [[0.3, 0.14], [0.34, 0.34], [0.35, 0.52], [0.32, 0.68], [0.25, 0.8], [0.17, 0.86]]
+  for (const side of [-1, 1]) {
+    made.add(part(cylinder(8), ALTAR.stoneDark, [side * 0.3, 0.17, 0], [0.16, 0.08, 0.16]))
+    for (let i = 0; i + 1 < curve.length; i++) {
+      const [x0, y0] = curve[i]
+      const [x1, y1] = curve[i + 1]
+      const thick = 0.11 - i * 0.017
+      made.add(stick(i % 2 === 0 ? PALETTE.bone : PALETTE.horn, [side * x0, y0, 0], [side * x1, y1, 0], thick, 7))
+      // Blood on the upper part of the horn's inner side, running down from the tip.
+      if (i >= 2) made.add(stick(i === 4 ? ALTAR.blood : ALTAR.bloodDark, [side * (x0 - 0.035), y0, 0.02], [side * (x1 - 0.03), y1, 0.02], thick * 0.55, 5))
+    }
+    // A ring of darker bone where it narrows, and a drop hanging from the tip.
+    made.add(part(geometry('altarHornRing', () => new THREE.TorusGeometry(0.05, 0.016, 4, 8)), PALETTE.boneDark, [side * 0.345, 0.43, 0], [1, 1, 1], [Math.PI / 2, 0, 0]))
+    made.add(part(ball(), ALTAR.blood, [side * 0.16, 0.83, 0], [0.04, 0.06, 0.04]))
+  }
+  return made
+}
+
+// A pedestal, after its icon: dark slate-grey stone, a broad flared foot on a step, a slim waisted column, and a wide
+// square top slab over a collar, its top face catching the light.
+const PEDESTAL = { stone: 0x4a4a5e, light: 0x7c7e98, dark: 0x2e2e3e }
+// The top of a pedestal (tiles up), where what is drawn off it to an altar leaves from.
+export const PEDESTAL_TOP = 0.725
+export function pedestal(): THREE.Group {
+  const made = group()
+  made.add(part(box(), PEDESTAL.dark, [0, 0.04, 0], [0.56, 0.08, 0.56]))
+  made.add(part(geometry('pedestalFoot', () => new THREE.CylinderGeometry(0.17, 0.25, 1, 4)), PEDESTAL.stone, [0, 0.13, 0], [1, 0.1, 1], [0, Math.PI / 4, 0]))
+  made.add(part(geometry('pedestalColumn', () => new THREE.CylinderGeometry(0.1, 0.12, 1, 8)), PEDESTAL.stone, [0, 0.36, 0], [1, 0.36, 1]))
+  // A lighter edge down the column's front, as the icon's highlight.
+  made.add(part(box(), PEDESTAL.light, [-0.05, 0.36, 0.095], [0.03, 0.34, 0.02]))
+  made.add(part(geometry('pedestalCollar', () => new THREE.CylinderGeometry(0.25, 0.14, 1, 4)), PEDESTAL.stone, [0, 0.58, 0], [1, 0.08, 1], [0, Math.PI / 4, 0]))
+  made.add(part(box(), PEDESTAL.stone, [0, 0.67, 0], [0.6, 0.1, 0.6]))
+  made.add(part(box(), PEDESTAL.light, [0, 0.722, 0], [0.54, 0.006, 0.54]))
+  made.add(part(box(), PEDESTAL.dark, [0, 0.617, 0], [0.62, 0.012, 0.62]))
   return made
 }
 

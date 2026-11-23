@@ -78,5 +78,9 @@
   { "id": 82, "key": "well", "name": "Well", "category": "structure", "color": "#7b7f81", "places": "well", "stack": 10, "icon": "icons/buildings/well.png" },
   { "id": 83, "key": "raft", "name": "Raft", "category": "structure", "color": "#8a6a42", "stack": 1, "icon": "icons/tools/raft.png" },
   { "id": 84, "key": "oar", "name": "Oar", "category": "tool", "color": "#b98a55", "stack": 1, "icon": "icons/tools/oar.png" },
-  { "id": 85, "key": "grass-seed", "name": "Grass seed", "category": "plant", "color": "#7fae4a", "places": "grass", "tags": ["seed", "organic"], "icon": "icons/food/grass-seed.png" }
+  { "id": 85, "key": "grass-seed", "name": "Grass seed", "category": "plant", "color": "#7fae4a", "places": "grass", "tags": ["seed", "organic"], "icon": "icons/food/grass-seed.png" },
+  { "id": 86, "key": "blood-bucket", "name": "Bucket of blood", "category": "tool", "color": "#8a1420", "stack": 1, "bucket": "blood", "icon": "icons/tools/bucket/blood-bucket.png" },
+  { "id": 87, "key": "lich-core", "name": "Lich core", "category": "material", "color": "#6fd0ff", "icon": "icons/materials/lich-core.png" },
+  { "id": 88, "key": "altar", "name": "Altar", "category": "structure", "color": "#3a2e34", "places": "altar", "stack": 10, "icon": "icons/buildings/altar.png" },
+  { "id": 89, "key": "pedestal", "name": "Pedestal", "category": "structure", "color": "#4a4a5e", "places": "pedestal", "stack": 10, "icon": "icons/buildings/pedestal.png" }
 ]

@@ -26,6 +26,8 @@ export type BuildingKind =
   | 'bed'
   | 'door'
   | 'well'
+  | 'altar'
+  | 'pedestal'
 
 export type BuildingDef = {
   kind: BuildingKind
@@ -100,6 +102,20 @@ export const BUILDINGS: Readonly<Record<BuildingKind, BuildingDef>> = {
     description: 'Fresh water, like a pond: right click it with an empty bucket to fill it.',
     solid: true,
     blocksAnimals: true,
+  },
+  altar: {
+    ...MACHINE,
+    kind: 'altar',
+    code: 25,
+    name: 'Altar',
+    description: 'Performs rituals with what is on the pedestals and in the barrels round it (two tiles each way): pick one and press Craft.',
+  },
+  pedestal: {
+    ...MACHINE,
+    kind: 'pedestal',
+    code: 26,
+    name: 'Pedestal',
+    description: 'Holds one stack of anything, on show. An altar near it draws on what is on it.',
   },
   miner: {
     ...FACTORY,
@@ -287,9 +303,9 @@ export function isBuildingKind(value: unknown): value is BuildingKind {
 // lip between them to catch on (a stump a hair wider than the workbench beside it). Pick the nearest one to the model
 // and fit the model to it. (Players also slip round a corner they only just catch: CORNER_SLIP in movement.ts.)
 export const FOOTPRINT = {
-  // Most things put down: the stations, fires, chests, feed boxes, the well; and rocks.
+  // Most things put down: the stations, fires, chests, feed boxes, the well, the altar; and rocks.
   block: [0.1, 0.1, 0.9, 0.9],
-  // Small round things: a barrel.
+  // Small round things: a barrel, a pedestal.
   small: [0.17, 0.17, 0.83, 0.83],
   // A tree's trunk: wide enough that the gap between two trees side by side (0.56 tiles) is narrower than a player
   // (0.6), with room to spare, so nobody slips between them.
@@ -309,6 +325,8 @@ export const BUILDING_BOUNDS: Partial<Record<BuildingKind, ReadonlyArray<readonl
   campfire: [FOOTPRINT.block],
   oven: [FOOTPRINT.block],
   well: [FOOTPRINT.block],
+  altar: [FOOTPRINT.block],
+  pedestal: [FOOTPRINT.small],
   barrel: [FOOTPRINT.small],
   rack: [FOOTPRINT.frame],
   feeder: [FOOTPRINT.block],

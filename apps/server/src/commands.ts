@@ -1,4 +1,11 @@
 import {
+  ALTAR_RECIPES,
+  altarBusy,
+  altarRoomFor,
+  altarSurroundings,
+  flatOfferings,
+  offeringsOf,
+  planRitual,
   addItems,
   cloneInventory,
   DROP_THROW,
@@ -280,8 +287,41 @@ function breakStructure(context: CommandContext, target: Entity, damage: number)
   if (hasInventory(target)) {
     for (const { item: id, count } of inventoryTotals(target.inv)) drops.push([getItem(id).key, count, 'stack'])
   }
+  // An altar broken in the middle of a ritual gives back the items it took (the liquids are spilt).
+  if (target.kind === 'altar') {
+    for (const offering of offeringsOf(target.offerings)) if (offering.item) drops.push([getItem(offering.item).key, offering.count, 'stack'])
+  }
   context.emit({ t: 'remove', id: target.id })
   return { drops }
+}
+
+// Starts a ritual at an altar (see altar.ts): everything it takes comes off the pedestals and out of the barrels round
+// it at once, and the altar keeps what came from where (its offerings, for showing it) and works through it on its own.
+function startRitual(context: CommandContext, altar: Extract<Entity, { kind: 'altar' }>, index: number): CommandOutcome {
+  const { world, player } = context
+  if (!isWithinReach(player.position, altar.x, altar.y)) return { ok: false, why: 'reach' }
+  const recipe = ALTAR_RECIPES[index]
+  if (!recipe) return { ok: false, why: 'noRecipe' }
+  if (altarBusy(altar)) return { ok: false, why: 'busy' }
+  if (!altarRoomFor(altar, recipe)) return { ok: false, why: 'altarFull' }
+  const around = altarSurroundings(altar.x, altar.y, (x, y) => world.entityAt(x, y))
+  const plan = planRitual(recipe, around)
+  if (!plan) return { ok: false, why: 'ritualLacking' }
+  // What each barrel gives, all together (one barrel can give to more than one offering).
+  const drawn = new Map<number, number>()
+  for (const offering of plan) {
+    if (offering.item) context.emit({ t: 'inv', id: offering.id, item: offering.item, delta: -offering.count })
+    else drawn.set(offering.id, (drawn.get(offering.id) ?? 0) + offering.count)
+  }
+  for (const [id, count] of drawn) {
+    const barrel = world.entity(id)
+    if (barrel?.kind !== 'barrel') continue
+    const amount = Math.max(0, barrel.amount - count)
+    context.emit({ t: 'set', e: withMachine(barrel, { amount, liquid: amount === 0 ? LIQUID_NONE : barrel.liquid }) })
+  }
+  const offerings = flatOfferings(plan.map(({ id: _id, ...offering }) => offering))
+  context.emit({ t: 'set', e: entityToState({ ...altar, recipe: recipe.index + 1, progress: 0, glow: 0, offerings }) })
+  return { ok: true }
 }
 
 // How far from the middle of a plant's tile what it drops lands, in tiles.
@@ -565,6 +605,7 @@ export function runCommand(context: CommandContext, command: Command): CommandOu
       // The stump and the workbench work alike (see stations.ts): the recipe picked, with the tool it needs.
       const entity = world.entity(command.id)
       if (!entity) return { ok: false, why: 'missing' }
+      if (entity.kind === 'altar') return startRitual(context, entity, command.recipe)
       if (!isStation(entity)) return { ok: false, why: 'noInventory' }
       if (!isWithinReach(player.position, entity.x, entity.y)) return { ok: false, why: 'reach' }
       const recipe = STATION_RECIPES[entity.kind][command.recipe]

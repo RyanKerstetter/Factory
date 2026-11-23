@@ -1,4 +1,11 @@
 import {
+  ALTAR_RECIPES,
+  altarBusy,
+  altarHas,
+  altarHasLiquid,
+  altarRoomFor,
+  ritualFraction,
+  type AltarSurroundings,
   BARREL_CAPACITY,
   CAMPFIRE_CHARCOAL,
   CAMPFIRE_COOK,
@@ -49,9 +56,22 @@ const heatGauge = (heat: number): MachineView['gauges'][number] => ({ label: 'He
 
 // What each machine's panel shows (see MachineView): its slots, gauges, what it is doing, its buttons, and its recipes
 // at the side. `player` is the player's inventory and `inv` the machine's, both as they will be once what has been
-// asked for is done. What it is doing shows in its progress arrow and gauges, not in words.
-export function machineView(entity: Entity, player: Inventory, inv: Inventory): MachineView | undefined {
+// asked for is done. What it is doing shows in its progress arrow and gauges, not in words. An altar's rituals count
+// what is on the pedestals and in the barrels round it (`around`).
+export function machineView(entity: Entity, player: Inventory, inv: Inventory, around?: AltarSurroundings): MachineView | undefined {
   switch (entity.kind) {
+    case 'altar': {
+      const busy = altarBusy(entity)
+      const making = ALTAR_RECIPES[entity.recipe - 1]
+      return {
+        inputs: [],
+        outputs: [{ index: 0 }],
+        gauges: [],
+        buttons: [],
+        recipes: { title: 'Rituals', action: busy ? '' : 'Craft', entries: altarBook({ ...entity, inv }, around) },
+        status: making ? `Performing the ritual of ${matchName(making.output).toLowerCase()}` : 'Not performing a ritual',
+      }
+    }
     case 'stump':
     case 'workbench': {
       // The tool slot first (marked as one), then what it works from, then what comes out.
@@ -133,7 +153,7 @@ function fireStatus(kind: FireKind, inv: Inventory, heat: number): string {
 function barrelStatus(barrel: Barrel): string {
   const plan = barrelPlan(barrel, false)
   if (!plan.recipe || !plan.ready) return 'Not making anything'
-  const made = plan.recipe.output ? matchName(plan.recipe.output, true) : LIQUIDS[plan.recipe.liquidInto]
+  const made = plan.recipe.output ? matchName(plan.recipe.output, true) : LIQUIDS[plan.recipe.liquidOut || plan.recipe.liquidInto]
   return `Making ${made.toLowerCase()}`
 }
 
@@ -152,6 +172,8 @@ export function machineProgress(entity: Entity, alpha: number): number | undefin
       return barrelFraction(entity)
     case 'rack':
       return rackFraction(entity)
+    case 'altar':
+      return ritualFraction(entity, entity.recipe ? alpha : 0)
     default:
       return undefined
   }
@@ -227,6 +249,29 @@ function fireBook(kind: FireKind, player: Inventory, inv: Inventory, heat: numbe
   }))
 }
 
+// An altar's rituals: each ingredient counted on the pedestals round it, each liquid in the barrels round it. One can
+// be started when everything is there, nothing else is under way, and there is room on the altar for what it makes.
+function altarBook(altar: Parameters<typeof altarRoomFor>[0] & { recipe: number }, around: AltarSurroundings | undefined): BookEntry[] {
+  const nothing: AltarSurroundings = { pedestals: [], barrels: [] }
+  const seen = around ?? nothing
+  return ALTAR_RECIPES.map((recipe) => {
+    const inputs: Array<BookEntry['inputs'][number]> = recipe.inputs.map(([match, need]) => ingredient(match, need, altarHas(seen, match)))
+    for (const [liquid, need] of recipe.liquids) {
+      inputs.push({ item: bucketFor(liquid), need, have: altarHasLiquid(seen, liquid), liquid: bookLiquid(liquid) })
+    }
+    return {
+      id: recipe.index,
+      category: 'Rituals',
+      output: recipe.output,
+      count: recipe.count,
+      inputs,
+      seconds: recipe.ticks / TPS,
+      how: 'From the pedestals and barrels round the altar',
+      ready: inputs.every((input) => input.have >= input.need) && !altarBusy(altar) && altarRoomFor(altar, recipe),
+    }
+  })
+}
+
 // How a liquid looks in a book.
 function bookLiquid(liquid: number): BookLiquid {
   const name = LIQUIDS[liquid] || 'water'
@@ -262,12 +307,14 @@ function barrelBook(player: Inventory, inv: Inventory, liquid: number, amount: n
     const how = barrelHow(recipe)
     // A dry recipe: nothing liquid may be in the barrel.
     const dry = recipe.dry ? { ok: amount === 0 } : undefined
+    // The liquid it makes, if it makes one rather than an item: one it turns its liquid into, or makes from solids.
+    const madeLiquid = recipe.liquidOut || recipe.liquidInto
     return {
       id: recipe.index,
       category: recipe.sealed ? 'Sealed' : 'Open',
-      output: recipe.output || bucketFor(recipe.liquidInto),
-      ...(recipe.output ? {} : { outputLiquid: bookLiquid(recipe.liquidInto) }),
-      count: recipe.output ? recipe.count : 1,
+      output: recipe.output || bucketFor(madeLiquid),
+      ...(recipe.output ? {} : { outputLiquid: bookLiquid(madeLiquid) }),
+      count: recipe.output || recipe.liquidOut ? recipe.count : 1,
       inputs,
       ...(recipe.heat ? { heat: { need: recipe.heat, now: heat } } : {}),
       ...(dry ? { dry } : {}),

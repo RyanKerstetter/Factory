@@ -152,7 +152,8 @@ export type RackRecipe = { index: number; input: ItemId; output: ItemId; ticks: 
 //   for each;
 // - `heat`: how hot it has to be kept, by a campfire beside it;
 // - what it makes: `output` (`count` of it) into its out slot; the liquid turned into `liquidInto`; `liquidUse` buckets
-//   of the liquid used up;
+//   of the liquid used up; `liquidOut`: instead of an item, `count` buckets of this liquid, made from its solids alone
+//   (only in a barrel with no other liquid in it, and room for them: meat into blood);
 // - `seconds`: how long it takes.
 export type BarrelRecipe = {
   index: number
@@ -161,6 +162,7 @@ export type BarrelRecipe = {
   liquidMin: number
   liquidUse: number
   liquidInto: number
+  liquidOut: number
   liquidPerSolid: number
   sealed: boolean
   dry: boolean
@@ -233,7 +235,7 @@ export const RACK_RECIPES: readonly RackRecipe[] = listOf('rack').map((entry, in
   }
 })
 
-const BARREL_FIELDS = ['category', 'liquid', 'liquidMin', 'liquidUse', 'liquidInto', 'liquidPerSolid', 'sealed', 'dry', 'solids', 'perBucket', 'heat', 'output', 'count', 'seconds']
+const BARREL_FIELDS = ['category', 'liquid', 'liquidMin', 'liquidUse', 'liquidInto', 'liquidOut', 'liquidPerSolid', 'sealed', 'dry', 'solids', 'perBucket', 'heat', 'output', 'count', 'seconds']
 
 export const BARREL_RECIPES: readonly BarrelRecipe[] = listOf('barrel').map((entry, index): BarrelRecipe => {
   const fail = failIn(`data/stations.json, barrel recipe ${index + 1}`)
@@ -247,6 +249,7 @@ export const BARREL_RECIPES: readonly BarrelRecipe[] = listOf('barrel').map((ent
     liquidMin: wholeField(raw, 'liquidMin', fail, 1, Math.max(1, liquidUse)),
     liquidUse,
     liquidInto: liquidOf(raw.liquidInto, fail),
+    liquidOut: liquidOf(raw.liquidOut, fail),
     liquidPerSolid: wholeField(raw, 'liquidPerSolid', fail, 0, 0),
     sealed: raw.sealed !== false,
     dry: raw.dry === true,
@@ -261,6 +264,7 @@ export const BARREL_RECIPES: readonly BarrelRecipe[] = listOf('barrel').map((ent
   if (recipe.liquid === 0 && recipe.solids.length === 0) fail('it needs something to work on')
   if (recipe.liquidPerSolid > 0 && (recipe.liquid === 0 || recipe.solids.length === 0)) fail('"liquidPerSolid" needs a "liquid" and a solid')
   if (recipe.dry && recipe.liquid !== 0) fail('a "dry" recipe cannot need a liquid')
+  if (recipe.liquidOut && (recipe.liquid !== 0 || recipe.output || recipe.dry)) fail('a "liquidOut" recipe makes its liquid from solids alone: no "liquid", "output" or "dry"')
   return recipe
 })
 
@@ -340,6 +344,7 @@ export function barrelPlan(barrel: Barrel, words = true): { recipe?: BarrelRecip
     (candidate) =>
       (candidate.liquid === 0 || (barrel.liquid === candidate.liquid && barrel.amount > 0)) &&
       (!candidate.dry || barrel.amount === 0) &&
+      (!candidate.liquidOut || barrel.amount === 0 || barrel.liquid === candidate.liquidOut) &&
       [...candidate.solids, ...candidate.perBucket].every(([match]) => solidsOf(barrel, match) > 0),
   )
   if (!recipe) return { ready: false, reason: say(() => 'Nothing to work on: see the recipes at the side.') }
@@ -361,9 +366,10 @@ export function barrelPlan(barrel: Barrel, words = true): { recipe?: BarrelRecip
     if (have < need) return notStarted(() => `${barrel.amount} buckets of ${LIQUIDS[recipe.liquid]} need ${need} ${matchName(match, need > 1)} (${have} in).`)
   }
   if (recipe.output && !fitsIn(barrel.inv, BARREL_OUTPUT, recipe.output)) return notStarted(() => 'take out what it made first.')
+  if (recipe.liquidOut && barrel.amount + recipe.count > BARREL_CAPACITY) return notStarted(() => `it is full of ${LIQUIDS[recipe.liquidOut]}: draw some off first.`)
   if (recipe.sealed && !barrel.sealed) return notStarted(() => 'seal the barrel to start.')
   if (barrel.heat < recipe.heat) return { recipe, ready: false, reason: say(() => `Not hot enough: put it beside a lit campfire (heat ${barrel.heat}/${recipe.heat}).`) }
-  return { recipe, ready: true, reason: say(() => `Making ${recipe.output ? getItem(recipe.output).name.toLowerCase() : LIQUIDS[recipe.liquidInto]}…`) }
+  return { recipe, ready: true, reason: say(() => `Making ${recipe.output ? getItem(recipe.output).name.toLowerCase() : LIQUIDS[recipe.liquidOut || recipe.liquidInto]}…`) }
 }
 
 // How many lots a `liquidPerSolid` recipe works on at once: every one of its first solid in the barrel.
@@ -394,6 +400,10 @@ export function stepBarrel(barrel: Barrel): void {
   for (const [match, per] of recipe.perBucket) takeIn(barrel.inv, BARREL_SOLIDS, (item) => matches(match, item), per * barrel.amount)
   if (recipe.output) putIn(barrel.inv, BARREL_OUTPUT, recipe.output, recipe.count * lots)
   if (recipe.liquidInto) barrel.liquid = recipe.liquidInto
+  if (recipe.liquidOut) {
+    barrel.liquid = recipe.liquidOut
+    barrel.amount = Math.min(BARREL_CAPACITY, barrel.amount + recipe.count * lots)
+  }
   const used = recipe.liquidPerSolid > 0 ? recipe.liquidPerSolid * lots : recipe.liquidUse
   if (used) {
     barrel.amount = Math.max(0, barrel.amount - used)

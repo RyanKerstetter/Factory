@@ -1,4 +1,6 @@
 import {
+  ALTAR_NUMBERS,
+  OFFERING_SIZE,
   isMachineKind,
   ITEMS,
   itemByKey,
@@ -96,6 +98,16 @@ export function remapEntity(saved: EntityState, remap: (id: number) => number): 
   if (copy.inv) copy.inv = copy.inv.map((value, i) => (i % 2 === 0 ? remap(value) : value))
   if (copy.lane) copy.lane = copy.lane.map((value, i) => (i % 2 === 0 ? remap(value) : value))
   if (copy.ore !== undefined) copy.ore = remap(copy.ore)
+  // An altar's offerings, after its numbers (see OFFERING_SIZE): an item's (not a liquid's, which is below 0), and one that
+  // is gone is dropped.
+  const n = (copy as { n?: number[] }).n
+  if (copy.kind === 'altar' && n) {
+    for (let i = ALTAR_NUMBERS; i + OFFERING_SIZE <= n.length; i += OFFERING_SIZE) {
+      if (n[i + 2] <= 0) continue
+      n[i + 2] = remap(n[i + 2])
+      if (n[i + 2] === 0) n[i + 3] = 0
+    }
+  }
   // An item that is gone leaves its slot empty.
   if (copy.inv) for (let i = 0; i < copy.inv.length; i += 2) if (copy.inv[i] === 0) copy.inv[i + 1] = 0
   return copy
@@ -104,7 +116,8 @@ export function remapEntity(saved: EntityState, remap: (id: number) => number): 
 // A building saved by an older version, as it is now (a copy; one that is up to date comes back as it was):
 // - a stump saved before it was a station like the workbench: its numbers by name, and its slots fewer;
 // - a workbench saved with a `repeat` number (since dropped), or before it had its tool slot;
-// - a barrel saved with three slots of solids: it keeps its first, and its output.
+// - a barrel saved with three slots of solids: it keeps its first, and its output;
+// - an altar or a pedestal saved before they had a slot (only their hits then).
 type SavedState = Record<string, unknown> & { kind: string; inv?: number[]; n?: number[] }
 function upgradeEntity(saved: EntityState): EntityState {
   const state = { ...(saved as unknown as SavedState) }
@@ -117,6 +130,10 @@ function upgradeEntity(saved: EntityState): EntityState {
   }
   if (state.kind === 'workbench' && state.n?.length === 5) state.n = [state.n[0], state.n[1], state.n[3], state.n[4]]
   if (state.kind === 'barrel' && state.inv?.length === 8) state.inv = [...state.inv.slice(0, 2), ...state.inv.slice(6, 8)]
+  if ((state.kind === 'altar' || state.kind === 'pedestal') && state.n === undefined) {
+    state.n = [typeof state.hp === 'number' ? state.hp : 6]
+    delete state.hp
+  }
   if (isMachineKind(state.kind)) state.inv = padded(state.inv, MACHINE_SLOTS[state.kind])
   return state as unknown as EntityState
 }

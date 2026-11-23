@@ -15,11 +15,12 @@ import {
   type Terrain,
 } from '../../../../packages/shared/src/index.ts'
 import { cameraPitch, type TileBounds } from '../camera.ts'
-import { iconUrl } from '../ui/icons.ts'
 import type { GameView } from './game-view.ts'
 import type { AnimalView, BuildingView, GhostView, MonsterView, OverlayView, PlayerView, Swish, TrapView, WorldFrame } from './frame.ts'
 import { Ground, WALL_SPIKES } from './ground.ts'
+import { floatingAt, itemMaterial, itemPlane } from './item-pictures.ts'
 import * as models from './models.ts'
+import { RitualEffects } from './ritual-effects.ts'
 import { GroundPaint, Label } from './paint.ts'
 import { KeptById, Pool, showObject } from './reuse.ts'
 
@@ -266,6 +267,7 @@ class World {
   private readonly labels = new THREE.Group()
   private readonly monsters = new THREE.Group()
   private readonly paint = new GroundPaint()
+  private readonly rituals = new RitualEffects()
 
   private readonly keptBuildings = new KeptById<{ object: THREE.Object3D }>(this.buildings)
   private readonly keptAnimals = new KeptById<KeptCreature>(this.animals)
@@ -370,13 +372,14 @@ class World {
     this.spikes.frustumCulled = false
     this.spikes.count = 0
     scene.add(this.ground.view, this.paint.mesh, this.buildings, this.animals, this.monsters, this.spikes, this.players, this.drops, this.dropShadows, this.shots, this.ghosts, this.rafts)
-    scene.add(this.effects, this.labels, this.hoverRing, this.ropes, this.landmarks)
+    scene.add(this.effects, this.labels, this.hoverRing, this.ropes, this.landmarks, this.rituals.group)
   }
 
   update(frame: WorldFrame, bounds: TileBounds, camera: THREE.OrthographicCamera, pxPerTile: number): void {
     this.ground.update(frame.terrain, bounds)
     this.updateLandmarks(frame.terrain)
     this.updateBuildings(frame)
+    this.rituals.update(frame.rituals, frame.now)
     this.updateAnimals(frame.animals, frame.now, pxPerTile)
     this.updateMonsters(frame.monsters, frame.now, pxPerTile)
     this.angryMarks.finish()
@@ -439,6 +442,15 @@ class World {
           if (part.name !== 'flame') return
           part.scale.y = (part.userData.height ??= part.scale.y) * (1 + 0.18 * Math.sin(frame.now * 0.018 + part.id))
         })
+      }
+      // What is on a pedestal or an altar bobs and spins over it.
+      if (building.shown !== undefined) {
+        const floating = object.getObjectByName('floating')
+        if (floating) {
+          const float = floatingAt(frame.now, building.x * 7 + building.y * 13)
+          floating.position.y = (floating.userData.baseY as number) + float.lift
+          floating.rotation.y = float.turn
+        }
       }
     }
     this.keptBuildings.sweep()
@@ -895,9 +907,24 @@ function buildingKey(building: BuildingView): string {
     case 'stump':
     case 'workbench':
       return `${building.kind}${building.tool ?? ''}`
+    case 'pedestal':
+    case 'altar':
+      return `${building.kind}${building.shown ?? ''}`
     default:
       return building.kind
   }
+}
+
+// A pedestal's or an altar's model, with what is on it floating over it at `height` (made to bob and spin in
+// updateBuildings).
+function withFloating(model: THREE.Group, item: ItemId | undefined, height: number): THREE.Group {
+  if (item === undefined) return model
+  const floating = itemPlane(item)
+  floating.name = 'floating'
+  floating.position.y = height
+  floating.userData.baseY = height
+  model.add(floating)
+  return model
 }
 
 function buildingModel(building: BuildingView): THREE.Object3D {
@@ -939,6 +966,10 @@ function buildingModel(building: BuildingView): THREE.Object3D {
       return models.feeder()
     case 'well':
       return models.well()
+    case 'altar':
+      return withFloating(models.altar(), building.shown, models.ALTAR_HOLD_Y)
+    case 'pedestal':
+      return withFloating(models.pedestal(), building.shown, models.PEDESTAL_HOLD_Y)
     case 'chest':
       return models.chest()
     case 'bed':
@@ -1105,20 +1136,6 @@ function ghostMaterial(base: THREE.Material, valid: boolean, opacity: number): T
   return made
 }
 
-const itemMaterials = new Map<number, THREE.SpriteMaterial>()
-const loader = new THREE.TextureLoader()
-// An item's picture (its icon under res/, or its stand-in), for showing it lying on the ground.
-function itemMaterial(item: number): THREE.SpriteMaterial {
-  let made = itemMaterials.get(item)
-  if (!made) {
-    const texture = loader.load(iconUrl(item as ItemId))
-    texture.colorSpace = THREE.SRGBColorSpace
-    texture.magFilter = THREE.NearestFilter
-    made = new THREE.SpriteMaterial({ map: texture, transparent: true, alphaTest: 0.1 })
-    itemMaterials.set(item, made)
-  }
-  return made
-}
 
 // Poses a caveman's legs and body for `walk` (how far through its strides, radians) and `amount` (0 standing to 1
 // striding): each leg swings from the hip, its knee bending as the foot comes forward (and straight as it pushes off

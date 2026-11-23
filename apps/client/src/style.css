@@ -1145,6 +1145,10 @@ kbd {
   background: #f0ece0;
 }
 
+.liquid-drop.is-blood {
+  background: #8a1420;
+}
+
 .recipe-detail-img.liquid-drop {
   width: 32px;
   height: 32px;
@@ -1355,6 +1359,10 @@ kbd {
 
 .gauge-fill.is-tannin {
   background: #8a5a2a;
+}
+
+.gauge-fill.is-blood {
+  background: #9a1a26;
 }
 
 .gauge-fill.is-plain {
@@ -1814,6 +1822,50 @@ select.field-input {
   margin: 0;
   color: var(--muted);
   font-size: 0.8rem;
+}
+
+/* Under the map: the note, and the zoom buttons at the right. */
+.map-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  width: 100%;
+}
+
+.map-zoom {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  /* The overlay lets clicks through to the world; the buttons take them. */
+  pointer-events: auto;
+}
+
+.map-zoom-button {
+  width: 1.7rem;
+  height: 1.7rem;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  background: var(--line);
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.map-zoom-button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.map-zoom-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.map-zoom-text {
+  min-width: 3rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-align: center;
 }
 
 /* A tool is one of its kind: no count in the tool slot (the knife mark sits in that corner). */

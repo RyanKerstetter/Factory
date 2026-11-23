@@ -22,11 +22,11 @@ import type { Monster, Monsters } from './monsters.ts'
 // Every `castEvery` it begins a spell, casting for `castTime` (its staff raised, glowing: the pages show which kind of
 // spell is coming), and then the spell goes off. Which one is picked as the cast begins:
 // - Now and then (`summon.chance`), once every archer it called up last time is dead and it has cast `summon.afterCasts`
-//   times since, it calls up `summon.perPlayer` skeleton archers for each player, round the edge of the hall, set on them.
+//   times since, it calls up `summon.base` skeleton archers, and `summon.perExtraPlayer` more for each player after the first, round the edge of the hall, set on them.
 // - Otherwise by where the players are: if more of them are within `closeRange` of it than further off (a tie either
 //   way, at random), one of its close spells, else one of its far ones (at random each time):
 //   - close: a blizzard, a whirl of cold wind round it, hurting everyone in it every so often, armour or not; or wisps,
-//     appearing one after another on a ring halfway out to the wall (or, if no spot there will do, anywhere else in the
+//     coming in `wisps.perPlayer` waves over `wisps.over`, each wave one wisp for every player at once, on a ring halfway out to the wall (or, if no spot there will do, anywhere else in the
 //     hall), never near a player or each other. They drift after the nearest player, slower than one runs, push each
 //     other apart, and burst against them (see `frost-wisp` in monsters.json);
 //   - far: icicles falling where each player stands (and more round them), shown where they will land before; or a
@@ -64,7 +64,8 @@ export class LichFight {
   private nextCastAt: number
   private casting?: { spell: LichSpell; at: number }
   private blizzard?: { until: number; nextHurtAt: number }
-  private wispsDue: number[] = []
+  // The waves of wisps still to come: when each comes, and how many wisps in it.
+  private wispsDue: Array<{ at: number; count: number }> = []
   private wisps: number[] = []
   private summoned: number[] = []
   private lastSummon = Number.NEGATIVE_INFINITY
@@ -114,10 +115,10 @@ export class LichFight {
         }
       }
     }
-    // Wisps coming, one after another.
-    while (this.wispsDue.length > 0 && tick >= this.wispsDue[0]) {
-      this.wispsDue.shift()
-      this.wisp(context, lich, players)
+    // Wisps coming, a wave at a time: one for each player, all at once.
+    while (this.wispsDue.length > 0 && tick >= this.wispsDue[0].at) {
+      const wave = this.wispsDue.shift()!
+      for (let i = 0; i < wave.count; i++) this.wisp(context, lich, players)
     }
   }
 
@@ -164,14 +165,16 @@ export class LichFight {
         context.spell('blizzard', lich.x, lich.y, BLIZZARD.radius / SUB, BLIZZARD.duration)
         return
       case 'wisps': {
-        const count = WISPS.perPlayer * players.length
-        for (let i = 0; i < count; i++) this.wispsDue.push(tick + Math.round((i * WISPS.over) / Math.max(1, count)))
+        // `perPlayer` waves, spread evenly over `over`, each a wisp for every player (so more players, bigger waves, not
+        // more of them).
+        const waves = WISPS.perPlayer
+        for (let i = 0; i < waves; i++) this.wispsDue.push({ at: tick + Math.round((i * WISPS.over) / Math.max(1, waves)), count: players.length })
         return
       }
       case 'summon': {
         const archer = monsterDef('skeleton-archer')
         const ring = (BOSS_HALL_RADIUS - 1.8) * SUB
-        const count = SUMMON.perPlayer * players.length
+        const count = SUMMON.base + SUMMON.perExtraPlayer * Math.max(0, players.length - 1)
         const turn = this.rng.next() * Math.PI * 2
         for (let i = 0; i < count; i++) {
           const angle = turn + (i / count) * Math.PI * 2
