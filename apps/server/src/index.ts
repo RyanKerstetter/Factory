@@ -13,7 +13,7 @@ import {
 import { GameRoom, type ServerPlayer } from './game-room.ts'
 import { log } from './log.ts'
 import { checkSave, savedInfo, type WorldSave } from './save.ts'
-import { fromBytes, SaveFolder, toBytes } from './save-folder.ts'
+import { adoptOldSaves, defaultSavesDir, fromBytes, SaveFolder, toBytes } from './save-folder.ts'
 
 // The game server: a small HTTP API to make, find, load, export and import worlds, the Geckos server the games are
 // played over, and the saves folder the worlds are kept in.
@@ -37,9 +37,12 @@ const keepDumps = process.env.DESYNC_DUMPS ? process.env.DESYNC_DUMPS === '1' : 
 const SILENT_MS = 12_000
 // A game with nobody in it is saved and closed after this long (it can be loaded again from the menu).
 const EMPTY_ROOM_MS = 10 * 60_000
-// Running worlds are saved this often, to the saves folder (SAVES_DIR, by default "saves" where the server is run).
+// Running worlds are saved this often, to the saves folder (SAVES_DIR, by default outside the project: see
+// defaultSavesDir). Worlds saved in the old place, "saves" where the server is run, are copied over the first time.
 const SAVE_EVERY_MS = 60_000
-const saves = new SaveFolder(process.env.SAVES_DIR ?? 'saves')
+const saves = new SaveFolder(process.env.SAVES_DIR ?? defaultSavesDir())
+for (const name of adoptOldSaves('saves', saves.dir)) console.log(`Copied the saved world ${name} to ${saves.dir}`)
+console.log(`Saving worlds in ${saves.dir}`)
 // The longest world name, and the biggest file an import may be.
 const NAME_LENGTH = 40
 const IMPORT_LIMIT = 64 * 1024 * 1024

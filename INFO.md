@@ -21,8 +21,10 @@ Open the address Vite prints (port `5173`). Type your name, then:
   a saved world for good, after asking (`DELETE /api/saves/<code>`; not one that is running).
 - **Join game**: the worlds running now, by name, with who is in them; or one by its code.
 
-**Saving.** The server keeps each world as a file, `<code>.json.gz` (gzipped JSON), in its saves folder (`SAVES_DIR`, by default `saves`
-where the server is started): every minute (`SAVE_EVERY_MS` in `apps/server/src/index.ts`), when the world closes (ten
+**Saving.** The server keeps each world as a file, `<code>.json.gz` (gzipped JSON), in its saves folder (`SAVES_DIR`; by default outside the project, so git never touches it:
+`%APPDATA%\FactoryGame\saves` on Windows, `~/Library/Application Support/FactoryGame/saves` on a Mac,
+`~/.local/share/factory-game/saves` elsewhere: `defaultSavesDir` in `apps/server/src/save-folder.ts`; worlds in the old
+place, `saves` where the server is started, are copied there when it starts, the old files left as they were): every minute (`SAVE_EVERY_MS` in `apps/server/src/index.ts`), when the world closes (ten
 minutes after the last player leaves), and when the server is stopped with Ctrl+C. Restart the server and the world is
 in Load game. A save holds the seed (the ground is worked out from it again), only what differs from what the seed
 grows in each chunk (what was built, changed, or grown since, and the IDs of what the seed grew that is gone: the rest
@@ -1089,7 +1091,7 @@ Environment variables for the server and the dev server:
 | `WEBRTC_PORT_MIN` / `WEBRTC_PORT_MAX` | `10000` | The UDP port(s) the game traffic uses |
 | `WEBRTC_ICE_SERVERS` | Google STUN | Comma-separated STUN/TURN URLs; empty for none |
 | `DESYNC_DUMPS` | on unless `NODE_ENV=production` | Keep chunk copies for desync diffs |
-| `SAVES_DIR` | `saves` | Where the worlds are saved, a file each |
+| `SAVES_DIR` | your user data folder (`%APPDATA%\FactoryGame\saves` on Windows) | Where the worlds are saved, a file each |
 
 To host it, open TCP `5173` (the page; Vite forwards the API and signalling to the server) and UDP `10000` (WebRTC).
 Running worlds are saved to `SAVES_DIR` every minute, and close (saved) ten minutes after the last player leaves.

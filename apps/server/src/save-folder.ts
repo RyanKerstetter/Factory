@@ -1,5 +1,7 @@
+import { copyFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
 import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { homedir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { gunzipSync, gzipSync } from 'node:zlib'
 import { checkSave, type WorldSave } from './save.ts'
 
@@ -12,6 +14,31 @@ export function toBytes(save: WorldSave): Buffer {
 export function fromBytes(bytes: Buffer): unknown {
   const gzipped = bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b
   return JSON.parse((gzipped ? gunzipSync(bytes) : bytes).toString('utf8'))
+}
+
+// Where the worlds are saved unless SAVES_DIR says otherwise: outside the project, in the user's own data folder, so
+// git never touches them (a pull or a checkout cannot overwrite or delete a world). On Windows %APPDATA%\FactoryGame\saves,
+// on a Mac ~/Library/Application Support/FactoryGame/saves, elsewhere $XDG_DATA_HOME (or ~/.local/share)/factory-game/saves.
+export function defaultSavesDir(): string {
+  if (process.platform === 'win32') return join(process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming'), 'FactoryGame', 'saves')
+  if (process.platform === 'darwin') return join(homedir(), 'Library', 'Application Support', 'FactoryGame', 'saves')
+  return join(process.env.XDG_DATA_HOME ?? join(homedir(), '.local', 'share'), 'factory-game', 'saves')
+}
+
+// Worlds saved where they used to be (`saves` where the server was run, in the project) are copied to the saves folder,
+// each one that is not there already; the old files are left where they are. Gives the names of those copied.
+export function adoptOldSaves(from: string, to: string): string[] {
+  if (resolve(from) === resolve(to) || !existsSync(from)) return []
+  const names = readdirSync(from).filter((name) => /^[A-Z0-9]{1,12}\.json(\.gz)?$/.test(name))
+  const copied: string[] = []
+  for (const name of names) {
+    const code = name.replace(/\.json(\.gz)?$/, '')
+    if (existsSync(join(to, `${code}.json.gz`)) || existsSync(join(to, `${code}.json`))) continue
+    mkdirSync(to, { recursive: true })
+    copyFileSync(join(from, name), join(to, name))
+    copied.push(name)
+  }
+  return copied
 }
 
 // The saves folder: a file per world, `<code>.json.gz`, named by its code. (Saves from before they were gzipped, plain
