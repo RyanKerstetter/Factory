@@ -9,7 +9,10 @@ import { LIQUIDS } from './machines.ts'
 // ALTAR_REACH tiles each way) and the liquid it takes from the barrels there. The player picks a ritual at the altar
 // and presses Craft: if everything is there, the server takes it all at once (so nothing can be taken back halfway) and
 // writes down on the altar what came from where (its offerings), and the altar works through the ritual on its own,
-// `seconds` long, putting what it makes in its slot at the end. The offerings are only for showing it: the page draws
+// `seconds` long, putting what it makes in its slot at the end (a ritual only starts with room there for it: the same
+// item, or nothing). When the burst at the end is over, the server starts the same ritual again, for as long as the
+// pedestals and barrels round it hold what it takes and there is room on the altar (`repeatRituals` in game-room.ts).
+// The offerings are only for showing it: the page draws
 // each pedestal's item drawn in to the altar on a beam, one after another, then the liquid from each barrel, and the
 // burst at the end (see ritual-effects.ts in the client).
 //

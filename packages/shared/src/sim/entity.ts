@@ -1,5 +1,5 @@
 import { BUILDINGS, type BuildingKind, type FireKind } from '../buildings.ts'
-import { CHEST_SLOTS, FEEDER_SLOTS, MINER_SLOTS, SAPLING_STAGES, SPROUT_STAGES, TREE_STICK_REGROW, TREE_STICKS, TPS } from '../constants.ts'
+import { CHEST_SLOTS, FEEDER_SLOTS, MINER_SLOTS, SAPLING_STAGES, SPROUT_STAGES, TPS } from '../constants.ts'
 import { getCrop } from '../crops.ts'
 import type { Direction } from '../geometry.ts'
 import { addItems, countOf, createInventory, inventoryFromWire, inventoryToWire, inventoryTotals, removeItems, roomFor, type Inventory } from '../inventory.ts'
@@ -32,15 +32,17 @@ export type BeltEntity = EntityBase & { kind: 'belt' | 'extractor'; lane: LaneIt
 export type MinerEntity = EntityBase & { kind: 'miner'; ore: ItemId; progress: number; inv: Inventory }
 // A chest, and the name a player gave it (shown when it is hovered; not part of the simulation's hash).
 export type ChestEntity = EntityBase & { kind: 'chest'; hp: number; inv: Inventory; name?: string }
-// Something with only the hits it has left in it: a bush, a rock, a tuft of grass, a fence, a sleeping bag, an ice door, a well.
-export type PlantEntity = EntityBase & { kind: 'bush' | 'rock' | 'grass' | 'fence' | 'bed' | 'door' | 'well'; hp: number }
+// Something with only the hits it has left in it: a bush, a rock, a tuft of grass, a fence, a sleeping bag, an ice door, a well,
+// a worker skeleton (waiting: it does nothing yet).
+export type PlantEntity = EntityBase & { kind: 'bush' | 'rock' | 'grass' | 'fence' | 'bed' | 'door' | 'well' | 'worker'; hp: number }
+// A waystone, and the name a player gave it (what other waystones list it as; not part of the simulation's hash).
+export type WaystoneEntity = EntityBase & { kind: 'waystone'; hp: number; name?: string }
 // Something stuck in the ground, to be knocked loose by a hit (a piece of flint). `item` and `count` are what it gives.
 export type LooseEntity = EntityBase & { kind: 'loose'; item: ItemId; count: number }
 // A gate, and its mode (GATE_AUTO, GATE_OPEN or GATE_SHUT: see fences.ts).
 export type GateEntity = EntityBase & { kind: 'gate'; hp: number; mode: number }
-// A tree: the chopping it has left in it, the sticks on it (up to TREE_STICKS), the punches towards knocking the next
-// one loose, and its random ticks towards growing one back (TREE_STICK_REGROW of them).
-export type TreeEntity = EntityBase & { kind: 'tree'; hp: number; sticks: number; punches: number; regrow: number }
+// A tree: the chopping it has left in it, and the punches towards knocking the next stick (or bark) loose.
+export type TreeEntity = EntityBase & { kind: 'tree'; hp: number; punches: number }
 // A sapling or a berry sprout, which grows a stage on each of its random ticks and becomes a tree (after
 // SAPLING_STAGES) or a bush (after SPROUT_STAGES).
 export type SaplingEntity = EntityBase & { kind: 'sapling' | 'sprout'; stage: number }
@@ -149,6 +151,7 @@ export type Entity =
   | FeederEntity
   | MachineEntity
   | LooseEntity
+  | WaystoneEntity
 
 export function isBeltLike(entity: Entity): entity is BeltEntity {
   return entity.kind === 'belt' || entity.kind === 'extractor'
@@ -191,7 +194,7 @@ export function createEntity(id: number, kind: BuildingKind, x: number, y: numbe
     case 'chest':
       return { id, kind, x, y, dir: facing, hp, inv: createInventory(CHEST_SLOTS) }
     case 'tree':
-      return { id, kind, x, y, dir: 0, hp, sticks: TREE_STICKS, punches: 0, regrow: 0 }
+      return { id, kind, x, y, dir: 0, hp, punches: 0 }
     case 'bush':
     case 'rock':
     case 'grass':
@@ -199,6 +202,8 @@ export function createEntity(id: number, kind: BuildingKind, x: number, y: numbe
     case 'bed':
     case 'door':
     case 'well':
+    case 'worker':
+    case 'waystone':
       return { id, kind, x, y, dir: 0, hp }
     case 'gate':
       return { id, kind, x, y, dir: 0, hp, mode: 0 }
@@ -284,20 +289,11 @@ export function stepEntity(entity: Entity): void {
   }
 }
 
-// A random tick (see RANDOM_TICKS_PER_CHUNK): a tree short of sticks grows towards its next one; a crop in a garden
+// A random tick (see RANDOM_TICKS_PER_CHUNK): a crop in a garden
 // plot grows (faster watered and fertilised), and the plot dries out and its fertility fades; a sapling or sprout grows
 // a stage, and after its last it is a tree or a bush, which is given back to be put in its place (same ID, same tile).
 // Anything else is left as it is.
 export function randomTick(entity: Entity): Entity | undefined {
-  if (entity.kind === 'tree') {
-    if (entity.sticks >= TREE_STICKS) return undefined
-    entity.regrow++
-    if (entity.regrow >= TREE_STICK_REGROW) {
-      entity.regrow = 0
-      entity.sticks++
-    }
-    return undefined
-  }
   if (entity.kind === 'plot') {
     const crop = getCrop(entity.crop)
     if (crop && entity.growth < growthNeeded(crop.growTicks)) {
@@ -477,8 +473,9 @@ export type EntityState =
   | { id: number; kind: 'belt' | 'extractor'; x: number; y: number; dir: Direction; lane: number[] }
   | { id: number; kind: 'miner'; x: number; y: number; dir: Direction; ore: ItemId; progress: number; inv: number[] }
   | { id: number; kind: 'chest'; x: number; y: number; dir: Direction; hp?: number; inv: number[]; name?: string }
-  | { id: number; kind: 'tree'; x: number; y: number; dir: Direction; hp: number; sticks: number; punches: number; regrow: number }
-  | { id: number; kind: 'bush' | 'rock' | 'grass' | 'fence' | 'bed' | 'door' | 'well'; x: number; y: number; dir: Direction; hp: number }
+  | { id: number; kind: 'tree'; x: number; y: number; dir: Direction; hp: number; punches: number }
+  | { id: number; kind: 'bush' | 'rock' | 'grass' | 'fence' | 'bed' | 'door' | 'well' | 'worker'; x: number; y: number; dir: Direction; hp: number }
+  | { id: number; kind: 'waystone'; x: number; y: number; dir: Direction; hp: number; name?: string }
   | { id: number; kind: 'gate'; x: number; y: number; dir: Direction; hp: number; mode: number }
   | { id: number; kind: 'loose'; x: number; y: number; dir: Direction; item: ItemId; count: number }
   | { id: number; kind: 'sapling' | 'sprout'; x: number; y: number; dir: Direction; stage: number }
@@ -501,7 +498,7 @@ export function entityToState(entity: Entity): EntityState {
     case 'chest':
       return { id, kind: 'chest', x, y, dir, hp: entity.hp, inv: inventoryToWire(entity.inv), ...(entity.name ? { name: entity.name } : {}) }
     case 'tree':
-      return { id, kind: 'tree', x, y, dir, hp: entity.hp, sticks: entity.sticks, punches: entity.punches, regrow: entity.regrow }
+      return { id, kind: 'tree', x, y, dir, hp: entity.hp, punches: entity.punches }
     case 'bush':
     case 'rock':
     case 'grass':
@@ -509,7 +506,10 @@ export function entityToState(entity: Entity): EntityState {
     case 'bed':
     case 'door':
     case 'well':
+    case 'worker':
       return { id, kind: entity.kind, x, y, dir, hp: entity.hp }
+    case 'waystone':
+      return { id, kind: 'waystone', x, y, dir, hp: entity.hp, ...(entity.name ? { name: entity.name } : {}) }
     case 'gate':
       return { id, kind: 'gate', x, y, dir, hp: entity.hp, mode: entity.mode }
     case 'loose':
@@ -549,7 +549,7 @@ export function entityFromState(state: EntityState): Entity {
     case 'chest':
       return { id, kind: 'chest', x, y, dir, hp: state.hp ?? BUILDINGS.chest.maxHp, inv: inventoryFromWire(state.inv), ...(state.name ? { name: state.name } : {}) }
     case 'tree':
-      return { id, kind: 'tree', x, y, dir, hp: state.hp, sticks: state.sticks, punches: state.punches, regrow: state.regrow }
+      return { id, kind: 'tree', x, y, dir, hp: state.hp, punches: state.punches }
     case 'bush':
     case 'rock':
     case 'grass':
@@ -557,7 +557,10 @@ export function entityFromState(state: EntityState): Entity {
     case 'bed':
     case 'door':
     case 'well':
+    case 'worker':
       return { id, kind: state.kind, x, y, dir, hp: state.hp }
+    case 'waystone':
+      return { id, kind: 'waystone', x, y, dir, hp: state.hp, ...(state.name ? { name: state.name } : {}) }
     case 'gate':
       return { id, kind: 'gate', x, y, dir, hp: state.hp, mode: state.mode }
     case 'loose':
@@ -604,7 +607,7 @@ export function hashEntity(hasher: Hasher, entity: Entity): void {
       hashInventory(hasher, entity.inv)
       return
     case 'tree':
-      hasher.int(entity.hp).int(entity.sticks).int(entity.punches).int(entity.regrow)
+      hasher.int(entity.hp).int(entity.punches)
       return
     case 'bush':
     case 'rock':
@@ -613,6 +616,8 @@ export function hashEntity(hasher: Hasher, entity: Entity): void {
     case 'bed':
     case 'door':
     case 'well':
+    case 'worker':
+    case 'waystone':
       hasher.int(entity.hp)
       return
     case 'gate':

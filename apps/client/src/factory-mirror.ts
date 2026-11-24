@@ -9,6 +9,7 @@ import {
   NO_ITEM,
   type AnimalInfo,
   type LichSpell,
+  type WaystoneInfo,
   type MonsterInfo,
   type ChunkSnapshot,
   type Inventory,
@@ -42,6 +43,10 @@ export type MirrorCallbacks = {
   // A spike trap in the dungeon was set off; the frost lich cast a spell the page draws.
   onTrap?: (trap: { slot: number; trap: number; delay: number }) => void
   onSpell?: (spell: { spell: LichSpell; x: number; y: number; radius: number; ticks: number }) => void
+  // Every waystone in the world; a player starting to travel between two, and the end of it.
+  onWaystones?: (list: WaystoneInfo[]) => void
+  onWarp?: (warp: { id: number; from: { x: number; y: number }; to: { x: number; y: number }; ticks: number }) => void
+  onWarpEnd?: (id: number, arrived: boolean) => void
   // One of this page's commands has run (or been turned down), on the tick just simulated.
   onResult?: (result: CommandResult) => void
   // The player's inventory, as of the tick just simulated.
@@ -201,6 +206,12 @@ export class FactoryMirror {
       this.callbacks.onTrap?.(event)
     } else if (event.k === 'spell') {
       this.callbacks.onSpell?.(event)
+    } else if (event.k === 'waystones') {
+      this.callbacks.onWaystones?.(event.list)
+    } else if (event.k === 'warp') {
+      this.callbacks.onWarp?.(event)
+    } else if (event.k === 'warp-') {
+      this.callbacks.onWarpEnd?.(event.id, event.arrived)
     } else if (event.k === 'animal-') {
       this.callbacks.onAnimalGone?.(event.id, event.died)
     }

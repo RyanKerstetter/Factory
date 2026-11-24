@@ -94,6 +94,10 @@ import {
   stationTool,
   SUB,
   TICK_MS,
+  WARP_TICKS,
+  waystoneTitle,
+  type WaystoneEntity,
+  type WaystoneInfo,
   tileOfUnits,
   tilesHitBy,
   TPS,
@@ -141,6 +145,8 @@ import type {
   PlayerPose,
   RitualView,
   TrapView,
+  WarpFlashView,
+  WarpView,
 } from './render3d/frame.ts'
 import { drawnAt, offeringWindows } from './ritual-timeline.ts'
 import { CROP_GROWTH_STAGES } from './render3d/models.ts'
@@ -157,6 +163,7 @@ import { createInventoryPanels, type MachineView, type PanelsView } from './ui/i
 import { createPauseMenu } from './ui/pause-menu-view.ts'
 import type { BookEntry } from './ui/recipe-book.ts'
 import { createTooltips } from './ui/tooltip.ts'
+import { createWaystonePanel, type WaystoneView } from './ui/waystone-view.ts'
 
 export type GameOptions = {
   container: HTMLElement
@@ -181,6 +188,18 @@ const CONNECT_TIMEOUT_MS = 12_000
 const STEP_DISTANCE = 1.75 * SUB
 const RUSTLE_DISTANCE = 1.1 * SUB
 // A point in units, in tiles (where something is drawn, or a sound comes from).
+// How long the flash of someone going from or arriving at a waystone lasts (ms), and how long past the end of a warp
+// this page waits to hear of it before letting the player move again anyway.
+const WARP_FLASH_MS = 900
+const WARP_GRACE_MS = 2000
+
+// Which way something is (tiles across and down) as a compass point.
+function compassWay(dx: number, dy: number): string {
+  if (dx === 0 && dy === 0) return ''
+  const points = ['E', 'NE', 'N', 'NW', 'W', 'SW', 'S', 'SE']
+  return points[(Math.round(Math.atan2(-dy, dx) / (Math.PI / 4)) + 8) % 8]
+}
+
 function tilesOf(spot: { x: number; y: number }): { x: number; y: number } {
   return { x: spot.x / SUB, y: spot.y / SUB }
 }
@@ -248,6 +267,17 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   let slotBeforeHand = 0
   let openBuilding: number | undefined
   let inventoryOpen = false
+  // The waystone whose panel is open; every waystone in the world (the server says); the players travelling by one
+  // (page time: when it started charging and when they go), and the flashes where they went and arrived.
+  let openWaystone: number | undefined
+  let waystoneList: WaystoneInfo[] = []
+  const warps = new Map<number, { from: { x: number; y: number }; to: { x: number; y: number }; at: number; until: number }>()
+  const warpFlashes: Array<{ x: number; y: number; at: number; arriving: boolean; salt: number; stone: { x: number; y: number } }> = []
+  // Until when (page time) this player is held still: from picking a waystone to go to until the server says they
+  // have arrived (or it was called off, or turned down). The warp command asked for, and to which waystone.
+  let heldUntil = 0
+  let warpSeq: number | undefined
+  let warpTo: number | undefined
   let debug = false
   // The zoom drawn, easing towards where the wheel has put it, and when it last eased.
   let zoom = DEFAULT_ZOOM
@@ -324,7 +354,13 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   const closePanels = (): void => {
     inventoryOpen = false
     openBuilding = undefined
+    openWaystone = undefined
   }
+  const waystonePanel = createWaystonePanel(hudRoot, {
+    rename: (id, waystoneName) => send({ k: 'rename', id, name: waystoneName }),
+    travel: (from, to) => travel(from, to),
+    close: () => closePanels(),
+  })
   const panels = createInventoryPanels(hudRoot, {
     take: (id, item, max) => {
       send({ k: 'take', id, item, max })
@@ -494,6 +530,45 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
         sounds.play('blizzard', at)
       } else sparks.push({ ...at, at: now, color: spell === 'summon' ? 0x9a7ad8 : 0xcfeaff })
     },
+    onWaystones: (list) => {
+      waystoneList = list
+    },
+    // A player starting to travel by waystone: the stone charging (and this player held still, if it is them).
+    onWarp: ({ id, from, to, ticks }) => {
+      const now = performance.now()
+      warps.set(id, { from, to, at: now, until: now + ticks * TICK_MS })
+      const mine = id === mirror.playerId
+      if (mine) heldUntil = now + ticks * TICK_MS + WARP_GRACE_MS
+      sounds.play('warp/charge', mine ? undefined : { x: from.x + 0.5, y: from.y + 0.5, other: true })
+    },
+    // And the end of it: the flash where they went and where they arrived (in front of the stone, unless that was
+    // blocked), or, called off, nothing.
+    onWarpEnd: (id, arrived) => {
+      const warp = warps.get(id)
+      warps.delete(id)
+      const mine = id === mirror.playerId
+      if (mine) {
+        heldUntil = 0
+        warpTo = undefined
+      }
+      if (!warp) return
+      if (!arrived) {
+        if (mine) hud.toast('The waystone lost its hold on you.', 'error')
+        return
+      }
+      const now = performance.now()
+      const left = id === mirror.playerId ? tilesOf(local.position) : remotes.positionOf(id, lastRemoteTick)
+      const leftAt = left ? (id === mirror.playerId ? left : tilesOf(left)) : { x: warp.from.x + 0.5, y: warp.from.y + 1.5 }
+      warpFlashes.push({ ...leftAt, at: now, arriving: false, salt: id, stone: warp.from })
+      warpFlashes.push({ x: warp.to.x + 0.5, y: warp.to.y + 1.5, at: now, arriving: true, salt: id + 1, stone: warp.to })
+      if (mine) {
+        closePanels()
+        sounds.play('warp/arrive')
+      } else {
+        sounds.play('warp/arrive', { ...leftAt, other: true })
+        sounds.play('warp/arrive', { x: warp.to.x + 0.5, y: warp.to.y + 1.5, other: true })
+      }
+    },
     onAnimalGone: (id, died) => {
       // Killed: the blow's number rises off it, and it falls over (its drops show once it has: see visibleDrops).
       const gone = animalTracks.gone(id, died, performance.now())
@@ -501,6 +576,14 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     },
     onResult: (result) => {
       prediction.settle(result.seq)
+      // A warp turned down: the player is free to move again.
+      if (result.seq === warpSeq) {
+        warpSeq = undefined
+        if (!result.ok) {
+          heldUntil = 0
+          warpTo = undefined
+        }
+      }
       // A punch a little too soon after the last is simply not counted; it is not worth a message. Crafting and eating
       // that cannot be done only make their sound.
       if (!result.ok && result.why && QUIET_REFUSALS.has(result.why)) sounds.play('craft/fail')
@@ -904,8 +987,20 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       if (!quiet) sleepIn(there.id)
       return
     }
+    // A waystone: its panel, to name it and travel from it.
+    if (there?.kind === 'waystone') {
+      if (!quiet) {
+        inventoryOpen = false
+        openBuilding = undefined
+        openWaystone = there.id
+      }
+      return
+    }
     if (there && hasInventory(there)) {
-      if (!quiet) openBuilding = there.id
+      if (!quiet) {
+        openBuilding = there.id
+        openWaystone = undefined
+      }
       return
     }
     const inventory = predictedInventory()
@@ -1008,7 +1103,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       event.preventDefault()
       if (pause.isOpen) pause.back()
       else if (map.isOpen) map.close()
-      else if (inventoryOpen || openBuilding !== undefined) closePanels()
+      else if (inventoryOpen || openBuilding !== undefined || openWaystone !== undefined) closePanels()
       else {
         keys.clear()
         leftDown = false
@@ -1057,7 +1152,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       return
     }
     if (action === 'inventory') {
-      if (inventoryOpen || openBuilding !== undefined) closePanels()
+      if (inventoryOpen || openBuilding !== undefined || openWaystone !== undefined) closePanels()
       else inventoryOpen = true
     } else if (action === 'eat') eat()
     else if (action === 'players') showingPlayers = true
@@ -1131,7 +1226,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
         // Charging an attack slows them more. A step an attack takes (a lunge, a dash) moves them instead of the keys.
         const slow = performance.now() < attackSlowUntil ? KEY_SLOW : 0
         const charge = charging ? KEY_CHARGE : 0
-        const still = pause.isOpen || performance.now() < attackStillUntil
+        const still = pause.isOpen || performance.now() < attackStillUntil || performance.now() < heldUntil
         const push = pushes.shift()
         connection.sendInputs(local.step(push ? withPush(0, push.angle, push.speed) : still ? 0 : keys.movement() | slow | charge))
         stepSounds()
@@ -1215,6 +1310,8 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       attacks: attackView(now, playerX / SUB, playerY / SUB, remoteTick),
       overlay: overlay(buildings),
       rituals,
+      warps: warpViews(now, playerX / SUB, playerY / SUB, remoteTick),
+      warpFlashes: warpFlashViews(now),
       ...(debug ? { debug: debugView() } : {}),
     })
 
@@ -1594,6 +1691,52 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   }
 
   // The altars in view in the middle of a ritual, or glowing after one (see ritual-timeline.ts for how it is shown).
+  // Travelling by waystone: asks to go (held still at once, so what the server plays matches), unless already going.
+  const travel = (from: number, to: number): void => {
+    if (warps.has(mirror.playerId) || performance.now() < heldUntil) return
+    const seq = send({ k: 'warp', id: from, to })
+    if (seq === undefined) return
+    warpSeq = seq
+    warpTo = to
+    heldUntil = performance.now() + WARP_TICKS * TICK_MS + WARP_GRACE_MS
+  }
+
+  // A waystone's panel: its name, and every other waystone, how far and which way.
+  const waystoneView = (stone: WaystoneEntity): WaystoneView => ({
+    id: stone.id,
+    name: stone.name ?? '',
+    destinations: waystoneList
+      .filter((other) => other.id !== stone.id)
+      .map((other) => ({
+        id: other.id,
+        title: waystoneTitle(other),
+        distance: Math.round(Math.hypot(other.x - stone.x, other.y - stone.y)),
+        direction: compassWay(other.x - stone.x, other.y - stone.y),
+      })),
+    travelling: warps.has(mirror.playerId) || performance.now() < heldUntil,
+    ...(warpTo !== undefined ? { travellingTo: warpTo } : {}),
+  })
+
+  // Each player travelling by waystone, and how far through the charge; a warp never heard to end is forgotten.
+  const warpViews = (now: number, playerX: number, playerY: number, remoteTick: number): WarpView[] => {
+    const shown: WarpView[] = []
+    for (const [id, warp] of warps) {
+      if (now > warp.until + WARP_GRACE_MS) {
+        warps.delete(id)
+        continue
+      }
+      const spot = id === mirror.playerId ? { x: playerX, y: playerY } : remotes.positionOf(id, remoteTick)
+      const player = spot ? (id === mirror.playerId ? spot : tilesOf(spot)) : undefined
+      shown.push({ x: warp.from.x, y: warp.from.y, t: Math.min(1, Math.max(0, (now - warp.at) / (warp.until - warp.at))), ...(player ? { player } : {}) })
+    }
+    return shown
+  }
+
+  const warpFlashViews = (now: number): WarpFlashView[] => {
+    for (let i = warpFlashes.length - 1; i >= 0; i--) if (now - warpFlashes[i].at > WARP_FLASH_MS) warpFlashes.splice(i, 1)
+    return warpFlashes.map((flash) => ({ x: flash.x, y: flash.y, age: (now - flash.at) / WARP_FLASH_MS, arriving: flash.arriving, salt: flash.salt, stone: flash.stone }))
+  }
+
   const ritualViews = (alpha: number): RitualView[] => {
     const bounds = view.visible()
     // Far enough out that the beams from pedestals and barrels in view are drawn.
@@ -1912,6 +2055,11 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     // Walked off well out of reach of what is open: it closes.
     if (opened && openBuilding !== undefined && Math.sqrt(distanceToTileSquared(local.position.x, local.position.y, opened.x, opened.y)) > PLAYER_REACH * CLOSE_AWAY) closePanels()
     panels.show(inventoryOpen || opened ? panelsView(opened, predicted) : undefined)
+    // A waystone's panel: closed when it is gone or walked away from (or arrived away from).
+    const stone = openWaystone !== undefined ? mirror.world.entity(openWaystone) : undefined
+    const stoneOpen = stone?.kind === 'waystone' && Math.sqrt(distanceToTileSquared(local.position.x, local.position.y, stone.x, stone.y)) <= PLAYER_REACH * CLOSE_AWAY
+    if (!stoneOpen) openWaystone = undefined
+    waystonePanel.show(stoneOpen && stone.kind === 'waystone' ? waystoneView(stone) : undefined)
     // A work station only works while someone has it open, so the server is told which one this player has.
     const using = opened && isStation(opened) ? opened.id : 0
     // And whether its inventory is open with nothing else, which hand crafting only goes on while.
@@ -1970,7 +2118,8 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   const surroundingsOf = (altar: Entity): ReturnType<typeof altarSurroundings> => altarSurroundings(altar.x, altar.y, (x, y) => mirror.world.entityAt(x, y))
 
   // The Craft button under one of an altar's rituals: it starts if everything it takes is round the altar, nothing else is
-  // under way there, and there is room on it for what it makes (the server takes it all, and the altar does the rest).
+  // under way there, and there is room on it for what it makes (the server takes it all, and the altar does the rest,
+  // and does it again while it can).
   const startRitual = (altar: Extract<Entity, { kind: 'altar' }>, index: number): void => {
     const recipe = ALTAR_RECIPES[index]
     if (!recipe || altarBusy(altar) || !altarRoomFor(altar, recipe) || !planRitual(recipe, surroundingsOf(altar))) return craftFailed()

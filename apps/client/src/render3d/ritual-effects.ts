@@ -11,8 +11,9 @@ import { Pool, showObject } from './reuse.ts'
 // - each pedestal's item in turn, still floating over its pedestal until its turn (the server has already taken it), then
 //   a white beam from it to the altar, sparks running along it, the item lifted and drawn along the beam, and held
 //   circling over the altar, spinning;
-// - each barrel's liquid in turn: a red beam from the barrel to the altar's basin, drops running down it, and the basin
-//   filling (the barrel drains as it goes: see game.ts);
+// - each barrel's liquid in turn: a stream of it drawn up out of the barrel and through the air to the altar's basin,
+//   dark and glossy like the liquid itself (not a beam of light), drops running down it, a faint dark-red haze round
+//   it, and the basin filling (the barrel drains as it goes: see game.ts);
 // - the ending: the items close in faster and faster, the blood rising out of the basin in a column into them, a white
 //   core swelling between them;
 // - and afterwards (the altar's glow), a burst: a flash, a shockwave over the ground, sparks thrown out and a pillar of
@@ -22,6 +23,10 @@ const WHITE = 0xfff4dc
 const RED = 0xd01828
 const BLOOD_SPARK = 0xff3040
 const GOLD = 0xffd27a
+// The blood drawn from the barrels: a lit, glossy liquid, and a faint haze of light round it.
+const BLOOD = 0x6e0a16
+const BLOOD_DROP = 0x8a1020
+const BLOOD_HAZE = 0x4a0610
 
 // Something that glows: added on, not lit, drawn after the solid world, not hiding what is behind it.
 function glowMaterial(color: number): THREE.MeshBasicMaterial {
@@ -35,6 +40,7 @@ const BOWL = new THREE.CylinderGeometry(1, 1, 1, 16)
 const UP = new THREE.Vector3(0, 1, 0)
 
 type Glow = { mesh: THREE.Mesh; material: THREE.MeshBasicMaterial }
+type Liquid = { mesh: THREE.Mesh; material: THREE.MeshStandardMaterial }
 
 export class RitualEffects {
   readonly group = new THREE.Group()
@@ -43,6 +49,8 @@ export class RitualEffects {
   private readonly sparks: Pool<Glow>
   private readonly rings: Pool<Glow>
   private readonly bowls: Pool<THREE.Mesh>
+  private readonly streams: Pool<Liquid>
+  private readonly drops: Pool<Liquid>
   private readonly from = new THREE.Vector3()
   private readonly to = new THREE.Vector3()
   private readonly along = new THREE.Vector3()
@@ -66,6 +74,17 @@ export class RitualEffects {
       this.group.add(mesh)
       return mesh
     }, showObject)
+    const liquid = (geometry: THREE.BufferGeometry) => (): Liquid => {
+      const material = new THREE.MeshStandardMaterial({ color: BLOOD, roughness: 0.2, metalness: 0.1, emissive: 0x1a0004, transparent: true, opacity: 1 })
+      const mesh = new THREE.Mesh(geometry, material)
+      mesh.renderOrder = 6
+      mesh.frustumCulled = false
+      this.group.add(mesh)
+      return { mesh, material }
+    }
+    const showLiquid = (made: Liquid, shown: boolean): void => showObject(made.mesh, shown)
+    this.streams = new Pool(liquid(BEAM), showLiquid)
+    this.drops = new Pool(liquid(SPARK), showLiquid)
     this.bowls = new Pool<THREE.Mesh>(() => {
       const mesh = new THREE.Mesh(BOWL, new THREE.MeshStandardMaterial({ color: ALTAR_BOWL.color, roughness: 0.2, metalness: 0.1, emissive: 0x3a0006 }))
       this.group.add(mesh)
@@ -83,6 +102,8 @@ export class RitualEffects {
     this.sparks.finish()
     this.rings.finish()
     this.bowls.finish()
+    this.streams.finish()
+    this.drops.finish()
   }
 
   private ritual(ritual: RitualView, now: number): void {
@@ -112,15 +133,16 @@ export class RitualEffects {
         liquidTotal += offering.count
         liquidIn += offering.count * drawn
         if (drawn <= 0 || drawn >= 1) return
-        // A red beam from the barrel down into the basin, drops running down it.
+        // A stream of blood drawn from the barrel into the basin, thickening as it gets going and thinning to a
+        // trickle as the barrel empties, drops running down it, and a faint haze round it.
         this.from.set(sx, BARREL_TOP + 0.05, sz)
         this.to.set(x, ALTAR_BOWL.brim, z)
-        const strength = Math.sin(Math.PI * drawn)
-        this.beam(this.from, this.to, 0.035 + 0.012 * Math.sin(seconds * 25), RED, 0.85 * strength)
-        this.beam(this.from, this.to, 0.012, WHITE, 0.4 * strength)
+        const strength = Math.min(1, drawn * 6, (1 - drawn) * 6)
+        this.stream(this.from, this.to, (0.022 + 0.005 * Math.sin(seconds * 18)) * strength, BLOOD, 0.95)
+        this.beam(this.from, this.to, 0.05 * strength, BLOOD_HAZE, 0.3 * strength)
         for (let j = 0; j < 6; j++) {
-          const along = (seconds * 1.6 + j / 6) % 1
-          this.spark(this.along.lerpVectors(this.from, this.to, along), 0.03, BLOOD_SPARK, strength)
+          const along = (seconds * 1.4 + j / 6) % 1
+          this.drop(this.along.lerpVectors(this.from, this.to, along), 0.03 * strength, BLOOD_DROP)
         }
         return
       }
@@ -175,13 +197,16 @@ export class RitualEffects {
         if (level < 1) this.ring(x, z, across * (0.25 + 0.2 * ((seconds * 2) % 1)), BLOOD_SPARK, 0.4, y + 0.004)
       }
       if (end > 0 && end < 1) {
-        // The blood rising in a column into the core.
+        // The blood rising in a column into the core: the liquid itself, twisting up, with a dark-red haze round it.
+        const rise = Math.sin(Math.PI * end)
         this.from.set(x, ALTAR_BOWL.brim, z)
-        this.beam(this.from, center.clone().setY(ALTAR_HOLD_Y + 0.15 + end * 0.2), 0.05 + 0.04 * end, RED, Math.sin(Math.PI * end))
+        const top = center.clone().setY(ALTAR_HOLD_Y + 0.15 + end * 0.2)
+        this.stream(this.from, top, (0.03 + 0.03 * end) * rise, BLOOD, 0.95)
+        this.beam(this.from, top, (0.07 + 0.05 * end) * rise, BLOOD_HAZE, 0.3 * rise)
         for (let j = 0; j < 8; j++) {
           const up = (seconds * 2.2 + j / 8) % 1
           const wobble = 0.06 * Math.sin(seconds * 9 + j)
-          this.spark(this.along.set(x + wobble, ALTAR_BOWL.brim + up * (ALTAR_HOLD_Y + 0.3 - ALTAR_BOWL.brim), z - wobble), 0.035, BLOOD_SPARK, Math.sin(Math.PI * end))
+          this.drop(this.along.set(x + wobble, ALTAR_BOWL.brim + up * (ALTAR_HOLD_Y + 0.3 - ALTAR_BOWL.brim), z - wobble), 0.03 * rise, BLOOD_DROP)
         }
       }
     }
@@ -236,6 +261,27 @@ export class RitualEffects {
     mesh.quaternion.setFromUnitVectors(UP, this.along.subVectors(to, from).normalize())
     material.color.setHex(color)
     material.opacity = Math.min(1, opacity)
+  }
+
+  // A stream of liquid from one point to another, `radius` thick: lit like the liquid it is, not glowing.
+  private stream(from: THREE.Vector3, to: THREE.Vector3, radius: number, color: number, opacity: number): void {
+    if (radius <= 0.002) return
+    const { mesh, material } = this.streams.next()
+    const length = from.distanceTo(to)
+    mesh.position.lerpVectors(from, to, 0.5)
+    mesh.scale.set(radius, Math.max(0.001, length), radius)
+    mesh.quaternion.setFromUnitVectors(UP, this.along.subVectors(to, from).normalize())
+    material.color.setHex(color)
+    material.opacity = opacity
+  }
+
+  // A drop of liquid.
+  private drop(at: THREE.Vector3, radius: number, color: number): void {
+    if (radius <= 0.002) return
+    const { mesh, material } = this.drops.next()
+    mesh.position.copy(at)
+    mesh.scale.setScalar(radius)
+    material.color.setHex(color)
   }
 
   private spark(at: THREE.Vector3, radius: number, color: number, opacity: number): void {

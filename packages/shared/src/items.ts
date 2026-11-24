@@ -27,7 +27,8 @@ export type ItemDef = {
   // The kind of tool it is, if it is one: what it can chop, break or cut (see `resourceDamage` in weapons.ts), and the
   // tool a station recipe can ask for (see stations.ts).
   tool?: ToolKind
-  // The most that fit in one slot, if fewer than an inventory's usual stack (a tool does not stack).
+  // The most that fit in one slot, in place of an inventory's usual stack (STACK_SIZE): fewer (a tool does not stack)
+  // or more (arrows).
   stack?: number
   // Words that group items, such as "seed" or "meat": what an animal eats can be named by one (see animals.ts).
   tags: readonly string[]
@@ -152,9 +153,9 @@ export function getItem(id: ItemId): ItemDef {
   return item
 }
 
-// How many of an item fit in one slot of an inventory whose stacks are `stack`.
+// How many of an item fit in one slot of an inventory whose stacks are `stack`: its own `stack`, if it has one.
 export function stackLimit(id: ItemId, stack: number): number {
-  return Math.min(stack, byId.get(id)?.stack ?? stack)
+  return byId.get(id)?.stack ?? stack
 }
 
 // Items that have been renamed: the key a save made before may still have, and the key it is now (so the save keeps

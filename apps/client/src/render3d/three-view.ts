@@ -21,6 +21,7 @@ import { Ground, WALL_SPIKES } from './ground.ts'
 import { floatingAt, itemMaterial, itemPlane } from './item-pictures.ts'
 import * as models from './models.ts'
 import { RitualEffects } from './ritual-effects.ts'
+import { WaystoneEffects } from './waystone-effects.ts'
 import { GroundPaint, Label } from './paint.ts'
 import { KeptById, Pool, showObject } from './reuse.ts'
 
@@ -268,6 +269,7 @@ class World {
   private readonly monsters = new THREE.Group()
   private readonly paint = new GroundPaint()
   private readonly rituals = new RitualEffects()
+  private readonly waystoneEffects = new WaystoneEffects()
 
   private readonly keptBuildings = new KeptById<{ object: THREE.Object3D }>(this.buildings)
   private readonly keptAnimals = new KeptById<KeptCreature>(this.animals)
@@ -372,7 +374,7 @@ class World {
     this.spikes.frustumCulled = false
     this.spikes.count = 0
     scene.add(this.ground.view, this.paint.mesh, this.buildings, this.animals, this.monsters, this.spikes, this.players, this.drops, this.dropShadows, this.shots, this.ghosts, this.rafts)
-    scene.add(this.effects, this.labels, this.hoverRing, this.ropes, this.landmarks, this.rituals.group)
+    scene.add(this.effects, this.labels, this.hoverRing, this.ropes, this.landmarks, this.rituals.group, this.waystoneEffects.group)
   }
 
   update(frame: WorldFrame, bounds: TileBounds, camera: THREE.OrthographicCamera, pxPerTile: number): void {
@@ -380,6 +382,7 @@ class World {
     this.updateLandmarks(frame.terrain)
     this.updateBuildings(frame)
     this.rituals.update(frame.rituals, frame.now)
+    this.waystoneEffects.update(frame.warps, frame.warpFlashes, frame.now)
     this.updateAnimals(frame.animals, frame.now, pxPerTile)
     this.updateMonsters(frame.monsters, frame.now, pxPerTile)
     this.angryMarks.finish()
@@ -968,6 +971,10 @@ function buildingModel(building: BuildingView): THREE.Object3D {
       return models.well()
     case 'altar':
       return withFloating(models.altar(), building.shown, models.ALTAR_HOLD_Y)
+    case 'waystone':
+      return models.waystone()
+    case 'worker':
+      return models.workerSkeleton()
     case 'pedestal':
       return withFloating(models.pedestal(), building.shown, models.PEDESTAL_HOLD_Y)
     case 'chest':

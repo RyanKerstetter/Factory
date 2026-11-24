@@ -19,8 +19,8 @@ export type WorldEvent =
   | { t: 'hp'; id: number; hp: number }
   // The heat a barrel or drying rack gets from a fire in another chunk (see BORDER_HEAT_STEP).
   | { t: 'border'; id: number; heat: number }
-  // A tree was punched: the sticks left on it, and the punches towards knocking the next one loose.
-  | { t: 'sticks'; id: number; sticks: number; punches: number }
+  // A tree was punched: the punches towards knocking the next stick (or bark) loose.
+  | { t: 'punches'; id: number; punches: number }
   // An item landed on the ground; one was picked up (all of it); some of one was picked up, leaving `count`.
   | { t: 'drop+'; d: DropState }
   | { t: 'drop-'; id: number }
@@ -56,12 +56,9 @@ export function applyWorldEvent(world: FactoryWorld, event: WorldEvent): void {
       if (entity?.kind === 'barrel' || entity?.kind === 'rack') entity.border = event.heat
       return
     }
-    case 'sticks': {
+    case 'punches': {
       const entity = world.entity(event.id)
-      if (entity?.kind === 'tree') {
-        entity.sticks = event.sticks
-        entity.punches = event.punches
-      }
+      if (entity?.kind === 'tree') entity.punches = event.punches
       return
     }
     case 'drop+':
@@ -94,7 +91,7 @@ export function chunksOfWorldEvent(world: FactoryWorld, event: WorldEvent): numb
     case 'inv':
     case 'hp':
     case 'border':
-    case 'sticks': {
+    case 'punches': {
       const chunk = world.chunkOfEntity(event.id)
       return chunk === undefined ? [] : [chunk]
     }

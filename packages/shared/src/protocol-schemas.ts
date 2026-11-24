@@ -39,6 +39,7 @@ export const CommandSchema = z.discriminatedUnion('k', [
   z.object({ k: z.literal('hold'), slot: int.min(-1).max(255) }),
   z.object({ k: z.literal('chest'), id: int.min(1), action: z.enum(['sort', 'stash']) }),
   z.object({ k: z.literal('rename'), id: int.min(1), name: z.string().max(64) }),
+  z.object({ k: z.literal('warp'), id: int.min(1), to: int.min(1) }),
 ])
 
 // Every command a page can send (see Command in commands.ts) has its check above: this does not compile if one is

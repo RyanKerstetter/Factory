@@ -10,8 +10,6 @@ import {
   NATURAL_DROP_BORN,
   RECIPES,
   WEAPONS,
-  TREE_STICK_REGROW,
-  TREE_STICKS,
   countOf,
   DEFAULT_PLANT_GENERATION,
   DROP_TABLES,
@@ -131,28 +129,29 @@ test('the server grows plants near a player, and the page has the same ones', ()
   assert.deepEqual(differingChunks(room, client), [])
 })
 
-test('punching a tree only knocks its sticks loose, one every STICK_EVERY punches, until it has none left', () => {
+test('punching a tree only knocks sticks loose, one every STICK_EVERY punches, without ever running out', () => {
   const room = new GameRoom('PLANT2', 11, { dropsOnGround: false })
   const client = new TestClient(room, 'Lumberjack')
   run(room, [client], 5)
   const tree = besidePlant(room, client, 'tree')
-  for (let i = 0; i < STICK_EVERY * TREE_STICKS; i++) {
+  const wanted = 10
+  for (let i = 0; i < STICK_EVERY * wanted - 1; i++) {
     client.command({ k: 'punch', id: tree.id, slot: 0 })
     run(room, [client], PUNCH_COOLDOWN_TICKS)
   }
   run(room, [client], 5)
-  assert.equal(countOf(client.player.inventory, itemId('stick')), TREE_STICKS)
+  assert.equal(countOf(client.player.inventory, itemId('stick')), wanted - 1, 'one short of the last stick')
+  client.command({ k: 'punch', id: tree.id, slot: 0 })
+  run(room, [client], 5)
+  assert.equal(countOf(client.player.inventory, itemId('stick')), wanted)
+  assert.ok(client.results.every((result) => result.ok), 'no punch was turned down')
   const after = room.world.entity(tree.id)
   assert.ok(after?.kind === 'tree', 'the tree still stands')
   assert.equal(after.hp, BUILDINGS.tree.maxHp, 'punching did not hurt it')
-  assert.equal(after.sticks, 0)
-  client.command({ k: 'punch', id: tree.id, slot: 0 })
-  run(room, [client], 5)
-  assert.equal(client.results.at(-1)?.why, 'bare')
   assert.deepEqual(differingChunks(room, client), [])
 })
 
-test('an axe chops a tree down, dropping its logs, acorns and the sticks still on it', () => {
+test('an axe chops a tree down, dropping its logs, acorns and a stick', () => {
   const room = new GameRoom('PLANT7', 11, { dropsOnGround: false })
   const client = new TestClient(room, 'Lumberjack')
   run(room, [client], 5)
@@ -160,29 +159,11 @@ test('an axe chops a tree down, dropping its logs, acorns and the sticks still o
   client.player.inventory.slots[1] = { item: itemId('axe'), count: 1 }
   assert.equal(punchDown(room, client, tree.id, 1), Math.ceil(BUILDINGS.tree.maxHp / WEAPONS.get('axe')!.harvest))
   const inventory = client.player.inventory
-  assert.equal(countOf(inventory, itemId('stick')), TREE_STICKS)
+  assert.equal(countOf(inventory, itemId('stick')), 1)
   assert.ok(countOf(inventory, itemId('log')) >= 2 && countOf(inventory, itemId('log')) <= 4)
   assert.ok(countOf(inventory, itemId('acorn')) >= 1 && countOf(inventory, itemId('acorn')) <= 2)
   assert.equal(client.mirror.world.entity(tree.id), undefined, 'the page saw it fall')
   assert.deepEqual(differingChunks(room, client), [])
-})
-
-test('a tree grows its sticks back on its random ticks, the same way everywhere', () => {
-  const regrow = (): number => {
-    const world = new FactoryWorld()
-    world.addEntity(createEntity(1, 'tree', 3, 3, 0, 0))
-    const tree = world.entity(1)!
-    if (tree.kind !== 'tree') throw new Error('not a tree')
-    tree.sticks = 0
-    for (let tick = 1; tick < 200_000; tick++) {
-      world.stepInterior(tick, 42)
-      if (tree.sticks === TREE_STICKS) return tick
-    }
-    return -1
-  }
-  const first = regrow()
-  assert.ok(first > TREE_STICKS * TREE_STICK_REGROW * 20, `it took ${first} ticks`)
-  assert.equal(regrow(), first)
 })
 
 test('a bush drops its fiber and its berries when it is gone, nothing before; an axe breaks it twice as fast', () => {

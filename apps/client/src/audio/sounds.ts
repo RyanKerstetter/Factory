@@ -5,7 +5,7 @@
 //
 // A new sound is a recipe in RECIPES (its name is its key there) and a volume in SOUND_VOLUME.
 
-import { biomeAt, isInDungeons, isSeaAt, type Terrain } from '../../../../packages/shared/src/index.ts'
+import { biomeAt, isInDungeons, isSeaAt, WARP_LIGHT_LEVELS, WARP_SECONDS, warpLightAt, type Terrain } from '../../../../packages/shared/src/index.ts'
 import { snowOnTile } from '../snow.ts'
 
 // What the ground underfoot sounds like: grass in the forest, sand on its beaches, rock in the mountains and snow where
@@ -62,6 +62,9 @@ export const SOUND_VOLUME: Readonly<Record<SoundId, number>> = {
   hurt: 1,
   cast: 1,
   blizzard: 1,
+  // A waystone charging to send a player off, and arriving at another.
+  'warp/charge': 1,
+  'warp/arrive': 1,
   'trap/click': 1,
   'trap/spikes': 1,
   // Creatures crying out when hurt.
@@ -309,6 +312,23 @@ const RECIPES = {
     tone(context, out, { at, type: 'sine', from: 520, to: 1040, length: 0.9, gain: 0.12 })
     tone(context, out, { at: at + 0.05, type: 'triangle', from: 780, to: 1560, length: 0.8, gain: 0.06 })
     burst(context, out, noise, { at, length: 0.9, gain: 0.08, filter: 'bandpass', frequency: 3200, to: 5200, q: 3, attack: 0.3 })
+  },
+  // A waystone charging (WARP_SECONDS long): a hum rising under it, a shimmer swelling, and a chime as each pair of its
+  // lights comes on (see `warpLightAt`), higher each time.
+  'warp/charge': (context, out, at, noise) => {
+    tone(context, out, { at, type: 'sine', from: 110, to: 220, length: WARP_SECONDS, gain: 0.14 })
+    tone(context, out, { at, type: 'triangle', from: 220, to: 440, length: WARP_SECONDS, gain: 0.04 })
+    burst(context, out, noise, { at, length: WARP_SECONDS, gain: 0.07, filter: 'bandpass', frequency: 500, to: 2600, q: 2, attack: WARP_SECONDS * 0.8 })
+    for (let level = 0; level <= WARP_LIGHT_LEVELS; level++) {
+      const pitch = 520 * 1.122 ** level
+      tone(context, out, { at: at + warpLightAt(level) * WARP_SECONDS, type: 'sine', from: pitch, to: pitch, length: 0.4, gain: 0.07 })
+    }
+  },
+  // Arriving at a waystone: a rush of air and a bright ringing chord.
+  'warp/arrive': (context, out, at, noise) => {
+    burst(context, out, noise, { at, length: 0.6, gain: 0.25, filter: 'bandpass', frequency: 3000, to: 500, q: 0.9, attack: 0.02 })
+    for (const [pitch, gain] of [[523, 0.1], [659, 0.08], [784, 0.07], [1047, 0.05]] as const) tone(context, out, { at, type: 'sine', from: pitch * 1.02, to: pitch, length: 1.4, gain })
+    tone(context, out, { at, type: 'sine', from: 160, to: 60, length: 0.5, gain: 0.3 })
   },
   // A blizzard: a long, deep, howling gust.
   blizzard: (context, out, at, noise) => {

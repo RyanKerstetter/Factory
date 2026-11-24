@@ -1,5 +1,7 @@
 import { separateBodies, type Body } from './bodies.ts'
 import {
+  ALTAR_RECIPES,
+  altarRoomFor,
   chunkCoords,
   CHUNK_SIZE,
   getItem,
@@ -28,6 +30,13 @@ import {
   GATE_SHUT,
   isWithinReach,
   isStation,
+  STATION_LAYOUT,
+  roomFor,
+  cloneInventory,
+  ARRIVAL_SPOTS,
+  WARP_SLIP,
+  WARP_TICKS,
+  type WaystoneInfo,
   moveBox,
   PLAYER_HALF_SIZE,
   PLAYER_MASS,
@@ -133,7 +142,7 @@ import { Rafts } from './rafts.ts'
 import { PositionHistory, type CreatureSet, type Creature } from './creatures.ts'
 import { Dungeons, type DungeonContext } from './dungeons.ts'
 import { Monsters, type MonsterContext } from './monsters.ts'
-import { giveDrops, handCraft, runCommand, scatterAt, type CommandContext } from './commands.ts'
+import { drawRitual, giveDrops, handCraft, runCommand, scatterAt, type CommandContext } from './commands.ts'
 import { itemKeys, itemRemap, remapEntity, SAVE_VERSION, type PlayerSave, type WorldSave } from './save.ts'
 
 // How a room reaches one player. The Geckos channel in index.ts, or a pipe straight into a client in the tests.
@@ -202,6 +211,10 @@ export type ServerPlayer = {
   crafting?: number[]
   craftingTicks?: number
   handOpen?: boolean
+  // Travelling between two waystones (see `stepWarps`): from and to which, and the tick it started.
+  warp?: { from: number; to: number; at: number }
+  // Where they were when it started, to call it off if they are knocked away.
+  warpFrom?: PlayerPosition
 }
 
 // How far a player may push themselves (lunging, dashing) in a while, in units (more than a knife's dash, and a lunge
@@ -318,6 +331,16 @@ export class GameRoom {
   private healing = false
   // The work stations that have been started, to stop when nobody is at them.
   private readonly working = new Set<number>()
+  // The tools pressing Craft put into a work station from a player's things, by station: whose, and what. Each goes back
+  // to that player when they leave the station (see `returnLentTools`).
+  private readonly lentTools = new Map<number, { player: number; item: ItemId }>()
+  // Every waystone, as the pages are told of them (worked out again when one changes), and what they were last sent.
+  private waystones: WaystoneInfo[] | undefined
+  // Every altar (worked out again when one is put down or taken away), and the ritual each did last, to do again (see
+  // `repeatRituals`).
+  private altars: number[] | undefined
+  private readonly rituals = new Map<number, number>()
+  private waystonesSent = ''
   // The animals, run here only (see animals.ts), if this game has them.
   readonly animals: Animals | undefined
   // Attacks, and the arrows, stones and spears in flight.
@@ -466,6 +489,7 @@ export class GameRoom {
       terrain: this.terrain.settings,
     })
     player.outbox.push({ k: 'pinv', tick: this.tick, inv: inventoryToWire(player.inventory) })
+    player.outbox.push({ k: 'waystones', list: this.waystoneList() })
     this.updateChunks(player, this.tick)
     this.sendRoster()
     this.sendRoom()
@@ -475,6 +499,9 @@ export class GameRoom {
 
   leave(player: ServerPlayer): void {
     if (!this.players.delete(player.id)) return
+    // The tools Craft lent from their things come back with them; a warp they were on is called off.
+    this.returnLentTools([...this.players.values()], this.tick, player)
+    if (player.warp) this.endWarp(player, false)
     // Animals and rafts they were leading are let go, the ropes back in their things.
     for (const led of [...(this.animals?.list() ?? []), ...this.rafts.list()]) {
       if (led.leader !== player.id) continue
@@ -562,7 +589,7 @@ export class GameRoom {
         player.pushAllowance = Math.min(PUSH_ALLOWANCE, player.pushAllowance + Math.round(PUSH_REFILL / TPS))
         const keys = push && push.length > player.pushAllowance ? withoutPush(sent) : sent
         if (push && keys === sent) player.pushAllowance -= push.length
-        this.movePlayer(player, keys, speed)
+        this.movePlayer(player, player.warp ? 0 : keys, speed)
         player.lastPlayedInput = seq
       }
     }
@@ -658,6 +685,10 @@ export class GameRoom {
     this.spreadBorderHeat(tick)
     this.heal(tick)
     this.stopUnattendedStations(players, tick)
+    this.returnLentTools(players, tick)
+    this.stepWarps(players, tick)
+    this.repeatRituals(tick)
+    this.sendWaystones()
     this.resetGates(players, tick)
 
     // 4. Phase A.
@@ -797,6 +828,11 @@ export class GameRoom {
 
   // A change a command made: applied here, and logged to every client that simulates a chunk it touches.
   private logWorldEvent(event: WorldEvent, tick: number): void {
+    // A waystone put down, named or taken away: the list of them is worked out again.
+    const waystone = event.t === 'add' || event.t === 'set' ? event.e.kind === 'waystone' : event.t === 'remove' && this.world.entity(event.id)?.kind === 'waystone'
+    if (waystone) this.waystones = undefined
+    const altar = event.t === 'add' ? event.e.kind === 'altar' : event.t === 'remove' && this.world.entity(event.id)?.kind === 'altar'
+    if (altar) this.altars = undefined
     if (event.t === 'hp' && !this.healing) {
       const entity = this.world.entity(event.id)
       if (entity && BUILDINGS[entity.kind].maxHp > 0 && event.hp < hpOf(entity)) this.hurt.set(event.id, tick)
@@ -942,6 +978,118 @@ export class GameRoom {
     if (this.animals) bodies.push(...this.animals.bodies(animalContext))
     if (this.monsters) bodies.push(...this.monsters.bodies(monsterContext))
     separateBodies(bodies)
+  }
+
+  // A tool Craft put into a work station from a player's things goes back to them once they leave the station (have
+  // something else open, or nothing, or are out of reach of it, or have left the game: `leaving`), if it is still in
+  // its tool slot and there is room for it in their things; if not, it stays where it is. One they put in by hand, or
+  // took out and put back, is not lent (see `onToolHandled`), and stays.
+  private returnLentTools(players: readonly ServerPlayer[], tick: number, leaving?: ServerPlayer): void {
+    for (const [id, lent] of [...this.lentTools].sort((a, b) => a[0] - b[0])) {
+      const station = this.world.entity(id)
+      const player = leaving ? (leaving.id === lent.player ? leaving : undefined) : players.find((one) => one.id === lent.player)
+      if (leaving && !player) continue
+      if (!station || !isStation(station) || !player) {
+        this.lentTools.delete(id)
+        continue
+      }
+      const left = player === leaving || player.using !== id || !isWithinReach(player.position, station.x, station.y)
+      if (!left) continue
+      this.lentTools.delete(id)
+      const toolSlot = STATION_LAYOUT[station.kind].tool
+      const slot = station.inv.slots[toolSlot]
+      if (slot.count === 0 || slot.item !== lent.item) continue
+      if (roomFor(player.inventory, lent.item, 1) < 1) continue
+      addItems(player.inventory, lent.item, 1)
+      const inv = cloneInventory(station.inv)
+      inv.slots[toolSlot] = { item: NO_ITEM, count: 0 }
+      this.logWorldEvent({ t: 'set', e: entityToState({ ...station, inv }) }, tick)
+      player.outbox.push({ k: 'pinv', tick, inv: inventoryToWire(player.inventory) })
+    }
+  }
+
+  // Players travelling between waystones: once WARP_TICKS have passed they are put down beside the waystone they are
+  // going to (see `arrivalSpot`). It is called off if either waystone is gone by then, or they have been knocked away
+  // from where they started.
+  private stepWarps(players: readonly ServerPlayer[], tick: number): void {
+    for (const player of players) {
+      const warp = player.warp
+      if (!warp) continue
+      const from = this.world.entity(warp.from)
+      const to = this.world.entity(warp.to)
+      const start = player.warpFrom ?? player.position
+      const knocked = Math.hypot(player.position.x - start.x, player.position.y - start.y) > WARP_SLIP * SUB
+      if (from?.kind !== 'waystone' || to?.kind !== 'waystone' || knocked) {
+        this.endWarp(player, false)
+        continue
+      }
+      if (tick - warp.at < WARP_TICKS) continue
+      this.moveTo(player, this.arrivalSpot(to.x, to.y))
+      this.endWarp(player, true)
+    }
+  }
+
+  // The end of a warp, told to everyone (the player leaving the game is no longer among them).
+  private endWarp(player: ServerPlayer, arrived: boolean): void {
+    player.warp = undefined
+    player.warpFrom = undefined
+    for (const other of this.players.values()) other.outbox.push({ k: 'warp-', id: player.id, arrived })
+  }
+
+  // Where a player arrives at a waystone: the middle of the first tile round it (see ARRIVAL_SPOTS) that is clear and
+  // on land; else in front of it, whatever is there.
+  private arrivalSpot(x: number, y: number): PlayerPosition {
+    for (const [dx, dy] of ARRIVAL_SPOTS) {
+      if (this.solid(x + dx, y + dy) === false && !waterAt(this.terrain, x + dx, y + dy)) return tileMiddle(x + dx, y + dy)
+    }
+    return tileMiddle(x, y + 1)
+  }
+
+  // Every waystone in the world, in the order they were put down.
+  private waystoneList(): WaystoneInfo[] {
+    if (this.waystones) return this.waystones
+    const list: WaystoneInfo[] = []
+    for (const chunk of this.world.chunkIds) {
+      for (const entity of this.world.chunk(chunk)?.entities ?? []) {
+        if (entity.kind === 'waystone') list.push({ id: entity.id, name: entity.name ?? '', x: entity.x, y: entity.y })
+      }
+    }
+    this.waystones = list.sort((a, b) => a.id - b.id)
+    return this.waystones
+  }
+
+  // An altar does its ritual again and again: once the burst at the end of one is over, the same one starts, for as
+  // long as the pedestals and barrels round it hold what it takes and there is room on the altar for what it makes (the
+  // same item, stacking up). Lacking either, it stops, until a player starts one.
+  private repeatRituals(tick: number): void {
+    if (!this.altars) {
+      const found: number[] = []
+      for (const chunk of this.world.chunkIds) for (const entity of this.world.chunk(chunk)?.entities ?? []) if (entity.kind === 'altar') found.push(entity.id)
+      this.altars = found.sort((a, b) => a - b)
+    }
+    for (const id of this.rituals.keys()) if (!this.altars.includes(id)) this.rituals.delete(id)
+    for (const id of this.altars) {
+      const altar = this.world.entity(id)
+      if (altar?.kind !== 'altar') continue
+      if (altar.recipe !== 0) {
+        this.rituals.set(id, altar.recipe - 1)
+        continue
+      }
+      const index = this.rituals.get(id)
+      if (index === undefined || altar.glow > 0) continue
+      const recipe = ALTAR_RECIPES[index]
+      const again = recipe && altarRoomFor(altar, recipe) && drawRitual({ world: this.world, emit: (event) => this.logWorldEvent(event, tick) }, altar, recipe)
+      if (!again) this.rituals.delete(id)
+    }
+  }
+
+  // Tells everyone the waystones, when they have changed.
+  private sendWaystones(): void {
+    const list = this.waystoneList()
+    const key = JSON.stringify(list)
+    if (key === this.waystonesSent) return
+    this.waystonesSent = key
+    for (const player of this.players.values()) player.outbox.push({ k: 'waystones', list })
   }
 
   // A work station only works while a player who has it open is in reach of it.
@@ -1192,6 +1340,14 @@ export class GameRoom {
       combat: this.combat,
       players: () => [...this.players.values()].map((other) => other.position),
       onWork: (id) => this.working.add(id),
+      onToolLent: (station, item) => this.lentTools.set(station, { player: player.id, item }),
+      onToolHandled: (station) => this.lentTools.delete(station),
+      onWarp: (from, to) => {
+        const traveller = this.players.get(player.id)
+        if (traveller) traveller.warpFrom = { ...traveller.position }
+        const event = { k: 'warp' as const, id: player.id, from: { x: from.x, y: from.y }, to: { x: to.x, y: to.y }, ticks: WARP_TICKS }
+        for (const other of this.players.values()) other.outbox.push(event)
+      },
       guarded: (id) => this.dungeons.guarded(id, this.monsters),
       rafts: {
         // Put down on the tile, on the rope of the player who put it down (see Rafts.tow), so they can pull it in.

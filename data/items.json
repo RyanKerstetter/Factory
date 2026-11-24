@@ -82,5 +82,7 @@
   { "id": 86, "key": "blood-bucket", "name": "Bucket of blood", "category": "tool", "color": "#8a1420", "stack": 1, "bucket": "blood", "icon": "icons/tools/bucket/blood-bucket.png" },
   { "id": 87, "key": "lich-core", "name": "Lich core", "category": "material", "color": "#6fd0ff", "icon": "icons/materials/lich-core.png" },
   { "id": 88, "key": "altar", "name": "Altar", "category": "structure", "color": "#3a2e34", "places": "altar", "stack": 10, "icon": "icons/buildings/altar.png" },
-  { "id": 89, "key": "pedestal", "name": "Pedestal", "category": "structure", "color": "#4a4a5e", "places": "pedestal", "stack": 10, "icon": "icons/buildings/pedestal.png" }
+  { "id": 89, "key": "pedestal", "name": "Pedestal", "category": "structure", "color": "#4a4a5e", "places": "pedestal", "stack": 10, "icon": "icons/buildings/pedestal.png" },
+  { "id": 90, "key": "waystone", "name": "Waystone", "category": "structure", "color": "#6f7186", "places": "waystone", "stack": 10, "icon": "icons/buildings/waystone.png" },
+  { "id": 91, "key": "worker-skeleton", "name": "Worker skeleton", "category": "structure", "color": "#e6dfc8", "places": "worker", "stack": 10, "icon": "icons/monster/worker-skeleton.png" }
 ]

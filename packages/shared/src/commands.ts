@@ -72,6 +72,7 @@ export type Command =
   | { k: 'eat'; slot: number }
   // A chest: sort what is in it (stacks merged, in item order), or top up the stacks it has from the player's inventory
   // (each to a full stack, no further: nothing new goes in), or name it (`name`, up to CHEST_NAME_LENGTH; empty for none).
+  // A waystone is named the same way.
   | { k: 'chest'; id: number; action: 'sort' | 'stash' }
   | { k: 'rename'; id: number; name: string }
   // Which hotbar slot the player has picked (-1: bare hands), so others see what they hold.
@@ -81,6 +82,8 @@ export type Command =
   // Put one of the item in slot `slot` of the player's inventory down on a tile, as what it places (an acorn is
   // planted as a sapling).
   | { k: 'place'; x: number; y: number; slot: number }
+  // Travel from the waystone `id` (in reach) to the waystone `to` (see waystones.ts).
+  | { k: 'warp'; id: number; to: number }
 
 // Why a command can be turned down, in words a player reads.
 export const REFUSALS = {
@@ -94,7 +97,6 @@ export const REFUSALS = {
   noDeposit: 'That does not take items by hand.',
   nothing: 'There was nothing to move.',
   notPlant: 'Only plants and rocks can be punched for now.',
-  bare: 'This tree has no sticks left. Chop it down with an axe, or come back later.',
   needsPickaxe: 'You need a pickaxe to break rock.',
   needsAxe: 'You need an axe to take that down.',
   noAmmo: 'You have nothing to shoot.',
@@ -115,7 +117,9 @@ export const REFUSALS = {
   barrelEmpty: 'There is nothing in the barrel to take.',
   noWork: 'Put a tool and something it works on in first.',
   ritualLacking: 'The pedestals and barrels round the altar do not hold everything that takes.',
-  altarFull: 'Take what is on the altar off it first.',
+  altarFull: 'There is no room on the altar for what that makes. Take what is on it off first.',
+  noWaystone: 'That waystone is gone.',
+  warping: 'You are already on your way.',
   animalGone: 'That animal is gone.',
   leadTaken: 'That is on someone else\'s rope, or tied up.',
   noMilk: 'That cow has no milk yet.',

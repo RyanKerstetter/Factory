@@ -72,6 +72,8 @@ const FIRE: Rgb = [0xf0, 0x8a, 0x2c]
 const BONE: Rgb = [0xe6, 0xdf, 0xc8]
 const BLOOD: Rgb = [0x7a, 0x0f, 0x1a]
 const DARK_STONE: Rgb = [0x2c, 0x28, 0x30]
+const WAYSTONE: Rgb = [0x87, 0x8c, 0xa7]
+const ESSENCE: Rgb = [0x8f, 0xd6, 0xff]
 type Glyph = { rows: readonly string[]; colors: Readonly<Record<string, Rgb>> }
 const GLYPHS: Partial<Record<BuildingKind, Glyph>> = {
   tree: { rows: ['.ll.', 'lLLL', 'LLLL', '.tt.'], colors: { l: LEAF_LIGHT, L: LEAF, t: TRUNK } },
@@ -87,6 +89,8 @@ const GLYPHS: Partial<Record<BuildingKind, Glyph>> = {
   well: { rows: ['wwww', '.ss.', 'sPPs', '.ss.'], colors: { w: WOOD, s: STONE, P: POND } },
   altar: { rows: ['b..b', 'bRRb', 'sRRs', 'ssss'], colors: { b: BONE, R: BLOOD, s: DARK_STONE } },
   pedestal: { rows: ['ssss', '.s..', '.s..', 'ssss'], colors: { s: STONE } },
+  waystone: { rows: ['.ss.', 'sees', 'ssss', 'dddd'], colors: { s: WAYSTONE, e: ESSENCE, d: DARK_STONE } },
+  worker: { rows: ['.bb.', '.eb.', 'bbbb', '.bb.'], colors: { b: BONE, e: ESSENCE } },
 }
 // Anything else a player put down (a chest, the stations, a barrel...): a block of wood.
 const BUILT: Glyph = { rows: ['dddd', 'dwwd', 'dwwd', 'dddd'], colors: { d: WOOD_DARK, w: WOOD } }

@@ -1,3 +1,6 @@
+import buildingsData from '../../../data/buildings.json' with { type: 'json' }
+import { failIn, fieldsOf, onlyFields, wholeField } from './data-check.ts'
+
 // Everything that stands on a tile: the factory's buildings; what is found in the world (trees, bushes, rocks, grass,
 // flint, and the saplings and berry sprouts planted from acorns and berries); what players put up (fences, gates, the
 // stations and machines, garden plots, feed boxes, sleeping bags); and the dungeon's ice door. Each takes one tile.
@@ -28,6 +31,8 @@ export type BuildingKind =
   | 'well'
   | 'altar'
   | 'pedestal'
+  | 'waystone'
+  | 'worker'
 
 export type BuildingDef = {
   kind: BuildingKind
@@ -54,7 +59,7 @@ export type BuildingDef = {
   // gives the item back, with whatever was in it. A fist does nothing to it.
   breakable: boolean
   // How much hitting it takes to break (see `resourceDamage` in weapons.ts for how much each hit does; 0 for the
-  // factory's buildings, which are not hit).
+  // factory's buildings, which are not hit). From data/buildings.json (see HP_FROM_DATA).
   maxHp: number
 }
 
@@ -71,13 +76,13 @@ const FACTORY: Flags = {
   maxHp: 0,
 }
 const NATURAL: Flags = { ...FACTORY, natural: true, maxHp: 1 }
-// Hit points are counted in a weapon's `harvest` (see weapons.json): an axe's is 3, so what a player put down takes two
-// hits with one, a tree ten, and a rock four with a pickaxe.
+// Hit points are counted in a weapon's `harvest` (see weapons.json): an axe's is 3, so what a player put down with 6
+// takes two hits with one, a tree of 30 ten, and a rock of 12 four with a pickaxe. Each kind's is in data/buildings.json.
 const PLACED: Flags = { ...FACTORY, breakable: true, maxHp: 6 }
 // A building a player puts down and uses: it has slots to open, takes items by hand, and stands in the way.
 const MACHINE: Flags = { ...PLACED, hasInventory: true, acceptsDeposits: true, solid: true, blocksAnimals: true }
 
-export const BUILDINGS: Readonly<Record<BuildingKind, BuildingDef>> = {
+const BUILDING_DEFS: Record<BuildingKind, BuildingDef> = {
   door: {
     ...FACTORY,
     kind: 'door',
@@ -117,6 +122,24 @@ export const BUILDINGS: Readonly<Record<BuildingKind, BuildingDef>> = {
     name: 'Pedestal',
     description: 'Holds one stack of anything, on show. An altar near it draws on what is on it.',
   },
+  waystone: {
+    ...PLACED,
+    kind: 'waystone',
+    code: 27,
+    name: 'Waystone',
+    description: 'Give it a name, then right click it to travel to any other waystone.',
+    solid: true,
+    blocksAnimals: true,
+  },
+  worker: {
+    ...PLACED,
+    kind: 'worker',
+    code: 28,
+    name: 'Worker skeleton',
+    description: 'A skeleton bound to work, waiting for its orders.',
+    solid: true,
+    blocksAnimals: true,
+  },
   miner: {
     ...FACTORY,
     kind: 'miner',
@@ -155,10 +178,9 @@ export const BUILDINGS: Readonly<Record<BuildingKind, BuildingDef>> = {
     kind: 'tree',
     code: 5,
     name: 'Tree',
-    description: 'Punch it for sticks (it grows them back slowly); chop it down with an axe for logs and acorns.',
+    description: 'Punch it for sticks; chop it down with an axe for logs and acorns.',
     solid: true,
     blocksAnimals: true,
-    maxHp: 30,
   },
   bush: {
     ...NATURAL,
@@ -167,7 +189,6 @@ export const BUILDINGS: Readonly<Record<BuildingKind, BuildingDef>> = {
     name: 'Bush',
     description: 'Break it for fiber and berries. Walking through it is slow.',
     slowsPlayers: true,
-    maxHp: 10,
   },
   sapling: {
     ...NATURAL,
@@ -191,7 +212,6 @@ export const BUILDINGS: Readonly<Record<BuildingKind, BuildingDef>> = {
     description: 'A chunk of rock. Break it with a pickaxe for stone and flint.',
     solid: true,
     blocksAnimals: true,
-    maxHp: 12,
   },
   loose: {
     ...NATURAL,
@@ -237,7 +257,6 @@ export const BUILDINGS: Readonly<Record<BuildingKind, BuildingDef>> = {
     code: 14,
     name: 'Garden plot',
     description: 'Plant a seed in it with a right click. Break the crop when it is grown for the harvest and more seeds.',
-    maxHp: 3,
   },
   workbench: {
     ...MACHINE,
@@ -283,6 +302,30 @@ export const BUILDINGS: Readonly<Record<BuildingKind, BuildingDef>> = {
   },
 }
 
+// The kinds whose hits are in data/buildings.json: everything that is hit (natural or breakable) and keeps its hits,
+// which is all of them but saplings, berry sprouts and loose flint (one hit each, always).
+const ONE_HIT: readonly BuildingKind[] = ['sapling', 'sprout', 'loose']
+export const HP_FROM_DATA: readonly BuildingKind[] = (Object.keys(BUILDING_DEFS) as BuildingKind[]).filter(
+  (kind) => (BUILDING_DEFS[kind].natural || BUILDING_DEFS[kind].breakable) && !ONE_HIT.includes(kind),
+)
+
+// data/buildings.json: `{ "tree": { "hp": 30 }, ... }`, every kind in HP_FROM_DATA and no other.
+function readHp(data: unknown): void {
+  const all = fieldsOf(data, 'data/buildings.json', failIn('data/buildings.json'))
+  for (const [kind, entry] of Object.entries(all)) {
+    const fail = failIn(`data/buildings.json, ${kind}`)
+    if (!HP_FROM_DATA.includes(kind as BuildingKind)) fail(`not a building whose hits are kept here (those are ${HP_FROM_DATA.join(', ')})`)
+    const fields = fieldsOf(entry, 'it', fail)
+    onlyFields(fields, ['hp'], fail)
+    BUILDING_DEFS[kind as BuildingKind].maxHp = wholeField(fields, 'hp', fail, 1)
+  }
+  const missing = HP_FROM_DATA.find((kind) => !Object.hasOwn(all, kind))
+  if (missing) throw new Error(`data/buildings.json: ${missing} has no "hp"`)
+}
+readHp(buildingsData)
+
+export const BUILDINGS: Readonly<Record<BuildingKind, BuildingDef>> = BUILDING_DEFS
+
 // The fires: the campfire and the oven, which burn fuel alike (see machines.ts), warm players, and heat what is beside
 // them.
 export type FireKind = 'campfire' | 'oven'
@@ -327,6 +370,8 @@ export const BUILDING_BOUNDS: Partial<Record<BuildingKind, ReadonlyArray<readonl
   well: [FOOTPRINT.block],
   altar: [FOOTPRINT.block],
   pedestal: [FOOTPRINT.small],
+  waystone: [FOOTPRINT.block],
+  worker: [FOOTPRINT.small],
   barrel: [FOOTPRINT.small],
   rack: [FOOTPRINT.frame],
   feeder: [FOOTPRINT.block],

@@ -179,6 +179,12 @@ export type OverlayView = {
 // An altar's ritual under way, or just over (see altar.ts and ritual-timeline.ts): the altar's tile, how far through it is
 // (0 to 1), what it took from where, and how much of its glow afterwards is left (1 down to 0; 0 while it goes on).
 export type RitualView = { id: number; x: number; y: number; t: number; offerings: readonly Offering[]; glow: number }
+// A player travelling by waystone (see waystones.ts and waystone-effects.ts): the stone they go from (its tile), how far
+// through the charge it is (0 to 1), and where they are (tiles), if they are in view.
+export type WarpView = { x: number; y: number; t: number; player?: { x: number; y: number } }
+// A flash where a player went from a waystone or arrived at one (tiles), `age` 0 to 1 through it, a number to turn its
+// sparks by, and the stone (its tile) whose lights glow with it.
+export type WarpFlashView = { x: number; y: number; age: number; arriving: boolean; salt: number; stone?: { x: number; y: number } }
 export type DebugView = {
   chunks: readonly number[]
   desynced: readonly number[]
@@ -206,5 +212,7 @@ export type WorldFrame = {
   attacks: AttackView
   overlay: OverlayView
   rituals: readonly RitualView[]
+  warps: readonly WarpView[]
+  warpFlashes: readonly WarpFlashView[]
   debug?: DebugView
 }

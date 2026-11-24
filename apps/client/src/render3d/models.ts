@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { liquidLook } from '../liquids.ts'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
-import { hashInts } from '../../../../packages/shared/src/index.ts'
+import { hashInts, WARP_LIGHT_LEVELS } from '../../../../packages/shared/src/index.ts'
 import { POND_COLOR } from './ground-colors.ts'
 
 // The 3D models: built in code from simple low-poly shapes (flat-shaded, in earthy colours), one function per kind of
@@ -1062,6 +1062,140 @@ export function pedestal(): THREE.Group {
   made.add(part(box(), PEDESTAL.light, [0, 0.722, 0], [0.54, 0.006, 0.54]))
   made.add(part(box(), PEDESTAL.dark, [0, 0.617, 0], [0.62, 0.012, 0.62]))
   return made
+}
+
+// A waystone, after its icon: a tall slab of blue-grey stone with a rounded top, standing on a dark plinth, lit from
+// the upper left (a pale edge down its left, a dark one down its right, a pale crown), dark runes cut in its face, and up
+// each edge of its face a row of sockets, with a keystone socket at the top, which light up as it charges (see
+// waystone-effects.ts, which draws the light over them at WAYSTONE_LIGHTS).
+const WAYSTONE = {
+  stone: 0x6f7186,
+  light: 0x878ca7,
+  crown: 0xafb5cc,
+  dark: 0x26213d,
+  plinth: 0x2e2f37,
+  step: 0x656879,
+  rune: 0x14131b,
+  socket: 0x34405a,
+}
+const WAYSTONE_HALF = 0.28
+const WAYSTONE_DEPTH = 0.26
+const WAYSTONE_SHOULDER = 1.08
+// The face of a waystone, how far in front of its middle (tiles).
+export const WAYSTONE_FACE = WAYSTONE_DEPTH / 2
+// Where each of a waystone's lights is (tiles, from its tile's middle on the ground), level by level from the bottom
+// (a pair a level, left then right), the keystone last.
+export const WAYSTONE_LIGHTS: ReadonlyArray<{ x: number; y: number; level: number }> = [
+  ...Array.from({ length: WARP_LIGHT_LEVELS }, (_, level) => {
+    const y = 0.3 + (level * (WAYSTONE_SHOULDER - 0.3)) / (WARP_LIGHT_LEVELS - 1)
+    return [
+      { x: -0.19, y, level },
+      { x: 0.19, y, level },
+    ]
+  }).flat(),
+  { x: 0, y: WAYSTONE_SHOULDER + 0.15, level: WARP_LIGHT_LEVELS },
+]
+export function waystone(): THREE.Group {
+  const made = group()
+  // The plinth and the step on it.
+  made.add(part(box(), WAYSTONE.plinth, [0, 0.05, 0], [0.84, 0.1, 0.5]))
+  made.add(part(box(), WAYSTONE.step, [0, 0.13, 0], [0.7, 0.06, 0.4]))
+  // The slab, and its rounded top: half a disc of stone as thick as the slab.
+  const tall = WAYSTONE_SHOULDER - 0.16
+  made.add(part(box(), WAYSTONE.stone, [0, 0.16 + tall / 2, 0], [WAYSTONE_HALF * 2, tall, WAYSTONE_DEPTH]))
+  made.add(
+    part(
+      geometry('waystoneTop', () => new THREE.CylinderGeometry(WAYSTONE_HALF, WAYSTONE_HALF, WAYSTONE_DEPTH, 12, 1, false, -Math.PI / 2, Math.PI)),
+      WAYSTONE.stone,
+      [0, WAYSTONE_SHOULDER, 0],
+      [1, 1, 1],
+      [-Math.PI / 2, 0, 0],
+    ),
+  )
+  // Its light from the upper left: a pale edge down the left of its face, a dark one down the right, a pale crown.
+  const front = WAYSTONE_FACE + 0.004
+  made.add(part(box(), WAYSTONE.light, [-WAYSTONE_HALF + 0.03, 0.16 + tall / 2, front], [0.05, tall, 0.01]))
+  made.add(part(box(), WAYSTONE.dark, [WAYSTONE_HALF - 0.025, 0.16 + tall / 2, front], [0.05, tall, 0.01]))
+  made.add(part(box(), WAYSTONE.dark, [WAYSTONE_HALF + 0.002, 0.16 + tall / 2, 0], [0.01, tall, WAYSTONE_DEPTH]))
+  made.add(
+    part(
+      geometry('waystoneCrown', () => new THREE.TorusGeometry(WAYSTONE_HALF - 0.03, 0.025, 3, 10, Math.PI * 0.7)),
+      WAYSTONE.crown,
+      [0, WAYSTONE_SHOULDER, front],
+      [1, 1, 1],
+      [0, 0, Math.PI * 0.3],
+    ),
+  )
+  // A darker band at its foot, where it meets the plinth.
+  made.add(part(box(), WAYSTONE.step, [0, 0.2, front], [WAYSTONE_HALF * 2 - 0.02, 0.08, 0.01]))
+  // The runes cut down the middle of its face.
+  for (const [x, y, w, h] of [
+    [0.02, 0.92, 0.05, 0.05],
+    [-0.02, 0.8, 0.1, 0.03],
+    [0.03, 0.72, 0.03, 0.1],
+    [-0.03, 0.6, 0.08, 0.03],
+    [0.0, 0.5, 0.03, 0.12],
+    [0.02, 0.38, 0.1, 0.03],
+  ] as const) {
+    made.add(part(box(), WAYSTONE.rune, [x, y, front + 0.002], [w, h, 0.01]))
+  }
+  // The sockets the lights come on in.
+  for (const light of WAYSTONE_LIGHTS) {
+    const size = light.level === WARP_LIGHT_LEVELS ? 0.08 : 0.06
+    made.add(part(box(), WAYSTONE.rune, [light.x, light.y, front + 0.001], [size + 0.025, size + 0.025, 0.01]))
+    made.add(part(box(), WAYSTONE.socket, [light.x, light.y, front + 0.004], [size, size, 0.01]))
+  }
+  return made
+}
+
+// A worker skeleton (waiting for orders: it does nothing yet), facing out of its tile towards the camera: a skeleton
+// standing easy, a heart of essence glowing blue in its ribs and in its eyes, a leather apron, and a pickaxe slung on
+// its back.
+export function workerSkeleton(): THREE.Group {
+  const essence = new THREE.MeshBasicMaterial({ color: 0x8fd6ff })
+  const glow = (at: [number, number, number], scale: [number, number, number]): THREE.Mesh => {
+    const mesh = new THREE.Mesh(box(), essence)
+    mesh.position.set(...at)
+    mesh.scale.set(...scale)
+    return mesh
+  }
+  const body = group(
+    // The spine, ribs and hips.
+    part(box(), PALETTE.bone, [0, 0.62, 0], [0.06, 0.42, 0.06]),
+    part(box(), PALETTE.bone, [0, 0.72, 0], [0.12, 0.05, 0.3]),
+    part(box(), PALETTE.bone, [0, 0.64, 0], [0.12, 0.05, 0.27]),
+    part(box(), PALETTE.bone, [0, 0.56, 0], [0.1, 0.05, 0.22]),
+    part(box(), PALETTE.boneDark, [0, 0.42, 0], [0.12, 0.08, 0.26]),
+    // The heart of essence in its ribs.
+    glow([0.03, 0.64, 0], [0.07, 0.07, 0.07]),
+    // The skull, and its eyes glowing blue.
+    part(box(), PALETTE.bone, [0.02, 0.96, 0], [0.22, 0.22, 0.22]),
+    part(box(), PALETTE.boneDark, [0.06, 0.86, 0], [0.16, 0.06, 0.16]),
+    glow([0.135, 0.98, -0.055], [0.02, 0.05, 0.05]),
+    glow([0.135, 0.98, 0.055], [0.02, 0.05, 0.05]),
+    // Both arms hanging.
+    part(box(), PALETTE.bone, [0.02, 0.6, -0.19], [0.05, 0.3, 0.05], [0.12, 0, 0]),
+    part(box(), PALETTE.bone, [0.02, 0.6, 0.19], [0.05, 0.3, 0.05], [-0.12, 0, 0]),
+    // The leather apron on a belt, over its hips.
+    part(box(), PALETTE.rust, [0.07, 0.44, 0], [0.02, 0.06, 0.3]),
+    part(box(), 0x8a5a3a, [0.08, 0.33, 0], [0.02, 0.22, 0.2]),
+    // The legs.
+    part(box(), PALETTE.bone, [0, 0.19, -0.07], [0.06, 0.4, 0.06]),
+    part(box(), PALETTE.bone, [0, 0.19, 0.07], [0.06, 0.4, 0.06]),
+  )
+  // The pickaxe slung across its back, handle up to the right.
+  const pick = group(
+    stick(PALETTE.wood, [0, -0.25, 0], [0, 0.25, 0], 0.025),
+    part(box(), 0x6c7280, [0, 0.25, 0], [0.04, 0.05, 0.3]),
+    part(cone(4), 0x6c7280, [0, 0.25, 0.18], [0.04, 0.08, 0.04], [Math.PI / 2, 0, 0]),
+    part(cone(4), 0x6c7280, [0, 0.25, -0.18], [0.04, 0.08, 0.04], [-Math.PI / 2, 0, 0]),
+  )
+  pick.position.set(-0.08, 0.66, 0)
+  pick.rotation.x = 0.6
+  body.add(pick)
+  // Facing out of its tile, towards the camera.
+  body.rotation.y = -Math.PI / 2
+  return group(body)
 }
 
 // A drying rack: its frame alone; with a fresh hide hung over it, wet and dark red-brown, sagging; or with the dried

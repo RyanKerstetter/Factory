@@ -119,11 +119,19 @@ export type CommandContext = {
     crafting?: number[]
     craftingTicks?: number
     handOpen?: boolean
+    // Travelling between two waystones: from and to which, and the tick it started (see waystones.ts).
+    warp?: { from: number; to: number; at: number }
   }
   // Where every player is, for whether a gate is open.
   players?: () => ReadonlyArray<PlayerPosition>
   // A work station has been started (it is watched, and stopped when nobody is at it).
   onWork?: (id: number) => void
+  // A tool went into a work station's tool slot from the player's things when they pressed Craft (to go back to them
+  // when they leave it: see GameRoom.returnLentTools); or one was put in or taken out of a station by hand.
+  onToolLent?: (station: number, item: ItemId) => void
+  onToolHandled?: (station: number) => void
+  // A player started travelling between two waystones.
+  onWarp?: (from: Entity, to: Entity) => void
   emit: (event: WorldEvent) => void
   nextEntityId: () => number
   nextLinkId: () => number
@@ -155,10 +163,9 @@ export type CommandOutcome = { ok: true; moved?: number } | { ok: false; why: Re
 // What hitting things drops, and when (what each plant and rock drops is in data/drops.json: see DROP_TABLES). How
 // many is a hash of the seed and the plant or rock, so the same one always drops the same.
 //
-// - A tree: a bare-handed punch does not hurt it, but every STICK_EVERY punches knock one of its sticks loose, with a
-//   leaf (it has TREE_STICKS, and grows them back slowly; see constants.ts). A knife does the same but strips bark
-//   instead of a stick. Only an axe chops it, and when it falls it drops its logs, acorns and leaves and whatever
-//   sticks are still on it.
+// - A tree: a bare-handed punch does not hurt it, but every STICK_EVERY punches knock a stick loose, with a leaf, for
+//   as long as it is punched (it never runs out). A knife does the same but strips bark instead of a stick. Only an axe
+//   chops it, and when it falls it drops its logs, acorns, leaves and a stick (`felled` in drops.json).
 // - A bush: every hit breaks it a little (an axe twice as much); when it is gone it drops its fiber and berries.
 // - A rock: only a pickaxe breaks it, a little each hit, and when it is gone it drops stone and flint.
 // - Grass: pulled up by hand, it now and then gives a seed; cut with a knife, it gives hay.
@@ -206,13 +213,10 @@ export function hit(context: CommandContext, target: Entity, tool: ToolKind | un
       return { drops: from(DROP_TABLES.sprout.dug, 120) }
     case 'tree': {
       if (damage === 0) {
-        if (target.sticks === 0) return { refused: 'bare' }
-        const punches = target.punches + 1
-        if (punches < STICK_EVERY) {
-          context.emit({ t: 'sticks', id: target.id, sticks: target.sticks, punches })
-          return { drops: [] }
-        }
-        context.emit({ t: 'sticks', id: target.id, sticks: target.sticks - 1, punches: 0 })
+        // Every STICK_EVERY punches give a stick (or bark), without end.
+        const punches = (target.punches + 1) % STICK_EVERY
+        context.emit({ t: 'punches', id: target.id, punches })
+        if (punches !== 0) return { drops: [] }
         return { drops: tool === 'knife' ? from(DROP_TABLES.tree.branchWithKnife, 160) : from(DROP_TABLES.tree.branch, 140) }
       }
       const hp = target.hp - damage
@@ -220,9 +224,8 @@ export function hit(context: CommandContext, target: Entity, tool: ToolKind | un
         context.emit({ t: 'hp', id: target.id, hp })
         return { drops: [] }
       }
-      const sticks = target.sticks
       fell()
-      return { drops: [...from(DROP_TABLES.tree.felled, 180), ['stick', sticks]] }
+      return { drops: from(DROP_TABLES.tree.felled, 180) }
     }
     case 'bush': {
       const hp = target.hp - damage
@@ -297,16 +300,29 @@ function breakStructure(context: CommandContext, target: Entity, damage: number)
 
 // Starts a ritual at an altar (see altar.ts): everything it takes comes off the pedestals and out of the barrels round
 // it at once, and the altar keeps what came from where (its offerings, for showing it) and works through it on its own.
+// What is on the altar need not be cleared first, so long as what the ritual makes fits with it (more of the same).
 function startRitual(context: CommandContext, altar: Extract<Entity, { kind: 'altar' }>, index: number): CommandOutcome {
-  const { world, player } = context
+  const { player } = context
   if (!isWithinReach(player.position, altar.x, altar.y)) return { ok: false, why: 'reach' }
   const recipe = ALTAR_RECIPES[index]
   if (!recipe) return { ok: false, why: 'noRecipe' }
   if (altarBusy(altar)) return { ok: false, why: 'busy' }
   if (!altarRoomFor(altar, recipe)) return { ok: false, why: 'altarFull' }
+  if (!drawRitual(context, altar, recipe)) return { ok: false, why: 'ritualLacking' }
+  return { ok: true }
+}
+
+// Takes what a ritual needs off the pedestals and out of the barrels round an altar and sets it going (the altar as it
+// is otherwise), or gives false if they do not hold it all.
+export function drawRitual(
+  context: Pick<CommandContext, 'world' | 'emit'>,
+  altar: Extract<Entity, { kind: 'altar' }>,
+  recipe: (typeof ALTAR_RECIPES)[number],
+): boolean {
+  const { world } = context
   const around = altarSurroundings(altar.x, altar.y, (x, y) => world.entityAt(x, y))
   const plan = planRitual(recipe, around)
-  if (!plan) return { ok: false, why: 'ritualLacking' }
+  if (!plan) return false
   // What each barrel gives, all together (one barrel can give to more than one offering).
   const drawn = new Map<number, number>()
   for (const offering of plan) {
@@ -321,7 +337,7 @@ function startRitual(context: CommandContext, altar: Extract<Entity, { kind: 'al
   }
   const offerings = flatOfferings(plan.map(({ id: _id, ...offering }) => offering))
   context.emit({ t: 'set', e: entityToState({ ...altar, recipe: recipe.index + 1, progress: 0, glow: 0, offerings }) })
-  return { ok: true }
+  return true
 }
 
 // How far from the middle of a plant's tile what it drops lands, in tiles.
@@ -476,6 +492,9 @@ export function runCommand(context: CommandContext, command: Command): CommandOu
       for (const [item, count] of moves) {
         context.emit({ t: 'inv', id: entity.id, item, delta: command.k === 'take' ? -count : count })
         moved += count
+        // A tool put into a work station by hand, or taken out, is the player's to look after: it is no longer one
+        // Craft lent it.
+        if (isStation(entity) && getItem(item).tool) context.onToolHandled?.(entity.id)
       }
       return moved > 0 ? { ok: true, moved } : { ok: false, why: 'nothing' }
     }
@@ -534,12 +553,13 @@ export function runCommand(context: CommandContext, command: Command): CommandOu
       return { ok: true, moved }
     }
     case 'rename': {
+      // A chest or a waystone.
       const chest = world.entity(command.id)
-      if (!chest || chest.kind !== 'chest') return { ok: false, why: 'missing' }
+      if (!chest || (chest.kind !== 'chest' && chest.kind !== 'waystone')) return { ok: false, why: 'missing' }
       if (!isWithinReach(player.position, chest.x, chest.y)) return { ok: false, why: 'reach' }
       const name = command.name.replace(/\s+/g, ' ').trim().slice(0, CHEST_NAME_LENGTH)
       const state = entityToState(chest)
-      if (state.kind !== 'chest') return { ok: false, why: 'missing' }
+      if (state.kind !== 'chest' && state.kind !== 'waystone') return { ok: false, why: 'missing' }
       const { name: _old, ...rest } = state
       context.emit({ t: 'set', e: name ? { ...rest, name } : rest })
       return { ok: true }
@@ -547,6 +567,18 @@ export function runCommand(context: CommandContext, command: Command): CommandOu
     case 'hold':
       // The room keeps it (see GameRoom.run).
       return { ok: true }
+    case 'warp': {
+      // From a waystone in reach to another, which the room carries out (see GameRoom.stepWarps).
+      const from = world.entity(command.id)
+      if (!from || from.kind !== 'waystone') return { ok: false, why: 'missing' }
+      if (!isWithinReach(player.position, from.x, from.y)) return { ok: false, why: 'reach' }
+      const to = world.entity(command.to)
+      if (!to || to.kind !== 'waystone' || to.id === from.id) return { ok: false, why: 'noWaystone' }
+      if (player.warp) return { ok: false, why: 'warping' }
+      player.warp = { from: from.id, to: to.id, at: context.tick }
+      context.onWarp?.(from, to)
+      return { ok: true }
+    }
     case 'pvp':
       // A setting of the room's: the room runs it (see GameRoom.run).
       return { ok: false, why: 'notHost' }
@@ -616,6 +648,7 @@ export function runCommand(context: CommandContext, command: Command): CommandOu
       const mine = cloneInventory(player.inventory)
       // The tool it needs goes into the tool slot from the player's things (not used up), and whatever tool was there
       // goes back to the player: a knife there and planks picked, the knife comes out and an axe goes in.
+      let lent: ItemId | undefined
       if (!stationHasTool(entity.kind, inv, recipe)) {
         const toolSlot = STATION_LAYOUT[entity.kind].tool
         const from = mine.slots.findIndex((slot) => slot.count > 0 && getItem(slot.item).tool === recipe.tool)
@@ -623,6 +656,7 @@ export function runCommand(context: CommandContext, command: Command): CommandOu
         const old = inv.slots[toolSlot]
         if (old.count > 0 && addItems(mine, old.item, old.count) < old.count) return { ok: false, why: 'full' }
         inv.slots[toolSlot] = { item: mine.slots[from].item, count: 1 }
+        lent = mine.slots[from].item
         takeFromSlot(mine, from, 1)
       }
       if (!stationCan(entity.kind, inv, recipe)) return { ok: false, why: 'noWork' }
@@ -630,6 +664,8 @@ export function runCommand(context: CommandContext, command: Command): CommandOu
       // The same recipe again keeps how far it had got; another starts afresh.
       const same = entity.recipe === recipe.index + 1
       context.emit({ t: 'set', e: withMachine({ ...entity, inv }, { recipe: recipe.index + 1, progress: same ? entity.progress : 0, active: 1 }) })
+      // The tool it put in goes back to them when they leave (if it is still there, and they have room).
+      if (lent !== undefined) context.onToolLent?.(entity.id, lent)
       // Pressing Craft is being at it.
       player.using = entity.id
       context.onWork?.(entity.id)

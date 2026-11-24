@@ -7,9 +7,9 @@ import { itemFromKey, type ItemId } from './items.ts'
 // left out). How many is a hash of the seed and the plant, so the same one always drops the same; a `chance` is rolled
 // on every hit.
 //
-// - `tree`: `felled` when an axe brings it down (with whatever sticks are still on it besides); every
-//   `punchesPerBranch` punches (or knife hits) knock a `branch` loose (`branchWithKnife` with a knife), while it has
-//   sticks left (see TREE_STICKS).
+// - `tree`: `felled` when an axe brings it down; every
+//   `punchesPerBranch` punches (or knife hits) knock a `branch` loose (`branchWithKnife` with a knife), as long as it
+//   is punched.
 // - `bush`, `rock`: `broken` when it is gone.
 // - `grass`: `pulled` by hand, `cut` with a knife.
 // - `sapling`, `sprout`: `dug` back up.

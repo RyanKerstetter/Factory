@@ -17,8 +17,8 @@
       "cooldown": 0.5
     },
     "drops": [
-      { "item": "bone", "min": 1, "max": 3 },
-      { "item": "essence", "min": 1, "max": 1 }
+      { "item": "bone", "min": 1, "max": 2 },
+      { "item": "essence", "min": 1, "max": 2 }
     ]
   },
   "skeleton-archer": {
@@ -34,7 +34,8 @@
     "attack": { "kind": "bow", "range": 7.5, "aim": 0.7, "lead": 0.2, "cooldown": 1.15, "speed": 14, "damage": 25, "item": "arrow" },
     "drops": [
       { "item": "bone", "min": 1, "max": 2 },
-      { "item": "arrow", "min": 2, "max": 4 }
+      { "item": "arrow", "min": 2, "max": 4 },
+      { "item": "essence", "min": 1, "max": 2 }
     ]
   },
   "frost-lich": {

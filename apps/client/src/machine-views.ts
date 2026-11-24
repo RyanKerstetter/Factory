@@ -1,9 +1,9 @@
 import {
   ALTAR_RECIPES,
   altarBusy,
+  altarRoomFor,
   altarHas,
   altarHasLiquid,
-  altarRoomFor,
   ritualFraction,
   type AltarSurroundings,
   BARREL_CAPACITY,

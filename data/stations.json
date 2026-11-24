@@ -39,7 +39,8 @@
     { "category": "Armor", "inputs": { "leather": 4, "fiber": 2, "fang": 5 }, "output": "wolf-helmet", "count": 1, "seconds": 6 },
     { "category": "Buildings", "inputs": { "stone": 12, "rope": 2, "bucket": 1, "plank": 6 }, "output": "well", "count": 1, "seconds": 6 },
     { "category": "Buildings", "inputs": { "stone": 5 }, "output": "pedestal", "count": 1, "seconds": 3 },
-    { "category": "Buildings", "inputs": { "stone": 20, "essence": 10, "bone": 8, "lich-core": 1 }, "output": "altar", "count": 1, "seconds": 8 }
+    { "category": "Buildings", "inputs": { "stone": 20, "essence": 10, "bone": 8, "lich-core": 1 }, "output": "altar", "count": 1, "seconds": 8 },
+    { "category": "Buildings", "inputs": { "lich-core": 1, "stone": 10, "essence": 15 }, "output": "waystone", "count": 1, "seconds": 8 }
   ] },
   "barrel": [
     { "category": "Sealed", "liquid": "tannin", "liquidPerSolid": 1, "solids": { "dried-hide": 1 }, "output": "leather", "count": 1, "seconds": 120 },
@@ -50,7 +51,9 @@
     { "category": "Sealed", "solids": { "#meat": 1 }, "heat": 200, "liquidOut": "blood", "seconds": 30 }
   ],
   "altar": [
-    { "inputs": { "fang": 4, "leather": 4, "essence": 8, "bone": 8, "charcoal": 4, "breakfast-sandwich": 4, "compost": 4, "feather": 8 }, "liquids": { "blood": 8 }, "output": "lich-core", "count": 1, "seconds": 15 }
+    { "inputs": { "fang": 4, "leather": 4, "essence": 8, "bone": 8, "charcoal": 4, "breakfast-sandwich": 4, "compost": 4, "feather": 8 }, "liquids": { "blood": 8 }, "output": "lich-core", "count": 1, "seconds": 15 },
+    { "inputs": { "lich-core": 1, "bone": 20, "essence": 20, "pickaxe": 1, "axe": 1, "knife": 1 }, "liquids": { "blood": 8 }, "output": "worker-skeleton", "count": 1, "seconds": 15 },
+    { "inputs": { "bread": 1 }, "output": "essence", "count": 1, "seconds": 5 }
   ],
   "fire": [
     { "input": "steak", "output": "cooked-steak", "heat": 200, "seconds": 8 },

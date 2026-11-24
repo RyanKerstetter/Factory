@@ -1,0 +1,23 @@
+{
+  "tree": { "hp": 24 },
+  "bush": { "hp": 10 },
+  "rock": { "hp": 12 },
+  "grass": { "hp": 1 },
+  "fence": { "hp": 50 },
+  "gate": { "hp": 80 },
+  "stump": { "hp": 30 },
+  "plot": { "hp": 10 },
+  "workbench": { "hp": 50 },
+  "campfire": { "hp": 30 },
+  "oven": { "hp": 50 },
+  "barrel": { "hp": 30 },
+  "rack": { "hp": 30 },
+  "feeder": { "hp": 30 },
+  "chest": { "hp": 30 },
+  "bed": { "hp": 30 },
+  "well": { "hp": 30 },
+  "altar": { "hp": 30 },
+  "pedestal": { "hp": 30 },
+  "waystone": { "hp": 30 },
+  "worker": { "hp": 30 }
+}

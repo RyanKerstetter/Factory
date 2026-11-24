@@ -6,6 +6,7 @@ import type { Numbered } from './reliable-stream.ts'
 import type { EntityState } from './sim/entity.ts'
 import type { ChunkSnapshot, LinkResult } from './sim/factory-world.ts'
 import type { DropState } from './sim/drops.ts'
+import type { WaystoneInfo } from './waystones.ts'
 import type { LinkState } from './sim/links.ts'
 import type { WorldEvent } from './sim/world-events.ts'
 
@@ -46,6 +47,13 @@ export type StreamEvent =
   // The frost lich cast a spell that the pages draw (a blizzard, a wisp or an archer called up): where (units), how far
   // it reaches (tiles), and for how long (ticks).
   | { k: 'spell'; spell: LichSpell; x: number; y: number; radius: number; ticks: number }
+  // Every waystone in the world (see waystones.ts): sent on joining, and to everyone whenever one is put down, named or
+  // taken away.
+  | { k: 'waystones'; list: WaystoneInfo[] }
+  // A player started travelling between two waystones (their tiles), arriving `ticks` from now; and the end of it,
+  // `arrived` if they did (else it was called off).
+  | { k: 'warp'; id: number; from: { x: number; y: number }; to: { x: number; y: number }; ticks: number }
+  | { k: 'warp-'; id: number; arrived: boolean }
   // What an animal near the player is, sent when it comes near and whenever that changes; and one that is gone (out of
   // range, or dead). Animals are not part of the simulation either (see animals.ts).
   | { k: 'animal'; a: AnimalInfo }
@@ -88,6 +96,9 @@ export function eventPhase(event: StreamEvent): EventPhase {
     case 'monster-':
     case 'trap':
     case 'spell':
+    case 'waystones':
+    case 'warp':
+    case 'warp-':
     case 'animal':
     case 'animal-':
       return 'now'

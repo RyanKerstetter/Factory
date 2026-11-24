@@ -81,6 +81,10 @@ any static host of `npm run build`'s output), and nobody else can join. It is no
     size, how far they notice a player and chase one, their attack, and what they drop (see "Monsters"). The frost
     lich's attack is its spells: how often it casts, and each spell's radius, damage, timing and counts (see the comment
     at the top of `packages/shared/src/monsters.ts`).
+  - `buildings.json`: how many hit points each building has (`{ "tree": { "hp": 30 }, ... }`), counted in a weapon's
+    `harvest` (an axe's is 3, so 6 hp is two hits): every plant, rock and building that is hit, but saplings, berry
+    sprouts and loose flint, which always take one (`HP_FROM_DATA` in `packages/shared/src/buildings.ts`). Each one
+    must be there, and nothing else.
   - `drops.json`: what trees, bushes, rocks, grass, saplings and sprouts drop (each item `min` to `max`, and a
     `chance` in percent if it is not always), and how many punches knock a stick loose (`packages/shared/src/drops-data.ts`).
   - `world-gen.json`: how the world grows (`packages/shared/src/world-gen-data.ts`): how much grows (trees, bushes,
@@ -304,11 +308,10 @@ The keys are the defaults; every key can be changed in **Esc → Settings → Co
 | F3 | Debug view: the numbers at the top left, and hitboxes: every body's round space (players yellow, animals blue, monsters red) and the solid parts of what stands on the ground round you (magenta) |
 | F9 | (Development builds) break this page's copy of a chunk, to watch a desync be found and repaired |
 
-- **Tree**: punching does not hurt it, but every `STICK_EVERY` punches knock one of its sticks loose, with a leaf (a
-  knife strips bark instead of a stick, still without hurting it). A tree holds
-  `TREE_STICKS` (3) and grows one back every `TREE_STICK_REGROW` of its random ticks (about half a minute); with none
-  left, punching it does nothing. Only an **axe** chops it down (`maxHp` / 2 hits), for logs, acorns, leaves and
-  whatever sticks are still on it. Trees are solid.
+- **Tree**: punching does not hurt it, but every `STICK_EVERY` punches knock a stick loose, with a leaf, for as long as
+  it is punched: it never runs out (a knife strips bark instead of a stick, still without hurting it). Only an **axe**
+  chops it down (`maxHp` / 2 hits), for logs, acorns, leaves and a stick (`felled` in `drops.json`). A tree keeps no
+  count of sticks or bark, only of the punches towards the next. Trees are solid.
 - **Bush**: each punch breaks it a little, and an axe twice as fast. When it is gone it drops 2 fiber and its
   berries (`drops.json`). It is drawn as leafy cards crossing through its middle, pictures of leaves with gaps that
   show the cards behind; a berry sprout grows through three looks on its way to a bush (a tiny seedling, a small leafy
@@ -351,8 +354,11 @@ The keys are the defaults; every key can be changed in **Esc → Settings → Co
   input for one more (Shift: five more; Ctrl: all you have; an ingredient that is any of a kind, like a breakfast
   sandwich's cooked meat, goes in as one kind only, the one already in it or else the one you have most of, so the
   four input slots never fill with every kind you have: `oneKindEach` in `stations.ts`), and it keeps working through them, but only while you
-  stay at it: close it or walk off and it stops, keeping how far it had got. A recipe can be made when its tool is on
-  you or already in the tool slot. It makes planks (an axe and a log make two), a wooden spear (a knife and a log), a club (two logs),
+  stay at it: close it or walk off and it stops, keeping how far it had got. A tool Craft put in comes back to you when
+  you leave the station (close it, open something else, walk off, or leave the game), if it is still in the tool slot
+  and you have room for it; with no room it stays there. A tool you put in by hand (or took out and put back) stays
+  (`returnLentTools` in `apps/server/src/game-room.ts`, which keeps which tools Craft lent, and to whom; the server only:
+  a restart forgets them). A recipe can be made when its tool is on you or already in the tool slot. It makes planks (an axe and a log make two), a wooden spear (a knife and a log), a club (two logs),
   a **breakfast sandwich** (bread, salt, any cooked meat and a fried egg: 80 health), and the stations: the
   workbench (20 planks, 10 stone), the campfire (3 logs, 5 stone) and the sleeping bag (3 leather). An axe or a knife
   left in it is drawn stuck in the stump. Idle, the line at the foot of its panel says "Not crafting" (a fire "Not
@@ -463,21 +469,39 @@ The keys are the defaults; every key can be changed in **Esc → Settings → Co
   - **Rituals** (`packages/shared/src/altar.ts`; `"altar"` in `data/stations.json`: `inputs`, `liquids` by name and
     buckets, `output`, `count`, `seconds`). The altar draws on the pedestals and barrels in the 5 × 5 square on it
     (`ALTAR_REACH`): its panel lists its rituals, each ingredient counted on the pedestals round it and each liquid in
-    the barrels. Pick one with everything there (and the altar's slot clear) and press **Craft**: the server takes it all
+    the barrels. Pick one with everything there (and room on the altar for what it makes: its slot empty, or holding more of the same) and press **Craft**: the server takes it all
     at once, off the pedestals and out of the barrels, and writes down on the altar what came from where (its
     `offerings`, sent after its numbers, OFFERING_SIZE each); the altar then works through it on its own, with nobody
     at it, and what it makes lands in its slot. While it does, it takes nothing in and gives nothing out (`isClosed`,
-    like a sealed barrel), and broken, it gives back the items it took (the blood is spilt). The one ritual now: a
-    **lich core**, from 4 fangs, 4 leather, 8 essence, 8 bones, 4 charcoal, 4 breakfast sandwiches, 4 compost, 8
-    feathers and 8 buckets of blood, in 15 seconds.
+    like a sealed barrel), and broken, it gives back the items it took (the blood is spilt). The rituals: a **lich
+    core**, from 4 fangs, 4 leather, 8 essence, 8 bones, 4 charcoal, 4 breakfast sandwiches, 4 compost, 8 feathers and
+    8 buckets of blood, in 15 seconds; a **worker skeleton**, from a lich core, 20 bones, 20 essence, a pickaxe, an axe,
+    a knife and 8 buckets of blood, in 15 seconds; and **essence**, one from a loaf of bread, in 5 seconds.
   - **How it looks** (`ritual-timeline.ts`, `render3d/ritual-effects.ts`): a ring of light marks its reach on the
     ground. Each pedestal in turn, round the altar clockwise from the north, sends its item to it: a white beam with
     sparks running along it, the item lifted off and drawn along to circle over the altar, spinning (until its turn it
-    still floats over its pedestal, though the server has taken it). Then each barrel in turn: a red beam to the basin,
-    drops running down it, the barrel draining as the basin fills with blood. At the end the items circle in faster
+    still floats over its pedestal, though the server has taken it). Then each barrel in turn: a stream of blood drawn
+    through the air to the basin (dark, glossy and lit like the liquid, with a faint dark-red haze, not a beam of
+    light), drops running down it, the barrel draining as the basin fills. At the end the items circle in faster
     and closer, the blood rises out of the basin in a column into them and a white core swells between them; then a
     flash, a shockwave over the ground, sparks thrown out and a pillar of light (the altar's `glow`, ALTAR_GLOW_TICKS),
     and what it made floats over the altar.
+- **Waystone** (workbench: a lich core, 10 stone and 15 essence; `packages/shared/src/waystones.ts`): after
+  `icons/buildings/waystone.png`, a tall blue-grey stone with a rounded top on a dark plinth, runes cut down its face,
+  and a row of dark sockets up each edge of its face, with a keystone socket at the top. Right click it for its panel:
+  a box to name it (like a chest's), and every other waystone in the world, by name (or where it is, unnamed), how far
+  and which way. The server keeps the list and sends it to every page (`waystones` in the log), since a page only
+  knows the chunks near it. Click one to go there (the `warp` command): the stone charges for `WARP_SECONDS` (3),
+  and you cannot move the while (your page sends no movement and the server plays none). Its lights come on a pair at
+  a time from the bottom, the keystone last (`warpLightAt`), with a chime as each does; motes of light rise round you
+  in a tightening spiral, a ring closes in under you, and a column of light swallows you. Then you are put down in front
+  of the other stone (or beside it, if that is blocked: `ARRIVAL_SPOTS`), with a flash, a pillar of light and sparks
+  where you left and where you arrive. Knocked more than a tile away while it charges (or with either stone broken),
+  it is called off (`stepWarps` in `game-room.ts`; `warp` and `warp-` in the log tell every page, to draw it:
+  `render3d/waystone-effects.ts`).
+- **Worker skeleton** (an altar ritual): a skeleton bound to work, with a heart of essence glowing blue in its ribs and
+  in its eyes, a leather apron and a pickaxe on its back, after `icons/monster/worker-skeleton.png`. For now it is
+  only put down and stands there (the `worker` building); it will be a worker you program, running on essence.
 - **Bucket** (workbench): right click a pond (or a well) with it to fill it with fresh water, or the sea for salt water, and a barrel to pour it in (or, empty, to fill it from
   the barrel); right click bare ground to empty it out. **Ponds** are part of the ground, worked out from the seed (`waterAt` in `world-gen.ts`); nothing grows,
   is built or walks on them.
@@ -593,7 +617,8 @@ you hold (it is for using things). Every attack puts every weapon on one cooldow
   clears them faster. Each thing hit shakes, with a spark and a sound.
 - A weapon has two numbers: its `damage` is what it does to a creature (before the creature's armour), and its
   `harvest` what it does to the resources it is for: an axe to trees and what you put down, a pickaxe to rocks; a bush
-  takes anything's (`resourceDamage` in `weapons.ts`). Resource hp is in harvest (a tree 30, ten hits with an axe).
+  takes anything's (`resourceDamage` in `weapons.ts`). Resource hp is in harvest (a tree 30, ten hits with an axe), and
+  each building's is in `data/buildings.json`.
 - **The bow and sling**: a click (let go at once) draws the bow back or whirls the sling once round (its `windup`), and
   the arrow or stone flies the way you aimed, from where you are when it goes. With nothing to shoot, they are not drawn back at all. A shot is drawn flying until it reaches what it hit.
   Each flies at most its weapon's `range` (`weapons.json`: an arrow 16 tiles, 22 drawn; a stone 11, 15 whirled), and
@@ -1026,9 +1051,10 @@ throttled to the clients viewing them. Their place is phase B and the log, and n
   and its model in `render3d/models.ts` (picked by `monsterModel` in `three-view.ts`). How it behaves is in
   `apps/server/src/monsters.ts`; what every creature does alike (being hit, pushed, remembered for judging attacks) is
   `CreatureSet` in `creatures.ts`, and the page keeps track of it with `CreatureTracks` (`creature-tracks.ts`).
-- **A plant**: like a building (below), with `natural: true` and its `maxHp` in `BUILDINGS`; what a hit drops is in
+- **A plant**: like a building (below), with `natural: true` and its hp in `data/buildings.json`; what a hit drops is in
   `hit` in `apps/server/src/commands.ts`, and what a random tick does in `randomTick` in `sim/entity.ts`.
-- **A building**: add it to `BuildingKind`, `BUILDINGS` and `BUILDING_KINDS` in `buildings.ts`; give it state and a
+- **A building**: add it to `BuildingKind`, `BUILDINGS` and `BUILDING_KINDS` in `buildings.ts` (and, if it is hit, its hp
+  to `data/buildings.json`); give it state and a
   phase A step in `sim/entity.ts` (and its snapshot and hash there); say what its ports offer and take in
   `sim/ports.ts`; say what it links to in `sim/links.ts`; and give it a model in `render3d/models.ts` (picked by
   `buildingModel` in `three-view.ts`). The compiler points at every `switch` that needs a case. A building that works

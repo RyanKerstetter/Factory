@@ -33,7 +33,7 @@ export const BELT_SIDE_ENTRY = BELT_LENGTH / 2
 export const STACK_SIZE = 50
 export const MINER_SLOTS = 1
 export const CHEST_SLOTS = 16
-// The longest name a chest can be given.
+// The longest name a chest (or a waystone) can be given.
 export const CHEST_NAME_LENGTH = 24
 export const FEEDER_SLOTS = 6
 // The player's inventory: the hotbar (its first HOTBAR_SLOTS slots, picked with 1 to 9), the rest of the inventory,
@@ -58,10 +58,6 @@ export const RANDOM_TICKS_PER_CHUNK = 3
 export const SAPLING_STAGES = 4
 // A berry sprout (planted from berries) takes this many random ticks to become a bush, about 100 seconds on average.
 export const SPROUT_STAGES = 9
-// A tree holds up to TREE_STICKS sticks, which punching knocks loose (see STICK_EVERY in the server's commands.ts) and
-// felling it drops. It grows one back every TREE_STICK_REGROW of its random ticks (about 11 seconds each on average).
-export const TREE_STICKS = 3
-export const TREE_STICK_REGROW = 3
 
 // A rope (leading an animal or a raft, or tying one to a fence) is a spring: slack up to LEAD_LENGTH, and past it it pulls
 // both its ends towards each other, ROPE_PULL for each unit it is stretched (see `ropeForce` in animals.ts). Each end
