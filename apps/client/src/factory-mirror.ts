@@ -32,6 +32,10 @@ export type MirrorCallbacks = {
   onRoom?: (room: { host: string; pvp: boolean }) => void
   // A player was hurt by another, and whether it knocked them out.
   onHurt?: (hurt: { id: number; amount: number; died: boolean }) => void
+  // A target dummy was hit, this hard.
+  onDummyHit?: (id: number, amount: number) => void
+  // The player has truesight (see `sight` in protocol.ts).
+  onSight?: () => void
   // What an animal near the player is, whenever it changes; and one that is gone.
   onAnimal?: (info: AnimalInfo) => void
   onAnimalGone?: (id: number, died?: number) => void
@@ -192,6 +196,10 @@ export class FactoryMirror {
       this.callbacks.onRoom?.({ host: event.host, pvp: event.pvp })
     } else if (event.k === 'hurt') {
       this.callbacks.onHurt?.(event)
+    } else if (event.k === 'dummy') {
+      this.callbacks.onDummyHit?.(event.id, event.amount)
+    } else if (event.k === 'sight') {
+      this.callbacks.onSight?.()
     } else if (event.k === 'animal') {
       this.callbacks.onAnimal?.(event.a)
     } else if (event.k === 'gear') {

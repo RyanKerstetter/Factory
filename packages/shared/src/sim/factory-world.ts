@@ -4,7 +4,8 @@ import { shapeFor, type Entry } from './belt.ts'
 import { Chunk } from './chunk.ts'
 import { chunkOfDrop, dropFromState, dropToState, hashDrop, type Drop, type DropState } from './drops.ts'
 import { Hasher } from './hash.ts'
-import { entityFromState, entityToState, isBeltLike, type Entity, type EntityState } from './entity.ts'
+import { entityFromState, entityToState, isBeltLike, type Entity, type EntityOf, type EntityState } from './entity.ts'
+import { KindIndex } from './kind-index.ts'
 import { linkFromState, linkToState, type Link, type LinkState } from './links.ts'
 import { accepts, offered, receive, takeOffered } from './ports.ts'
 
@@ -40,6 +41,8 @@ export class FactoryWorld {
   private readonly chunks = new Map<number, Chunk>()
   private chunkOrder: number[] = []
   private readonly entityChunk = new Map<number, number>()
+  // The buildings by kind (see `ofKind`).
+  private readonly kinds = new KindIndex()
   private readonly links = new Map<number, Link>()
   private linkOrder: number[] = []
   // The links with an end at each building, by building ID.
@@ -80,6 +83,7 @@ export class FactoryWorld {
     for (const entity of [...chunk.entities]) {
       chunk.remove(entity.id)
       this.entityChunk.delete(entity.id)
+      this.kinds.remove(entity)
     }
     for (const drop of this.dropsInChunk(id)) this.removeDrop(drop.id)
     this.chunks.delete(id)
@@ -105,10 +109,27 @@ export class FactoryWorld {
     return this.entityChunk.get(id)
   }
 
+  // Every building of a kind held, in ID order: what to use instead of going through every chunk for the few of a kind
+  // (waystones, altars, hives). The list is only good until a building of that kind comes or goes.
+  ofKind<K extends Entity['kind']>(kind: K): readonly EntityOf<K>[] {
+    return this.kinds.of(kind)
+  }
+
+  // How many buildings of a kind are held.
+  countOf(kind: Entity['kind']): number {
+    return this.kinds.count(kind)
+  }
+
+  // A number that goes up whenever a building of a kind comes, goes or has a new state put in (see KindIndex.changes).
+  changesOf(kind: Entity['kind']): number {
+    return this.kinds.changes(kind)
+  }
+
   addEntity(entity: Entity): void {
     const chunkId = chunkOfTile(entity.x, entity.y)
     this.ensureChunk(chunkId).add(entity)
     this.entityChunk.set(entity.id, chunkId)
+    this.kinds.add(entity)
     this.refreshShape(entity.id)
   }
 
@@ -116,7 +137,10 @@ export class FactoryWorld {
   replaceEntity(entity: Entity): void {
     const chunkId = this.entityChunk.get(entity.id)
     if (chunkId === undefined) return
-    this.chunks.get(chunkId)!.replace(entity)
+    const chunk = this.chunks.get(chunkId)!
+    const old = chunk.get(entity.id)!
+    chunk.replace(entity)
+    this.kinds.replace(old, entity)
     this.refreshShape(entity.id)
   }
 
@@ -126,7 +150,9 @@ export class FactoryWorld {
     const chunkId = this.entityChunk.get(id)
     if (chunkId === undefined) return undefined
     this.entityChunk.delete(id)
-    return this.chunks.get(chunkId)?.remove(id)
+    const removed = this.chunks.get(chunkId)?.remove(id)
+    if (removed) this.kinds.remove(removed)
+    return removed
   }
 
   // ---- items on the ground
@@ -305,6 +331,7 @@ export class FactoryWorld {
         }
         chunk.remove(entity.id)
         this.entityChunk.delete(entity.id)
+        this.kinds.remove(entity)
       }
     }
     const target = this.ensureChunk(snapshot.chunk)
@@ -312,6 +339,7 @@ export class FactoryWorld {
       const entity = entityFromState(state)
       target.add(entity)
       this.entityChunk.set(entity.id, snapshot.chunk)
+      this.kinds.add(entity)
     }
     for (const drop of this.dropsInChunk(snapshot.chunk)) this.removeDrop(drop.id)
     for (const state of snapshot.drops) this.addDrop(dropFromState(state))

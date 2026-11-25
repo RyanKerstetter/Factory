@@ -69,21 +69,37 @@ test('a wolf finds its way round a wall to a player behind it, rather than getti
   assert.ok(wolf.x < center(4, 0).x, `it got round (${(wolf.x / SUB).toFixed(1)}, ${(wolf.y / SUB).toFixed(1)})`)
 })
 
-test('a wolf that gives up runs home fast, and turns on whoever hits it on the way', () => {
-  const { room, client } = arena('HOME', { bow: 1, arrow: 10 })
-  const wolf = room.animals!.spawn(animalDef('wolf'), center(0, 0).x, center(0, 0).y)
-  const leash = animalDef('wolf').hunt!.leash
-  wolf.x = wolf.homeX + leash + 2 * SUB
-  client.player.position = { x: wolf.x + 2 * SUB, y: wolf.y }
-  room.animals!.damage(wolf.id, 1, client.player.position, room.tick, {}, client.player.id)
-  run(room, [client], 8)
-  assert.equal(wolf.target, 0, 'too far from home: it gives up')
-  const from = wolf.x
-  run(room, [client], TPS)
-  const ran = (from - wolf.x) / SUB
-  assert.ok(ran > (animalDef('wolf').speed * animalDef('wolf').hunt!.pace * TPS) / SUB, `it runs home faster than it hunts (${ran.toFixed(1)} tiles in a second)`)
-  room.animals!.damage(wolf.id, 1, client.player.position, room.tick, {}, client.player.id)
-  assert.equal(wolf.target, client.player.id, 'hit on the way, it turns')
+test('penned wolves that go for a player outside the fence give up when they cannot get at them, and go back to eating and breeding', () => {
+  const { room, client } = arena('PEN')
+  const wolf = animalDef('wolf')
+  // A pen of fences round two wolves and a feed box of meat.
+  let id = 70_000
+  for (let y = -4; y <= 4; y++) {
+    for (let x = 4; x <= 12; x++) if (x === 4 || x === 12 || y === -4 || y === 4) room.world.addEntity(createEntity(id++, 'fence', x, y, 0, NO_ITEM))
+  }
+  const feeder = createEntity(id++, 'feeder', 8, 0, 0, NO_ITEM)
+  ;(feeder as { inv: { slots: Array<{ item: number; count: number }> } }).inv.slots[0] = { item: itemId('steak'), count: 10 }
+  room.world.addEntity(feeder)
+  const pair = [room.animals!.spawn(wolf, center(6, -2).x, center(6, -2).y, { sex: 'f' }), room.animals!.spawn(wolf, center(10, 2).x, center(10, 2).y, { sex: 'm' })]
+  for (const one of pair) {
+    one.pack = pair[0].id
+    one.hunger = 900
+  }
+  // The player outside the fence: they go for them, but cannot get at them, and give up while the player stays there.
+  client.player.position = center(2, 0)
+  client.player.health = 100_000
+  run(room, [client], 2 * TPS)
+  assert.ok(pair.every((one) => one.target === client.player.id), 'they go for them')
+  for (let i = 0; i < 12 * TPS && pair.some((one) => one.target !== 0); i++) {
+    client.player.position = center(2, 0)
+    run(room, [client], 1)
+  }
+  assert.ok(pair.every((one) => one.target === 0), 'they could not get at them, and gave up')
+  for (let i = 0; i < 120 && room.animals!.list().length < 3; i++) {
+    client.player.position = center(2, 0)
+    run(room, [client], TPS)
+  }
+  assert.equal(room.animals!.list().length, 3, 'fed, they bred, with the player standing by')
 })
 
 test('a wolf bites only from close up', () => {
@@ -146,13 +162,15 @@ test('the food slot takes only food, fills with more of what it holds, and is ea
   assert.equal(client.player.inventory.slots[FOOD_SLOT].count, 1)
 })
 
-test('holding something that is not a weapon or a tool, there is no attack', () => {
+test('holding something that is not a weapon or a tool, the attack is a punch, as with nothing in hand', () => {
   const { room, client } = arena('NOFIST', { log: 5 })
   const deer = room.animals!.spawn(animalDef('deer'), client.player.position.x + SUB / 2, client.player.position.y)
   const hp = deer.hp
-  client.command({ k: 'attack', slot: 0, x: deer.x, y: deer.y})
+  client.command({ k: 'attack', slot: 0, x: deer.x, y: deer.y })
   run(room, [client], 3)
-  assert.equal(deer.hp, hp)
+  assert.equal(client.results.at(-1)?.why, undefined, 'the attack was made')
+  assert.ok(deer.hp < hp, 'and the deer was punched')
+  assert.equal(client.player.inventory.slots[0].count, 5, 'the logs are still in hand')
 })
 
 test('everyone is told what each player holds and wears, and sees their attacks', () => {

@@ -294,8 +294,8 @@ test('wolves leave a player alone at a distance, but go for one who comes close,
   const pack = [room.animals!.spawn(wolf, center(14, 0).x, center(14, 0).y)]
   pack.push(room.animals!.spawn(wolf, center(18, 4).x, center(18, 4).y))
   pack.push(room.animals!.spawn(wolf, center(22, 0).x, center(22, 0).y))
-  // One pack: all living at one spot (as a pack that turns up by itself does).
-  for (const member of pack) Object.assign(member, { homeX: center(18, 0).x, homeY: center(18, 0).y })
+  // One pack (as a pack that turns up by itself is).
+  for (const member of pack) member.pack = pack[0].id
   const loner = room.animals!.spawn(wolf, center(-60, 0).x, center(-60, 0).y)
   run(room, [client], 2 * TPS)
   assert.ok(pack.every((member) => member.target === 0), 'not close enough to bother them')
@@ -317,7 +317,7 @@ test('wolves leave a player alone at a distance, but go for one who comes close,
   assert.ok(client.player.health < 100_000, 'they bite')
 })
 
-test('a wolf hurt from afar calls its pack; they give up a player who gets far enough from their ground', () => {
+test('a wolf hurt from afar calls its pack; they never give up the player, however far they get', () => {
   const room = new GameRoom('WOLF2', 11, { wildAnimals: false, plants: false, animals: true })
   const client = new TestClient(room, 'Archer')
   run(room, [client], 2)
@@ -326,11 +326,11 @@ test('a wolf hurt from afar calls its pack; they give up a player who gets far e
   room.animals!.damage(a.id, 1, client.player.position, room.tick, {}, client.player.id)
   assert.equal(a.target, client.player.id)
   assert.equal(b.target, client.player.id)
-  // Off and away, well past how far they follow.
+  // Off and away: they keep after them.
   client.player.position = center(-80, 0)
-  run(room, [client], WATCH_TICKS)
-  assert.equal(a.target, 0)
-  assert.equal(b.target, 0)
+  run(room, [client], WATCH_TICKS * 4)
+  assert.equal(a.target, client.player.id)
+  assert.equal(b.target, client.player.id)
 })
 
 // How long animals take to notice a player.
@@ -382,7 +382,7 @@ test('a deer by the shore, with a player on the land side, runs off along the sh
   assert.ok(!waterAt(room.terrain, Math.floor(deer.x / SUB), Math.floor(deer.y / SUB)), 'on the land')
 })
 
-test('wolf packs keep to their own ground: a new pack does not turn up on another pack\'s, and a pack keeps to itself', () => {
+test('wolf packs keep apart: a new pack does not turn up near another, and a wolf walks off away from another pack', () => {
   const room = new GameRoom('PACKS', 11, { wildAnimals: false, plants: false, animals: true })
   const client = new TestClient(room, 'Ranger')
   run(room, [client], 2)
@@ -393,7 +393,14 @@ test('wolf packs keep to their own ground: a new pack does not turn up on anothe
   const first = animals.spawnHerd(context as never, wolf, center(20, 0).x, center(20, 0).y)
   assert.ok(first > 0, 'the first pack')
   const pack = animals.list().filter((animal) => animal.def === wolf)
-  assert.ok(pack.every((one) => one.homeX === center(20, 0).x && one.homeY === center(20, 0).y), 'all living at one spot')
-  assert.equal(animals.spawnHerd(context as never, wolf, center(20, 0).x + territory / 2, center(20, 0).y), 0, 'none on its ground')
-  assert.ok(animals.spawnHerd(context as never, wolf, center(20, 0).x + territory + SUB, center(20, 0).y) > 0, 'one past it')
+  assert.ok(pack.every((one) => one.pack !== 0 && one.pack === pack[0].pack), 'one pack')
+  assert.equal(animals.spawnHerd(context as never, wolf, center(20, 0).x + territory / 2, center(20, 0).y), 0, 'none near it')
+  assert.ok(animals.spawnHerd(context as never, wolf, center(20, 0).x + territory + 3 * SUB, center(20, 0).y) > 0, 'one far enough off')
+  // A wolf of another pack put right by the first: it walks off away from them.
+  const stray = animals.spawn(wolf, center(26, 0).x, center(26, 0).y)
+  stray.pack = stray.id
+  const near = (): number => Math.min(...pack.map((one) => Math.hypot(one.x - stray.x, one.y - stray.y)))
+  const before = near()
+  run(room, [client], 8 * TPS)
+  assert.ok(near() > before + 2 * SUB, `it kept away (${(before / SUB).toFixed(1)} to ${(near() / SUB).toFixed(1)} tiles)`)
 })

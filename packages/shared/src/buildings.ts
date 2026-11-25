@@ -2,8 +2,10 @@ import buildingsData from '../../../data/buildings.json' with { type: 'json' }
 import { failIn, fieldsOf, onlyFields, wholeField } from './data-check.ts'
 
 // Everything that stands on a tile: the factory's buildings; what is found in the world (trees, bushes, rocks, grass,
-// flint, and the saplings and berry sprouts planted from acorns and berries); what players put up (fences, gates, the
-// stations and machines, garden plots, feed boxes, sleeping bags); and the dungeon's ice door. Each takes one tile.
+// flint, and the saplings and berry sprouts planted from acorns and berries; on the meadow sunflowers, clay, copper rocks
+// and beehives; in the desert cacti, sand and tin rocks; the cobwebs spiders spin); what players put up (fences, gates,
+// the stations and machines, garden plots, feed boxes, sleeping bags, bee boxes); and the dungeon's ice door. Each
+// takes one tile.
 export type BuildingKind =
   | 'miner'
   | 'extractor'
@@ -33,6 +35,17 @@ export type BuildingKind =
   | 'pedestal'
   | 'waystone'
   | 'worker'
+  | 'dummy'
+  | 'sunflower'
+  | 'seedling'
+  | 'clay'
+  | 'copper-rock'
+  | 'tin-rock'
+  | 'cactus'
+  | 'sand'
+  | 'cobweb'
+  | 'hive'
+  | 'beebox'
 
 export type BuildingDef = {
   kind: BuildingKind
@@ -137,6 +150,97 @@ const BUILDING_DEFS: Record<BuildingKind, BuildingDef> = {
     code: 28,
     name: 'Worker skeleton',
     description: 'A skeleton bound to work, waiting for its orders.',
+    solid: true,
+    blocksAnimals: true,
+  },
+  dummy: {
+    ...PLACED,
+    kind: 'dummy',
+    code: 29,
+    name: 'Target dummy',
+    description: 'Hit it to see how hard you hit: it never breaks. Ctrl + right click it to pick it back up.',
+    solid: true,
+    blocksAnimals: true,
+  },
+  sunflower: {
+    ...NATURAL,
+    kind: 'sunflower',
+    code: 30,
+    name: 'Sunflower',
+    description: 'Bees gather from it. Break it for its seeds, which grow without a garden plot.',
+  },
+  seedling: {
+    ...NATURAL,
+    kind: 'seedling',
+    code: 31,
+    name: 'Sunflower seedling',
+    description: 'A sunflower planted from a seed. It grows into a sunflower in time; punch it to dig the seed back up.',
+  },
+  clay: {
+    ...NATURAL,
+    kind: 'clay',
+    code: 32,
+    name: 'Clay',
+    description: 'A lump of clay by a river. Break it with a pickaxe for clay.',
+    solid: true,
+    blocksAnimals: true,
+  },
+  'copper-rock': {
+    ...NATURAL,
+    kind: 'copper-rock',
+    code: 33,
+    name: 'Copper rock',
+    description: 'A rock with copper in it. Break it with a pickaxe for copper nuggets.',
+    solid: true,
+    blocksAnimals: true,
+  },
+  'tin-rock': {
+    ...NATURAL,
+    kind: 'tin-rock',
+    code: 34,
+    name: 'Tin rock',
+    description: 'A rock with tin in it. Break it with a pickaxe for tin nuggets.',
+    solid: true,
+    blocksAnimals: true,
+  },
+  cactus: {
+    ...NATURAL,
+    kind: 'cactus',
+    code: 35,
+    name: 'Cactus',
+    description: 'Break it for a cactus to plant again: it only grows on sand.',
+    solid: true,
+    blocksAnimals: true,
+  },
+  sand: {
+    ...NATURAL,
+    kind: 'sand',
+    code: 36,
+    name: 'Sand',
+    description: 'A pocket of loose sand: break it, even with your fists, for sand.',
+  },
+  cobweb: {
+    ...NATURAL,
+    kind: 'cobweb',
+    code: 37,
+    name: 'Cobweb',
+    description: 'Spun by a spider. Break it for string.',
+  },
+  hive: {
+    ...NATURAL,
+    kind: 'hive',
+    code: 38,
+    name: 'Beehive',
+    description: 'Bees live in it and make honey from sunflowers nearby. Punch it for a honeycomb (one a punch, while it has honey), which angers them.',
+    solid: true,
+    blocksAnimals: true,
+  },
+  beebox: {
+    ...PLACED,
+    kind: 'beebox',
+    code: 39,
+    name: 'Bee box',
+    description: 'A hive for bees to move into, like a wild one: punch it for a honeycomb, which angers them.',
     solid: true,
     blocksAnimals: true,
   },
@@ -303,10 +407,12 @@ const BUILDING_DEFS: Record<BuildingKind, BuildingDef> = {
 }
 
 // The kinds whose hits are in data/buildings.json: everything that is hit (natural or breakable) and keeps its hits,
-// which is all of them but saplings, berry sprouts and loose flint (one hit each, always).
-const ONE_HIT: readonly BuildingKind[] = ['sapling', 'sprout', 'loose']
+// which is all of them but saplings, berry sprouts, sunflower seedlings and loose flint (one hit each, always) and the
+// target dummy (which never breaks).
+const ONE_HIT: readonly BuildingKind[] = ['sapling', 'sprout', 'seedling', 'loose']
+const UNBREAKABLE: readonly BuildingKind[] = ['dummy']
 export const HP_FROM_DATA: readonly BuildingKind[] = (Object.keys(BUILDING_DEFS) as BuildingKind[]).filter(
-  (kind) => (BUILDING_DEFS[kind].natural || BUILDING_DEFS[kind].breakable) && !ONE_HIT.includes(kind),
+  (kind) => (BUILDING_DEFS[kind].natural || BUILDING_DEFS[kind].breakable) && !ONE_HIT.includes(kind) && !UNBREAKABLE.includes(kind),
 )
 
 // data/buildings.json: `{ "tree": { "hp": 30 }, ... }`, every kind in HP_FROM_DATA and no other.
@@ -346,12 +452,12 @@ export function isBuildingKind(value: unknown): value is BuildingKind {
 // lip between them to catch on (a stump a hair wider than the workbench beside it). Pick the nearest one to the model
 // and fit the model to it. (Players also slip round a corner they only just catch: CORNER_SLIP in movement.ts.)
 export const FOOTPRINT = {
-  // Most things put down: the stations, fires, chests, feed boxes, the well, the altar; and rocks.
+  // Most things put down: the stations, fires, chests, feed boxes, the well, the altar; and rocks (copper and tin too) and clay.
   block: [0.1, 0.1, 0.9, 0.9],
-  // Small round things: a barrel, a pedestal.
+  // Small round things: a barrel, a pedestal, a beehive.
   small: [0.17, 0.17, 0.83, 0.83],
-  // A tree's trunk: wide enough that the gap between two trees side by side (0.56 tiles) is narrower than a player
-  // (0.6), with room to spare, so nobody slips between them.
+  // A tree's trunk (and a cactus): wide enough that the gap between two trees side by side (0.56 tiles) is narrower than
+  // a player (0.6), with room to spare, so nobody slips between them.
   trunk: [0.28, 0.28, 0.72, 0.72],
   // A thin frame across the tile, post to post (the drying rack: nobody walks through under the hide).
   frame: [0.07, 0.42, 0.93, 0.58],
@@ -372,6 +478,13 @@ export const BUILDING_BOUNDS: Partial<Record<BuildingKind, ReadonlyArray<readonl
   pedestal: [FOOTPRINT.small],
   waystone: [FOOTPRINT.block],
   worker: [FOOTPRINT.small],
+  dummy: [FOOTPRINT.small],
+  clay: [FOOTPRINT.block],
+  'copper-rock': [FOOTPRINT.block],
+  'tin-rock': [FOOTPRINT.block],
+  cactus: [FOOTPRINT.trunk],
+  hive: [FOOTPRINT.small],
+  beebox: [FOOTPRINT.small],
   barrel: [FOOTPRINT.small],
   rack: [FOOTPRINT.frame],
   feeder: [FOOTPRINT.block],

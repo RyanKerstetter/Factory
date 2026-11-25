@@ -37,5 +37,27 @@
   },
   "sprout": {
     "dug": [{ "item": "berries", "min": 1, "max": 1 }]
+  },
+  "clay": {
+    "broken": [{ "item": "clay", "min": 2, "max": 4 }]
+  },
+  "copper-rock": {
+    "broken": [{ "item": "copper-nugget", "min": 1, "max": 3 }]
+  },
+  "tin-rock": {
+    "broken": [{ "item": "tin-nugget", "min": 1, "max": 3 }]
+  },
+  "sand": {
+    "broken": [{ "item": "sand", "min": 1, "max": 2 }]
+  },
+  "cactus": {
+    "broken": [{ "item": "cactus", "min": 1, "max": 1 }]
+  },
+  "sunflower": {
+    "broken": [{ "item": "sunflower-seed", "min": 1, "max": 3 }],
+    "dug": [{ "item": "sunflower-seed", "min": 1, "max": 1 }]
+  },
+  "cobweb": {
+    "broken": [{ "item": "string", "min": 1, "max": 1 }]
   }
 }

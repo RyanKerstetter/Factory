@@ -173,7 +173,9 @@ test('a bush drops its fiber and its berries when it is gone, nothing before; an
   const max = BUILDINGS.bush.maxHp
   const bush = besidePlant(room, client, 'bush')
   assert.equal(punchDown(room, client, bush.id), max)
-  assert.equal(countOf(client.player.inventory, itemId('fiber')), DROP_TABLES.bush.broken[0].min)
+  const fiber = countOf(client.player.inventory, itemId('fiber'))
+  const { min, max: most } = DROP_TABLES.bush.broken.find((drop) => drop.item === itemId('fiber'))!
+  assert.ok(fiber >= min && fiber <= most, `${fiber} fiber`)
   assert.ok(countOf(client.player.inventory, itemId('berries')) >= 2)
   const other = besidePlant(room, client, 'bush', [bush.id])
   client.player.inventory.slots[1] = { item: itemId('axe'), count: 1 }
@@ -394,6 +396,7 @@ test('what a punch knocks loose lands on the ground round the plant, the page se
   punchDown(room, client, bush.id)
   // What the bush dropped (not the flint that was lying about already).
   const drops = room.world.chunkIds.flatMap((id) => room.world.dropsInChunk(id)).filter((drop) => drop.born !== NATURAL_DROP_BORN)
+  const fiber = drops.filter((drop) => drop.item === itemId('fiber')).reduce((sum, drop) => sum + drop.count, 0)
   assert.equal(countOf(client.player.inventory, itemId('fiber')), 0, 'nothing went straight into the inventory')
   assert.ok(drops.some((drop) => drop.item === itemId('fiber')) && drops.some((drop) => drop.item === itemId('berries')))
   for (const drop of drops) {
@@ -407,7 +410,6 @@ test('what a punch knocks loose lands on the ground round the plant, the page se
     run(room, [client], 2)
   }
   run(room, [client], 5)
-  const fiber = DROP_TABLES.bush.broken[0].min
   assert.equal(countOf(client.player.inventory, itemId('fiber')), fiber)
   assert.ok(countOf(client.player.inventory, itemId('berries')) >= 2)
   assert.equal(room.world.allDrops().filter((drop) => drop.item !== itemId('flint')).length, 0)

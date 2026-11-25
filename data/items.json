@@ -84,5 +84,17 @@
   { "id": 88, "key": "altar", "name": "Altar", "category": "structure", "color": "#3a2e34", "places": "altar", "stack": 10, "icon": "icons/buildings/altar.png" },
   { "id": 89, "key": "pedestal", "name": "Pedestal", "category": "structure", "color": "#4a4a5e", "places": "pedestal", "stack": 10, "icon": "icons/buildings/pedestal.png" },
   { "id": 90, "key": "waystone", "name": "Waystone", "category": "structure", "color": "#6f7186", "places": "waystone", "stack": 10, "icon": "icons/buildings/waystone.png" },
-  { "id": 91, "key": "worker-skeleton", "name": "Worker skeleton", "category": "structure", "color": "#e6dfc8", "places": "worker", "stack": 10, "icon": "icons/monster/worker-skeleton.png" }
+  { "id": 91, "key": "worker-skeleton", "name": "Worker skeleton", "category": "structure", "color": "#e6dfc8", "places": "worker", "stack": 10, "icon": "icons/monster/worker-skeleton.png" },
+  { "id": 92, "key": "target-dummy", "name": "Target dummy", "category": "structure", "color": "#d8c27a", "places": "dummy", "stack": 10, "icon": "icons/buildings/target-dummy.png" },
+  { "id": 93, "key": "truesight-flesh", "name": "Truesight flesh", "category": "food", "color": "#c8506a", "icon": "icons/food/truesight-flesh.png" },
+  { "id": 94, "key": "copper-nugget", "name": "Copper nugget", "category": "mineral", "color": "#d27a3c", "icon": "icons/materials/ores/copper-nugget.png" },
+  { "id": 95, "key": "tin-nugget", "name": "Tin nugget", "category": "mineral", "color": "#c8cbbf", "icon": "icons/materials/ores/tin-nugget.png" },
+  { "id": 96, "key": "clay", "name": "Clay", "category": "mineral", "color": "#a8644a", "icon": "icons/materials/clay.png" },
+  { "id": 97, "key": "sand", "name": "Sand", "category": "mineral", "color": "#e0c98e", "icon": "icons/materials/sand.png" },
+  { "id": 98, "key": "sunflower-seed", "name": "Sunflower seed", "category": "plant", "color": "#4a3f2a", "places": "seedling", "tags": ["seed", "organic"] },
+  { "id": 99, "key": "cactus", "name": "Cactus", "category": "plant", "color": "#4f8a4a", "places": "cactus" },
+  { "id": 100, "key": "string", "name": "String", "category": "material", "color": "#ecebe4" },
+  { "id": 101, "key": "honeycomb", "name": "Honeycomb", "category": "material", "color": "#e8a83c", "icon": "icons/materials/honeycomb.png" },
+  { "id": 102, "key": "honey-bucket", "name": "Bucket of honey", "category": "tool", "color": "#e8a020", "stack": 1, "bucket": "honey", "icon": "icons/tools/bucket/honey-bucket.png" },
+  { "id": 103, "key": "beebox", "name": "Bee box", "category": "structure", "color": "#b98a55", "places": "beebox", "stack": 10, "icon": "icons/buildings/beebox.png" }
 ]

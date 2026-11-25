@@ -1,7 +1,7 @@
 // Numbers the server and every client must agree on. Everything in the factory simulation is a whole
 // number: positions are in fixed-point units (`SUB` to a tile), times are in ticks.
 
-export const GAME_TITLE = 'Factory Game'
+export const GAME_TITLE = 'Survival Game'
 
 // The simulation ticks this many times a second, on the server and in every client's copy of the factory.
 export const TPS = 30
@@ -58,6 +58,8 @@ export const RANDOM_TICKS_PER_CHUNK = 3
 export const SAPLING_STAGES = 4
 // A berry sprout (planted from berries) takes this many random ticks to become a bush, about 100 seconds on average.
 export const SPROUT_STAGES = 9
+// A sunflower seedling grows into a sunflower over this many random ticks (about a minute).
+export const SEEDLING_STAGES = 6
 
 // A rope (leading an animal or a raft, or tying one to a fence) is a spring: slack up to LEAD_LENGTH, and past it it pulls
 // both its ends towards each other, ROPE_PULL for each unit it is stretched (see `ropeForce` in animals.ts). Each end

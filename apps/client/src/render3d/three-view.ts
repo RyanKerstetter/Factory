@@ -9,14 +9,19 @@ import {
   dungeonTile,
   gateRunsAcross,
   getItem,
+  goblinCampSites,
+  tombSites,
   SAPLING_STAGES,
+  SEEDLING_STAGES,
   SPROUT_STAGES,
   type ItemId,
   type Terrain,
 } from '../../../../packages/shared/src/index.ts'
 import { cameraPitch, type TileBounds } from '../camera.ts'
-import type { GameView } from './game-view.ts'
+import type { GameView, ViewStats } from './game-view.ts'
 import type { AnimalView, BuildingView, GhostView, MonsterView, OverlayView, PlayerView, Swish, TrapView, WorldFrame } from './frame.ts'
+import { bake, unbake } from './bake.ts'
+import { Fog } from './fog.ts'
 import { Ground, WALL_SPIKES } from './ground.ts'
 import { floatingAt, itemMaterial, itemPlane } from './item-pictures.ts'
 import * as models from './models.ts'
@@ -72,12 +77,14 @@ const SWING_GRIP = 0.35
 // How far forward the arm holding something is held at rest (radians from hanging straight down).
 const CARRY_ARM = 0.6
 // How the models' natural sizes (in tiles) compare with the animals' sizes in data/animals.json.
-const ANIMAL_MODEL_SIZE: Readonly<Record<string, number>> = { cow: 1, chicken: 0.55, deer: 1, wolf: 0.9 }
+const ANIMAL_MODEL_SIZE: Readonly<Record<string, number>> = { cow: 1, chicken: 0.55, deer: 1, wolf: 0.9, spider: 0.7 }
 // The same for the monsters' models; and the most spikes of the dungeon's traps drawn at once.
-const MONSTER_MODEL_SIZE: Readonly<Record<string, number>> = { skeleton: 1, 'skeleton-archer': 1, 'frost-lich': 1.1, 'frost-wisp': 0.6 }
+const MONSTER_MODEL_SIZE: Readonly<Record<string, number>> = { skeleton: 1, 'skeleton-archer': 1, 'frost-lich': 1.1, 'frost-wisp': 0.6, goblin: 0.85, mummy: 1, bee: 0.35, 'queen-bee': 0.5 }
+// What floats rather than walks (bobbing in the air).
+const FLOATS: ReadonlySet<string> = new Set(['frost-wisp', 'bee', 'queen-bee'])
 const MAX_SPIKES = 900
 // How much bigger a male is drawn than a female, by kind.
-const MALE_SCALE: Readonly<Record<string, number>> = { cow: 1.08, deer: 1.06, wolf: 1.14, chicken: 1.05 }
+const MALE_SCALE: Readonly<Record<string, number>> = { cow: 1.08, deer: 1.06, wolf: 1.14, chicken: 1.05, spider: 0.85 }
 // The mark over a hostile animal that is after a player, and the ring under it.
 const ANGRY = '#ff4a3a'
 const ANGRY_RING = 0xff4a3a
@@ -117,6 +124,8 @@ export async function createThreeView(stage: HTMLElement): Promise<GameView> {
     width = Math.max(1, stage.clientWidth)
     height = Math.max(1, stage.clientHeight)
     renderer.setSize(width, height)
+    picked.clear()
+    seen = undefined
   })
   resize.observe(stage)
 
@@ -140,8 +149,10 @@ export async function createThreeView(stage: HTMLElement): Promise<GameView> {
   let focus = { x: 0, y: 0 }
   let zoom = 1
   let pxPerTile = PX_PER_TILE
-  // What `pick` found for each point, until the camera moves.
+  // What `pick` found for each point, and the tiles in view, until the camera moves or the page is resized.
   const picked = new Map<string, { x: number; y: number }>()
+  let seen: TileBounds | undefined
+  let stats: ViewStats = { renderMs: 0, calls: 0, triangles: 0 }
   const raycaster = new THREE.Raycaster()
   const ground = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)
 
@@ -151,7 +162,9 @@ export async function createThreeView(stage: HTMLElement): Promise<GameView> {
   const loop = (): void => {
     if (destroyed) return
     frameCallback?.()
+    const before = performance.now()
     renderer.render(scene, camera)
+    stats = { renderMs: performance.now() - before, calls: renderer.info.render.calls, triangles: renderer.info.render.triangles }
     raf = requestAnimationFrame(loop)
   }
 
@@ -177,6 +190,7 @@ export async function createThreeView(stage: HTMLElement): Promise<GameView> {
       sun.target.position.copy(target)
       sun.target.updateMatrixWorld()
       picked.clear()
+      seen = undefined
     },
     // What is under the point: a thing standing there (a tree's canopy is the tree's tile, an animal is where it
     // stands), or else the ground.
@@ -208,6 +222,7 @@ export async function createThreeView(stage: HTMLElement): Promise<GameView> {
       return at ? { x: at.x, y: at.z } : { ...focus }
     },
     visible(): TileBounds {
+      if (seen) return seen
       const corners = [
         { x: 0, y: 0 },
         { x: width, y: 0 },
@@ -220,12 +235,13 @@ export async function createThreeView(stage: HTMLElement): Promise<GameView> {
       })
       // Tall things standing past the bottom of the screen reach up into it, so a few more tiles all round.
       const margin = 3
-      return {
+      seen = {
         left: Math.floor(Math.min(...corners.map((c) => c.x))) - margin,
         right: Math.ceil(Math.max(...corners.map((c) => c.x))) + margin,
         top: Math.floor(Math.min(...corners.map((c) => c.z))) - margin,
         bottom: Math.ceil(Math.max(...corners.map((c) => c.z))) + margin,
       }
+      return seen
     },
     draw(frame) {
       world.update(frame, view.visible(), camera, pxPerTile)
@@ -235,7 +251,10 @@ export async function createThreeView(stage: HTMLElement): Promise<GameView> {
       raf = requestAnimationFrame(loop)
     },
     describe() {
-      return `3D, ${Math.round(pxPerTile)} px a tile`
+      return `3D, ${Math.round(pxPerTile)} px a tile, ${width}×${height} at ${renderer.getPixelRatio()}×`
+    },
+    stats() {
+      return stats
     },
     destroy() {
       destroyed = true
@@ -252,6 +271,7 @@ export async function createThreeView(stage: HTMLElement): Promise<GameView> {
 // Everything in the 3D world, kept from frame to frame by ID.
 class World {
   private readonly ground = new Ground()
+  private readonly fog = new Fog()
   private readonly buildings = new THREE.Group()
   private readonly animals = new THREE.Group()
   private readonly players = new THREE.Group()
@@ -271,7 +291,8 @@ class World {
   private readonly rituals = new RitualEffects()
   private readonly waystoneEffects = new WaystoneEffects()
 
-  private readonly keptBuildings = new KeptById<{ object: THREE.Object3D }>(this.buildings)
+  // Each baked into as few meshes as it can be (see bake.ts), and its baked shapes freed when it goes.
+  private readonly keptBuildings = new KeptById<{ object: THREE.Object3D }>(this.buildings, (kept) => unbake(kept.object))
   private readonly keptAnimals = new KeptById<KeptCreature>(this.animals)
   private readonly keptMonsters = new KeptById<KeptCreature>(this.monsters)
   private readonly keptPlayers = new KeptById<KeptPlayer>(this.players, (kept) => {
@@ -350,7 +371,7 @@ class World {
   // The camps, the way into the dungeon and the stairs out of it (see landmarksOf in terrain.ts), for the terrain they
   // were placed for.
   private readonly landmarks = new THREE.Group()
-  private landmarksFor: Terrain | undefined
+  private landmarksFor: { terrain: Terrain | undefined; fogLifted: boolean } | undefined
   private readonly hoverRing: THREE.Mesh
   private readonly ropes: THREE.LineSegments
   private readonly dropShadows: THREE.InstancedMesh
@@ -374,12 +395,14 @@ class World {
     this.spikes.frustumCulled = false
     this.spikes.count = 0
     scene.add(this.ground.view, this.paint.mesh, this.buildings, this.animals, this.monsters, this.spikes, this.players, this.drops, this.dropShadows, this.shots, this.ghosts, this.rafts)
-    scene.add(this.effects, this.labels, this.hoverRing, this.ropes, this.landmarks, this.rituals.group, this.waystoneEffects.group)
+    scene.add(this.effects, this.labels, this.hoverRing, this.ropes, this.landmarks, this.rituals.group, this.waystoneEffects.group, this.fog.view)
   }
 
   update(frame: WorldFrame, bounds: TileBounds, camera: THREE.OrthographicCamera, pxPerTile: number): void {
-    this.ground.update(frame.terrain, bounds)
-    this.updateLandmarks(frame.terrain)
+    this.ground.update(frame.terrain, bounds, !frame.fogLifted)
+    const you = frame.players.find((player) => player.local)
+    this.fog.update(frame.terrain, bounds, !frame.fogLifted, you, camera)
+    this.updateLandmarks(frame.terrain, frame.fogLifted)
     this.updateBuildings(frame)
     this.rituals.update(frame.rituals, frame.now)
     this.waystoneEffects.update(frame.warps, frame.warpFlashes, frame.now)
@@ -404,9 +427,11 @@ class World {
 
   // ---- landmarks
 
-  private updateLandmarks(terrain: Terrain | undefined): void {
-    if (terrain === this.landmarksFor) return
-    this.landmarksFor = terrain
+  // The goblins' camps are on the meadow and the mummies' tombs in the desert, under the fog until the player has
+  // truesight.
+  private updateLandmarks(terrain: Terrain | undefined, fogLifted: boolean): void {
+    if (this.landmarksFor && terrain === this.landmarksFor.terrain && fogLifted === this.landmarksFor.fogLifted) return
+    this.landmarksFor = { terrain, fogLifted }
     this.landmarks.clear()
     if (!terrain) return
     const place = (object: THREE.Object3D, x: number, y: number): void => {
@@ -414,6 +439,8 @@ class World {
       this.landmarks.add(object)
     }
     for (const site of campSites(terrain)) place(models.camp(), site.x, site.y)
+    if (fogLifted) for (const site of goblinCampSites(terrain)) place(models.goblinCamp(), site.x, site.y)
+    if (fogLifted) for (const site of tombSites(terrain)) place(models.tomb(), site.x, site.y)
     const entrance = dungeonEntrance(terrain)
     if (entrance) place(models.dungeonEntrance(), entrance.x, entrance.y)
     for (let slot = 0; slot < DUNGEON_SLOTS; slot++) {
@@ -429,7 +456,7 @@ class World {
   private updateBuildings(frame: WorldFrame): void {
     for (const building of frame.buildings) {
       const { object } = this.keptBuildings.keep(building.id, buildingKey(building), () => {
-        const object = buildingModel(building)
+        const object = bake(buildingModel(building))
         object.userData.spot = { x: building.x + 0.5, y: building.y + 0.5 }
         return { object }
       })
@@ -445,6 +472,11 @@ class World {
           if (part.name !== 'flame') return
           part.scale.y = (part.userData.height ??= part.scale.y) * (1 + 0.18 * Math.sin(frame.now * 0.018 + part.id))
         })
+      }
+      // Smoke off a fire cooking leaves: puffs rising, spreading and fading, one after another.
+      if (building.smoking) {
+        const smoke = object.getObjectByName('smoke')
+        smoke?.children.forEach((puff) => smokePuff(puff as THREE.Mesh, frame.now))
       }
       // What is on a pedestal or an altar bobs and spins over it.
       if (building.shown !== undefined) {
@@ -494,8 +526,12 @@ class World {
     for (const monster of monsters) {
       const kept = this.keptMonsters.keep(monster.id, monster.kind, () => keptCreature(monsterModel(monster.kind), monster))
       const scale = monster.size / (MONSTER_MODEL_SIZE[monster.kind] ?? 1)
-      // A wisp floats.
-      placeCreature(kept, monster, scale, now, monster.kind === 'frost-wisp')
+      // A wisp floats, and so do bees, their wings a blur.
+      placeCreature(kept, monster, scale, now, FLOATS.has(monster.kind))
+      if (monster.kind === 'bee' || monster.kind === 'queen-bee') {
+        const wings = (kept.object.userData.wings ??= kept.object.getObjectsByProperty('name', 'wing')) as THREE.Object3D[]
+        wings.forEach((wing, i) => (wing.rotation.x = (i === 0 ? -1 : 1) * (0.2 + 0.6 * Math.abs(Math.sin(now * 0.09 + monster.id)))))
+      }
       // What it is doing: a skeleton raising its sword up and back to swing, or crouching low with its sword drawn back
       // and its eyes ablaze to charge, leaning hard into the dash; an archer's arrow on the string; the lich's staff
       // raised, its crystal glowing brighter as the spell comes: held high overhead for icicles (they come down from
@@ -889,13 +925,15 @@ function buildingKey(building: BuildingView): string {
       return `sapling${models.growthLook(Math.min(building.stage ?? 0, SAPLING_STAGES) / SAPLING_STAGES)}`
     case 'sprout':
       return `sprout${models.growthLook(Math.min(building.stage ?? 0, SPROUT_STAGES) / SPROUT_STAGES)}`
+    case 'seedling':
+      return `seedling${models.growthLook(Math.min(building.stage ?? 0, SEEDLING_STAGES) / SEEDLING_STAGES)}`
     case 'fence':
       return `fence${building.connect ?? 0}${building.tied ? 't' : ''}`
     case 'gate':
       return `gate${gateRunsAcross(building.connect ?? 0)}${building.open ?? false}`
     case 'campfire':
     case 'oven':
-      return `${building.kind}${building.lit ?? false}`
+      return `${building.kind}${building.lit ?? false}${building.smoking ? 's' : ''}`
     case 'plot':
       // The water in steps of a fifth, so the model is not made again every time it dries a little.
       return `plot${building.cropStage ?? ''}|${Math.round((building.water ?? 0) / 20)}`
@@ -956,9 +994,31 @@ function buildingModel(building: BuildingView): THREE.Object3D {
     case 'workbench':
       return models.workbench(building.tool === undefined ? undefined : getItem(building.tool).key)
     case 'campfire':
-      return models.campfire(building.lit ?? false)
-    case 'oven':
-      return models.oven(building.lit ?? false)
+    case 'oven': {
+      const fire = building.kind === 'campfire' ? models.campfire(building.lit ?? false) : models.oven(building.lit ?? false)
+      if (building.smoking) fire.add(models.smoke())
+      return fire
+    }
+    case 'sunflower':
+      return models.sunflower(x, y)
+    case 'seedling':
+      return models.seedling(models.growthLook(Math.min(building.stage ?? 0, SEEDLING_STAGES) / SEEDLING_STAGES))
+    case 'clay':
+      return models.clay(x, y)
+    case 'copper-rock':
+      return models.oreRock(x, y, 'copper')
+    case 'tin-rock':
+      return models.oreRock(x, y, 'tin')
+    case 'cactus':
+      return models.cactus(x, y)
+    case 'sand':
+      return models.sandPile(x, y)
+    case 'cobweb':
+      return models.cobweb(x, y)
+    case 'hive':
+      return models.beehive()
+    case 'beebox':
+      return models.beeBox()
     case 'barrel': {
       const barrel = building.barrel
       return barrel ? models.barrel(barrel.sealed, barrel.liquid, barrel.fill, barrel.composting) : models.barrel()
@@ -975,6 +1035,8 @@ function buildingModel(building: BuildingView): THREE.Object3D {
       return models.waystone()
     case 'worker':
       return models.workerSkeleton()
+    case 'dummy':
+      return models.targetDummy()
     case 'pedestal':
       return withFloating(models.pedestal(), building.shown, models.PEDESTAL_HOLD_Y)
     case 'chest':
@@ -1002,6 +1064,10 @@ function monsterModel(kind: string): THREE.Group {
   if (kind === 'skeleton-archer') return models.skeletonArcher()
   if (kind === 'frost-lich') return models.frostLich()
   if (kind === 'frost-wisp') return models.frostWisp()
+  if (kind === 'goblin') return models.goblin()
+  if (kind === 'mummy') return models.mummy()
+  if (kind === 'bee') return models.bee()
+  if (kind === 'queen-bee') return models.queenBee()
   return models.skeleton()
 }
 
@@ -1010,6 +1076,7 @@ function animalModel(kind: string, male: boolean): THREE.Group {
   if (kind === 'chicken') return models.chicken(male)
   if (kind === 'deer') return models.deer(male)
   if (kind === 'wolf') return models.wolf(male)
+  if (kind === 'spider') return models.spider(male)
   return models.machine(0xb0a080)
 }
 
@@ -1020,6 +1087,17 @@ function projectileKind(item: number): 'arrow' | 'spear' | 'stone' | 'shard' | '
   if (key === 'icicle') return 'icicle'
   if (key === 'arrow') return 'arrow'
   return 'stone'
+}
+
+// A puff of smoke off a fire, `now` ms into the game: each rises from the fire over SMOKE_RISE_MS, drifting and
+// spreading as it goes, and fades away, the next one following on (each a share of the way behind the last).
+const SMOKE_RISE_MS = 2600
+function smokePuff(puff: THREE.Mesh, now: number): void {
+  const offset = (puff.userData.offset as number | undefined) ?? 0
+  const t = (now / SMOKE_RISE_MS + offset) % 1
+  puff.position.set(Math.sin(t * 5 + offset * 9) * 0.12 * t + t * 0.15, 0.45 + t * 1.7, Math.cos(t * 4 + offset * 7) * 0.1 * t)
+  puff.scale.setScalar(0.14 + t * 0.4)
+  ;(puff.material as THREE.MeshBasicMaterial).opacity = 0.55 * (1 - t) * Math.min(1, t * 6)
 }
 
 // ---- animals and monsters

@@ -14,10 +14,14 @@
     "start": "npm run build:client && concurrently -n client,server -c cyan,green \"npm:preview\" \"npm:start:server\"",
     "start:server": "npm run start --workspace @factory/server",
     "build:client": "npm run build --workspace @factory/client",
-    "build": "npm run build --workspace @factory/client && npm run typecheck --workspace @factory/server",
+    "build": "npm run build --workspace @factory/client && npm run typecheck --workspace @factory/server && npm run build --workspace @factory/server",
     "preview": "npm run preview --workspace @factory/client",
-    "typecheck": "npm run typecheck --workspace @factory/client && npm run typecheck --workspace @factory/server && tsc -p tests",
-    "test": "tsx --test \"tests/*.test.ts\""
+    "typecheck": "npm run typecheck --workspace @factory/client && npm run typecheck --workspace @factory/server && tsc -p tests && tsc -p bench",
+    "test": "tsx --test \"tests/*.test.ts\"",
+    "bench": "npm run bench:build && node bench/dist/run.js",
+    "bench:build": "esbuild bench/run.ts --bundle --platform=node --format=esm --packages=external --target=node20 --outfile=bench/dist/run.js --log-level=warning",
+    "bench:render": "tsx bench/render.ts",
+    "bench:profile": "npm run bench:build && node --cpu-prof --cpu-prof-dir=bench/profiles bench/dist/run.js"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

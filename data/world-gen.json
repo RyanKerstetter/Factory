@@ -57,5 +57,51 @@
   },
   "map": {
     "reveal": 12
+  },
+  "meadow": {
+    "rivers": 3,
+    "riverWidth": 2,
+    "clayChance": 18,
+    "rockCell": 14,
+    "rockChance": 40,
+    "rocksMin": 1,
+    "rocksMax": 4,
+    "copperChance": 20,
+    "sunflowerCell": 9,
+    "sunflowerChance": 40,
+    "sunflowersMin": 2,
+    "sunflowersMax": 6,
+    "grassCell": 8,
+    "grassChance": 35,
+    "grassMin": 3,
+    "grassMax": 8,
+    "hiveCell": 24,
+    "hiveChance": 55
+  },
+  "desert": {
+    "cactusScatter": 5,
+    "sandCell": 11,
+    "sandChance": 50,
+    "sandMin": 3,
+    "sandMax": 7,
+    "tinScatter": 3
+  },
+  "goblinCamps": {
+    "cell": 40,
+    "chance": 60,
+    "clearing": 4,
+    "goblinsMin": 3,
+    "goblinsMax": 5,
+    "patrolRadius": 10,
+    "respawnSeconds": 150
+  },
+  "tombs": {
+    "cell": 40,
+    "chance": 60,
+    "clearing": 4,
+    "mummiesMin": 3,
+    "mummiesMax": 4,
+    "patrolRadius": 10,
+    "respawnSeconds": 150
   }
 }

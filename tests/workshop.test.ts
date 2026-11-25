@@ -387,7 +387,10 @@ const stationRecipe = (kind: 'stump' | 'workbench', output: string): number => S
 test('the workbench (not the stump) makes a mortar and pestle from stone with a pickaxe, and with it grinds wheat into flour; and makes the oven', () => {
   for (const key of ['mortar', 'flour', 'oven']) assert.equal(stationRecipe('stump', key), -1, `no ${key} at the stump`)
   assert.ok(stationRecipe('workbench', 'oven') >= 0, 'the oven at the workbench')
-  const { room, client } = workshop('MORTAR', { workbench: 1, pickaxe: 1, stone: 4, wheat: 3 })
+  // Enough wheat for two lots of flour, however much a lot takes.
+  const flour = STATION_RECIPES.workbench[stationRecipe('workbench', 'flour')]
+  const wheat = 2 * flour.inputs[0][1]
+  const { room, client } = workshop('MORTAR', { workbench: 1, pickaxe: 1, stone: 4, wheat })
   const stump = place(room, client, 0, 2, 2)
   const out = STATION_LAYOUT.workbench.output
   const stumpRecipe = (key: string): number => stationRecipe('workbench', key)
@@ -396,17 +399,17 @@ test('the workbench (not the stump) makes a mortar and pestle from stone with a 
   run(room, [client], 4 * TPS + 10)
   assert.equal(at(room, stump.id).inv.slots[out].item, itemId('mortar'), 'a mortar and pestle')
   client.command({ k: 'take', id: stump.id, item: itemId('mortar'), max: 1 })
-  client.command({ k: 'put', id: stump.id, item: itemId('wheat'), max: 3 })
+  client.command({ k: 'put', id: stump.id, item: itemId('wheat'), max: wheat })
   client.command({ k: 'work', id: stump.id, recipe: stumpRecipe('flour') })
-  run(room, [client], 3 * 2 * TPS + 10)
+  run(room, [client], 2 * flour.ticks + 2 * TPS)
   const done = at(room, stump.id)
   assert.equal(done.inv.slots[STATION_LAYOUT.workbench.tool].item, itemId('mortar'), 'the mortar went in as the tool')
   assert.equal(countOf(client.player.inventory, itemId('pickaxe')), 1, 'and the pickaxe came back out')
-  assert.deepEqual([done.inv.slots[out].item, done.inv.slots[out].count], [itemId('flour'), 3])
+  assert.deepEqual([done.inv.slots[out].item, done.inv.slots[out].count], [itemId('flour'), 2 * flour.count])
   assert.deepEqual(differingChunks(room, client), [])
 })
 
-test('flour and water mix into dough in an open barrel: four flour and a bucket for each', () => {
+test('flour and water mix into dough in an open barrel: its flour and a bucket for each', () => {
   const barrel = createEntity(1, 'barrel', 0, 0, 0, 0) as BarrelEntity
   barrel.liquid = LIQUID_WATER
   barrel.amount = 2
@@ -414,8 +417,8 @@ test('flour and water mix into dough in an open barrel: four flour and a bucket 
   assert.equal(barrelPlan(barrel).ready, true, 'it does not have to be sealed')
   const recipe = BARREL_RECIPES.find((one) => one.output === itemId('dough'))!
   for (let i = 0; i < 3 * recipe.ticks; i++) stepEntity(barrel)
-  assert.deepEqual([barrel.inv.slots[BARREL_OUTPUT].item, barrel.inv.slots[BARREL_OUTPUT].count], [itemId('dough'), 2])
-  assert.equal(barrel.inv.slots[BARREL_SOLIDS[0]].count, 2, 'four flour went into each')
+  assert.deepEqual([barrel.inv.slots[BARREL_OUTPUT].item, barrel.inv.slots[BARREL_OUTPUT].count], [itemId('dough'), 2 * recipe.count])
+  assert.equal(barrel.inv.slots[BARREL_SOLIDS[0]].count, 10 - 2 * recipe.solids[0][1], 'its flour went into each')
   assert.equal(barrel.amount, 0, 'and a bucket of water')
 })
 

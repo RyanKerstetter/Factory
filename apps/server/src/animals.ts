@@ -17,6 +17,9 @@ import {
   groundBlocks,
   boundsOf,
   biomeSiteAt,
+  createEntity,
+  entityToState,
+  NO_ITEM,
   tileOfUnits,
   type BiomeSite,
   getItem,
@@ -60,8 +63,8 @@ function onRope(animal: Pick<Animal, 'leader' | 'post'>): boolean {
   return animal.leader !== 0 || animal.post !== 0
 }
 
-// The animals: chickens and deer in the forest, wolves in the mountains, cows (see data/animals.json), run by the
-// server only (the skeletons and the frost lich are monsters: see monsters.ts). They are not part of the factory's
+// The animals: chickens and deer in the forest, wolves in the mountains, cows on the meadow, spiders in the desert (see
+// data/animals.json), run by the server only (the skeletons and the frost lich are monsters: see monsters.ts). They are not part of the factory's
 // simulation, so nothing here has to come out the same on every page; pages are sent where the animals are with the
 // players' positions and what each one is (AnimalInfo) on the log. Their random numbers come from the room's seed, so
 // a test sees the same animals do the same things.
@@ -78,8 +81,9 @@ function onRope(animal: Pick<Animal, 'leader' | 'post'>): boolean {
 //   well fed for `wellFedMinutes`. Grass never makes an animal well fed: only a feed box does;
 // - hungry (`hungryAt` or more): go to the nearest tuft of grass within `grassRadius` tiles and graze it away;
 //   a little hungry (half of that): nibble a tuft only if one is right beside it;
-// - away from the others of its kind: go back to them;
+// - away from the others of its kind: go back to them (not one that lives alone, a spider);
 // - otherwise: wander a little, or stand.
+// And, whatever it is doing, a spider spins a cobweb round itself now and then (see `spin`).
 // The numbers (how fast it gets hungry, and so on) are each kind's `life` in data/animals.json.
 
 // A tuft of grass takes GRAZE_TICKS to eat; one this close (tiles) is nibbled even when the animal is only a little hungry.
@@ -92,8 +96,6 @@ const FLEE_DISTANCE = 7
 // the middle of its herd.
 const HERD_RADIUS = 10
 const HERD_SPREAD = 3
-// A hostile animal that has strayed this far (tiles) from where it lives heads back.
-const HOME_RANGE = 8
 const FEEDER_RADIUS = 10
 const MATE_RADIUS = 8
 // A walk that gets nowhere for this many ticks is given up.
@@ -104,13 +106,16 @@ const FLEE_PACE = 1.8
 // How often (ticks) an animal looks round for players, to run from or go for; how far a skittish one runs before it
 // looks again (tiles); and how far a bite knocks a player back (units).
 const WATCH_EVERY = 4
-// A hostile animal that has given up a chase goes home and will not take up another for CALM_TICKS (unless it is hurt),
-// and never goes for a player further than its leash, less LEASH_MARGIN tiles, from its home: so it does not give up
-// and take up the same chase over and over at the edge of its ground.
-const CALM_TICKS = 6 * TPS
-const LEASH_MARGIN = 3
-// Going home after giving up a chase, a hostile one runs, RETURN_PACE times as fast as it chases.
-const RETURN_PACE = 1.5
+// A hunter that cannot get at its prey (behind a fence, over water) gives up: one that has not closed on them (come
+// CLOSER_BY nearer than it was, counting from where they got to if they got further away) and not bitten them for
+// UNREACHABLE_TICKS lets them be, and leaves them alone for
+// IGNORE_TICKS after (unless they hurt it), so a penned wolf goes back to eating and breeding.
+const UNREACHABLE_TICKS = 8 * TPS
+const IGNORE_TICKS = 30 * TPS
+const CLOSER_BY = SUB / 2
+// A pack keeps away from other packs of its kind: one of them within half its `territory` of it, it walks off away from
+// them, AVOID_TILES tiles at a time.
+const AVOID_TILES = 8
 // Pathfinding: a hunter whose straight way to where it is going is blocked (a wall, a fence, a tree) finds a way round
 // (see steering.ts).
 const SPOOK_DISTANCE = 22
@@ -138,8 +143,6 @@ type Goal =
   | { k: 'feed'; feeder: number; x: number; y: number }
   | { k: 'mate'; partner: number }
   | { k: 'hunt' }
-  // A hostile one running home after giving up a chase.
-  | { k: 'home' }
 
 export type Animal = {
   id: number
@@ -176,20 +179,26 @@ export type Animal = {
   vy: number
   stunnedUntil: number
   fleeUntil: number
-  // Where it lives (units): a hostile one keeps to the ground round it, and gives up a chase too far from it.
-  homeX: number
-  homeY: number
+  // A hunter's pack (the ID of the first of it; 0 for an animal with no pack): it keeps with its own pack and away from
+  // others of its kind.
+  pack: number
   // The player a hostile one is after (0 for none), and when it can bite again.
   target: number
   biteReadyAt: number
-  // A hostile one that gave up a chase: until when it will not take up another by itself.
-  calmUntil?: number
+  // A hunter on a chase: how far from its prey it is measured from (units), and when it last closed on them or bit them.
+  chase?: { from: number; since: number }
+  // A player a hunter could not get at, left alone until `until` (see UNREACHABLE_TICKS).
+  ignoring?: { player: number; until: number }
   // A hostile one that was just hit: until when it backs off from its prey, not biting (its `recoil`).
   recoilUntil?: number
   // Food it could not get to (a tuft through a fence, a feed box out of reach), let be until `until` (see `moveToward`).
   shunned?: { id: number; until: number }
   // The way round something in its way (tile middles, in units, next first), what it leads to, and when it was found.
   path?: { steps: Array<{ x: number; y: number }>; toX: number; toY: number; at: number }
+  // One that spins cobwebs (a spider): when it spins the next, and the cobwebs it has spun that still stand (their
+  // IDs; see `spin`).
+  nextWebAt?: number
+  webs?: number[]
 }
 
 // The animals, saved (see save.ts): each as its kind's key and what it is, and what the herd keeps between ticks. What
@@ -215,9 +224,13 @@ export type AnimalSave = {
     milk: number
     nextMilkAt: number
     wild: boolean
+    pack?: number
+    // Saved before packs: where it lived (its pack was every one of its kind living at the same spot).
     homeX?: number
     homeY?: number
     post?: number
+    // A spider's cobwebs still standing (see `spin`).
+    webs?: number[]
   }>
 }
 
@@ -229,6 +242,8 @@ export type AnimalContext = {
   terrain: Terrain
   tick: number
   emit: (event: WorldEvent) => void
+  // A new building's ID (a spider's cobweb).
+  nextEntityId: () => number
   // Drops `count` of an item on the ground round a point.
   drop: (middle: PlayerPosition, salt: number, item: ItemId, count: number) => void
   // The players, whose positions the ropes pull on.
@@ -284,9 +299,9 @@ export class Animals extends CreatureSet<Animal> {
         milk: animal.milk,
         nextMilkAt: animal.nextMilkAt,
         wild: animal.wild,
-        homeX: animal.homeX,
-        homeY: animal.homeY,
+        ...(animal.pack !== 0 ? { pack: animal.pack } : {}),
         ...(animal.post !== 0 ? { post: animal.post } : {}),
+        ...(animal.webs?.length ? { webs: [...animal.webs] } : {}),
       })),
     }
   }
@@ -297,6 +312,8 @@ export class Animals extends CreatureSet<Animal> {
     this.nextId = saved.nextId
     this.rng.state = saved.rng >>> 0
     this.lastSpawn = saved.lastSpawn
+    // A hunter saved before packs: its pack is the first of its kind that lived at the same spot.
+    const packs = new Map<string, number>()
     // In ID order, as they are kept (see CreatureSet.all).
     for (const animal of [...saved.animals].sort((a, b) => a.id - b.id)) {
       const def = ANIMALS.find((candidate) => candidate.kind === animal.kind)
@@ -307,8 +324,7 @@ export class Animals extends CreatureSet<Animal> {
         ...animal,
         def,
         stats,
-        homeX: animal.homeX ?? animal.x,
-        homeY: animal.homeY ?? animal.y,
+        pack: animal.pack ?? (def.hunt && animal.homeX !== undefined ? packOf(packs, `${animal.kind}|${animal.homeX}|${animal.homeY}`, animal.id) : 0),
         target: 0,
         biteReadyAt: 0,
         leader: 0,
@@ -364,8 +380,6 @@ export class Animals extends CreatureSet<Animal> {
         return 'going to its mate'
       case 'hunt':
         return 'hunting'
-      case 'home':
-        return 'going home'
     }
   }
 
@@ -403,8 +417,7 @@ export class Animals extends CreatureSet<Animal> {
       vy: 0,
       stunnedUntil: 0,
       fleeUntil: 0,
-      homeX: x,
-      homeY: y,
+      pack: 0,
       target: 0,
       biteReadyAt: 0,
     }
@@ -412,16 +425,18 @@ export class Animals extends CreatureSet<Animal> {
     return this.add(animal)
   }
 
-  // A herd of a kind round a point (units), on tiles it can stand on. Gives how many there are. A pack of hunters all
-  // live at that point, and none turns up within its `territory` of another pack of its kind (see `hunt`).
+  // A herd of a kind round a point (units), on tiles it can stand on. Gives how many there are. A pack of hunters is
+  // one pack, and none turns up within its `territory` of a wolf of another pack of its kind (see `hunt`).
   spawnHerd(context: AnimalContext, def: AnimalDef, x: number, y: number): number {
     const territory = def.hunt?.territory
     if (territory !== undefined) {
       for (const other of this.all.values()) {
-        if (other.def === def && Math.hypot(other.homeX - x, other.homeY - y) < territory) return 0
+        if (other.def === def && Math.hypot(other.x - x, other.y - y) < territory) return 0
       }
     }
-    const count = def.herd[0] + this.rng.nextInt(def.herd[1] - def.herd[0] + 1)
+    let pack = 0
+    // One that lives alone turns up alone.
+    const count = def.solitary ? 1 : def.herd[0] + this.rng.nextInt(def.herd[1] - def.herd[0] + 1)
     let made = 0
     for (let n = 0; n < count; n++) {
       for (let attempt = 0; attempt < 8; attempt++) {
@@ -429,14 +444,14 @@ export class Animals extends CreatureSet<Animal> {
         const py = y + Math.round((this.random() * 2 - 1) * 2 * SUB)
         const animal = { x: px, y: py, def, leader: 0 } as Animal
         if (overlapsSolid({ x: px, y: py }, this.blockedFor(animal, context), def.halfSize)) continue
-        // The first two are one of each, so a herd can breed.
-        const sex: Sex | undefined = n === 0 ? 'f' : n === 1 ? 'm' : undefined
+        // The first two are one of each, so a herd can breed (one alone is either).
+        const sex: Sex | undefined = count < 2 ? undefined : n === 0 ? 'f' : n === 1 ? 'm' : undefined
         const baby = n >= 2 && this.rng.nextInt(100) < WILD_BABIES
         const spawned = this.spawn(def, px, py, { ...(sex ? { sex } : {}), baby })
         if (baby) spawned.age = this.rng.nextInt(growTicks(spawned))
         if (territory !== undefined) {
-          spawned.homeX = x
-          spawned.homeY = y
+          pack ||= spawned.id
+          spawned.pack = pack
         }
         made++
         break
@@ -457,6 +472,7 @@ export class Animals extends CreatureSet<Animal> {
       animal.age++
       if (tick % animal.def.life.hungerEvery === 0) animal.hunger = Math.min(HUNGER_MAX, animal.hunger + 1)
       this.produce(context, animal)
+      this.spin(context, animal)
       this.slide(animal, this.blockedFor(animal, context))
       if (animal.stunnedUntil > tick) continue
       if ((tick + animal.id) % WATCH_EVERY === 0) this.watch(context, animal)
@@ -488,6 +504,37 @@ export class Animals extends CreatureSet<Animal> {
     }
   }
 
+  // A spider spins a cobweb now and then (its kind's `webs`: about every `every`, give or take a half), on a free tile
+  // of land within `radius` tiles of it, while fewer than `most` of the cobwebs it has spun still stand, wherever they
+  // are (it wanders off from them): once one is broken it may spin another.
+  private spin(context: AnimalContext, animal: Animal): void {
+    const webs = animal.def.webs
+    if (!webs) return
+    const { tick } = context
+    const next = (): number => tick + Math.round(webs.every * (0.5 + this.random()))
+    if (animal.nextWebAt === undefined) {
+      animal.nextWebAt = next()
+      return
+    }
+    if (tick < animal.nextWebAt) return
+    animal.nextWebAt = next()
+    const standing = (animal.webs ?? []).filter((id) => context.world.entity(id)?.kind === 'cobweb')
+    animal.webs = standing
+    if (standing.length >= webs.most) return
+    const tx = tileOfUnits(animal.x)
+    const ty = tileOfUnits(animal.y)
+    const reach = webs.radius
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const x = tx - reach + this.rng.nextInt(reach * 2 + 1)
+      const y = ty - reach + this.rng.nextInt(reach * 2 + 1)
+      if (!isInsideWorld(x, y) || !context.isGrown(chunkOfTile(x, y)) || context.world.entityAt(x, y) || groundBlocks(context.terrain, x, y)) continue
+      const id = context.nextEntityId()
+      context.emit({ t: 'add', e: entityToState(createEntity(id, 'cobweb', x, y, 0, NO_ITEM)) })
+      standing.push(id)
+      return
+    }
+  }
+
   private decide(context: AnimalContext, animal: Animal): void {
     const { tick } = context
     animal.decideAt = tick + 20 + this.rng.nextInt(30)
@@ -502,7 +549,7 @@ export class Animals extends CreatureSet<Animal> {
       if (now && !same(now)) animal.goal = now
       return
     }
-    if (animal.goal.k === 'graze' || animal.goal.k === 'mate' || animal.goal.k === 'hunt' || animal.goal.k === 'home') return
+    if (animal.goal.k === 'graze' || animal.goal.k === 'mate' || animal.goal.k === 'hunt') return
     if (onRope(animal)) {
       animal.goal = this.wanderGoal(animal, 1.5, 0.35)
       return
@@ -521,6 +568,16 @@ export class Animals extends CreatureSet<Animal> {
       animal.goal = food
       return
     }
+    // A hunter keeps away from other packs of its kind: one near, it walks off away from it.
+    const hunt = animal.def.hunt
+    if (hunt && animal.pack !== 0) {
+      const rival = this.nearest(animal, hunt.territory / 2 / SUB, (other) => other.def === animal.def && other.pack !== animal.pack)
+      if (rival) {
+        const to = this.fleeTo(animal, rival, AVOID_TILES)
+        animal.goal = { k: 'walk', x: to.x, y: to.y, pace: 0.8 }
+        return
+      }
+    }
     const herd = this.herdMiddle(animal)
     if (herd && Math.hypot(herd.x - animal.x, herd.y - animal.y) > HERD_SPREAD * SUB) {
       const spread = 1.5 * SUB
@@ -532,18 +589,13 @@ export class Animals extends CreatureSet<Animal> {
       }
       return
     }
-    // A hostile one keeps to its ground: strayed from it, it heads back.
-    if (animal.def.hunt && Math.hypot(animal.homeX - animal.x, animal.homeY - animal.y) > Math.min(HOME_RANGE * SUB, animal.def.hunt.territory / 2)) {
-      animal.goal = { k: 'walk', x: animal.homeX, y: animal.homeY, pace: 0.8 }
-      return
-    }
     animal.goal = this.rng.nextInt(100) < 40 ? this.wanderGoal(animal, 3, 0.45) : { k: 'idle' }
   }
 
   // ---- watching for players
 
   // A skittish animal runs from a player who comes near, and its herd with it; a hostile one goes for a player who
-  // comes onto its ground, and keeps after them (see `act`) until they are gone or far enough from its home.
+  // comes near, and never gives them up (see `act`) until they are gone from the game.
   private watch(context: AnimalContext, animal: Animal): void {
     const { def } = animal
     // A skittish one runs even on a rope (and drags whoever holds it); anything else on a rope just follows.
@@ -558,36 +610,25 @@ export class Animals extends CreatureSet<Animal> {
     const hunt = def.hunt
     if (!hunt) return
     if (animal.target !== 0) {
-      const target = context.players.find((player) => player.id === animal.target)
-      // Gone, or got far enough from its ground: it gives up, and goes home.
-      if (!target || Math.hypot(target.position.x - animal.homeX, target.position.y - animal.homeY) > hunt.leash) {
+      // Gone from the game: it lets them be.
+      if (!context.players.some((player) => player.id === animal.target)) {
         animal.target = 0
-        animal.goal = { k: 'home' }
-        animal.decideAt = context.tick + 3 * TPS
-        animal.calmUntil = context.tick + CALM_TICKS
+        this.giveUp(animal)
       }
       return
     }
-    if (context.tick < (animal.calmUntil ?? 0)) return
-    // A player it can see, close by, on its ground (well within its leash, so it would not give up at once).
-    const intruder = this.nearestPlayer(
-      context,
-      animal,
-      hunt.aggroRadius,
-      (player) =>
-        Math.hypot(player.position.x - animal.homeX, player.position.y - animal.homeY) <= hunt.leash - LEASH_MARGIN * SUB &&
-        sightClear(animal, player.position),
-    )
+    // A player it can see, close by (not one it could not get at, a while ago).
+    const intruder = this.nearestPlayer(context, animal, hunt.aggroRadius, (player) => !this.ignores(animal, player.id, context.tick) && sightClear(animal, player.position))
     // It calls its pack at once.
     if (intruder) this.rouse(animal, intruder.id, context.tick)
   }
 
   // A hostile animal goes for a player, by itself.
   private hunt(animal: Animal, playerId: number, tick: number): void {
+    if (animal.target !== playerId) animal.chase = undefined
     animal.target = playerId
     animal.goal = { k: 'hunt' }
     animal.fleeUntil = 0
-    animal.calmUntil = 0
     animal.decideAt = tick + TPS
   }
 
@@ -650,18 +691,42 @@ export class Animals extends CreatureSet<Animal> {
 
   // A hostile animal goes for a player, and so does its pack: every one of its kind within `packRadius` of it (or of
   // one of the others roused) that is not after someone already.
-  private rouse(animal: Animal, playerId: number, tick: number): void {
+  // Not one that is letting that player be (it could not get at them), unless it is the one hurt (`hurt`).
+  private rouse(animal: Animal, playerId: number, tick: number, hurt = false): void {
     const hunt = animal.def.hunt
     if (!hunt) return
+    if (hurt) animal.ignoring = undefined
     const pack = [animal]
     for (let i = 0; i < pack.length; i++) {
       const caller = pack[i]
       this.hunt(caller, playerId, tick)
       for (const other of this.all.values()) {
-        if (pack.includes(other) || other.def !== animal.def || other.target !== 0 || onRope(other)) continue
+        if (pack.includes(other) || other.def !== animal.def || other.target !== 0 || onRope(other) || this.ignores(other, playerId, tick)) continue
         if (Math.hypot(other.x - caller.x, other.y - caller.y) <= hunt.packRadius) pack.push(other)
       }
     }
+  }
+
+  // Whether a hunter is letting a player be, having not been able to get at them a while ago.
+  private ignores(animal: Animal, playerId: number, tick: number): boolean {
+    return animal.ignoring !== undefined && animal.ignoring.player === playerId && tick < animal.ignoring.until
+  }
+
+  // A hunter that has come no nearer its prey and not bitten them for UNREACHABLE_TICKS gives up on them, and lets them
+  // be for IGNORE_TICKS. Gives whether it gave up.
+  private giveUpIfStuck(animal: Animal, prey: PlayerPosition, tick: number): boolean {
+    const distance = Math.hypot(prey.x - animal.x, prey.y - animal.y)
+    const chase = (animal.chase ??= { from: distance, since: tick })
+    if (distance < chase.from - CLOSER_BY) {
+      chase.from = distance
+      chase.since = tick
+    } else if (distance > chase.from) chase.from = distance
+    if (tick - chase.since < UNREACHABLE_TICKS) return false
+    animal.ignoring = { player: animal.target, until: tick + IGNORE_TICKS }
+    animal.target = 0
+    animal.chase = undefined
+    this.giveUp(animal)
+    return true
   }
 
   private nearestPlayer(
@@ -728,9 +793,10 @@ export class Animals extends CreatureSet<Animal> {
           this.giveUp(animal)
           return
         }
-        // Chase, and bite when close enough. A chase is not given up for being stuck (only by `watch`). A flanker goes
-        // to its place round the prey first, and darts in from there when it can bite, falling back to it after.
+        // Chase, and bite when close enough; but not for ever at what it cannot get at (see UNREACHABLE_TICKS). A flanker
+        // goes to its place round the prey first, and darts in from there when it can bite, falling back to it after.
         animal.stuck = 0
+        if (this.giveUpIfStuck(animal, target.position, context.tick)) return
         // Just hit: it backs away from the prey, out to the flanking ring on its own side, until its recoil is over.
         if (context.tick < (animal.recoilUntil ?? 0)) {
           const away = Math.atan2(animal.y - target.position.y, animal.x - target.position.x)
@@ -757,14 +823,8 @@ export class Animals extends CreatureSet<Animal> {
         animal.stuck = 0
         if (context.tick < animal.biteReadyAt) return
         animal.biteReadyAt = context.tick + hunt.cooldown
+        if (animal.chase) animal.chase.since = context.tick
         context.hurtPlayer(target.id, hunt.damage, { x: animal.x, y: animal.y }, BITE_KNOCKBACK)
-        return
-      }
-      case 'home': {
-        // Back home fast, round anything in the way.
-        const pace = (animal.def.hunt?.pace ?? 1) * RETURN_PACE
-        if (this.pursue(context, animal, animal.homeX, animal.homeY, pace, 0.6 * SUB)) this.giveUp(animal)
-        animal.stuck = 0
         return
       }
       case 'mate': {
@@ -862,7 +922,7 @@ export class Animals extends CreatureSet<Animal> {
   // yet. So animals do not wander out through a gate left open.
   blockedFor(animal: Pick<Animal, 'leader'> & { goal?: Animal['goal'] }, context: AnimalContext): IsSolid {
     const throughGates =
-      animal.leader !== 0 || animal.goal?.k === 'graze' || animal.goal?.k === 'feed' || animal.goal?.k === 'hunt' || animal.goal?.k === 'home'
+      animal.leader !== 0 || animal.goal?.k === 'graze' || animal.goal?.k === 'feed' || animal.goal?.k === 'hunt'
     if (this.blocking?.context !== context) {
       const kindAt = (x: number, y: number): Entity['kind'] | undefined => context.world.entityAt(x, y)?.kind
       const players = context.players.map((player) => player.position)
@@ -882,8 +942,10 @@ export class Animals extends CreatureSet<Animal> {
 
   // Each animal as a body, to be kept from standing on any other body (see bodies.ts): pushed, it is kept out of what
   // it cannot walk into.
+  // Only those that are run (see `isActive`): the rest stand still, and so cannot be on top of each other.
   bodies(context: AnimalContext): Body[] {
-    return this.list().map((animal) => ({
+    const run = this.list().filter((animal) => onRope(animal) || context.isActive(chunkOfTile(tileOfUnits(animal.x), tileOfUnits(animal.y))))
+    return run.map((animal) => ({
       x: animal.x,
       y: animal.y,
       half: animal.def.halfSize,
@@ -903,6 +965,8 @@ export class Animals extends CreatureSet<Animal> {
     })
     const baby = this.spawn(def, Math.round((a.x + b.x) / 2), Math.round((a.y + b.y) / 2), { stats, baby: true })
     baby.hunger = 0
+    // A pup is of its mother's pack.
+    baby.pack = (a.sex === 'f' ? a : b).pack
     for (const parent of [a, b]) {
       parent.fedUntil = tick
       parent.breedReadyAt = tick + def.life.breedCooldown
@@ -936,15 +1000,17 @@ export class Animals extends CreatureSet<Animal> {
     return best
   }
 
-  // The middle of the rest of an animal's herd within HERD_RADIUS of it (a pack of hunters is only those that live
-  // where it does: it does not fall in with another pack that wanders near).
+  // The middle of the rest of an animal's herd within HERD_RADIUS of it (a pack of hunters is only its own pack: it does
+  // not fall in with another pack that wanders near).
   private herdMiddle(animal: Animal): PlayerPosition | undefined {
+    // One that lives alone has no herd.
+    if (animal.def.solitary) return undefined
     let x = 0
     let y = 0
     let count = 0
     for (const other of this.all.values()) {
       if (other === animal || other.def !== animal.def) continue
-      if (animal.def.hunt && (other.homeX !== animal.homeX || other.homeY !== animal.homeY)) continue
+      if (animal.def.hunt && other.pack !== animal.pack) continue
       if (Math.hypot(other.x - animal.x, other.y - animal.y) > HERD_RADIUS * SUB) continue
       x += other.x
       y += other.y
@@ -1092,7 +1158,7 @@ export class Animals extends CreatureSet<Animal> {
       if (animal.def.hunt && !onRope(animal)) {
         // Hurt, it goes for whoever hurt it, and calls the others of its kind near it (even one already on a chase);
         // but first it backs off, and does not bite again until its recoil is over (after any stun).
-        if (by !== 0) this.rouse(animal, by, tick)
+        if (by !== 0) this.rouse(animal, by, tick, true)
         const until = Math.max(tick, animal.stunnedUntil) + animal.def.hunt.recoil
         animal.recoilUntil = until
         animal.biteReadyAt = Math.max(animal.biteReadyAt, until)
@@ -1252,6 +1318,12 @@ export class Animals extends CreatureSet<Animal> {
   private random(): number {
     return this.rng.nextU32() / 0x1_0000_0000
   }
+}
+
+// The pack of a hunter saved before packs, by where it lived: the first one's ID.
+function packOf(packs: Map<string, number>, home: string, id: number): number {
+  if (!packs.has(home)) packs.set(home, id)
+  return packs.get(home)!
 }
 
 function stat(animal: Animal, key: string): number {

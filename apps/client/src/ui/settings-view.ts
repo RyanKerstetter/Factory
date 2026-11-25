@@ -12,7 +12,8 @@ export type SettingsView = {
 const FIXED: ReadonlyArray<[string, string]> = [
   ['Attack / break', 'Left mouse'],
   ['Place / plant / open', 'Right mouse'],
-  ['Zoom', 'Mouse wheel'],
+  ['Hotbar slot', 'Mouse wheel'],
+  ['Zoom', 'Ctrl + mouse wheel'],
   ['Menu', 'Esc'],
 ]
 

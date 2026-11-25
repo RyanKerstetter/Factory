@@ -77,7 +77,7 @@ test('monsters are not animals: none is in animals.json, and they have no breedi
     for (const field of ['life', 'stats', 'herd', 'foods', 'grazes', 'temper', 'population']) assert.equal(def[field], undefined, `${kind} has no ${field}`)
     assert.ok(!ANIMALS.some((animal) => animal.kind === kind), `${kind} is not an animal`)
   }
-  assert.deepEqual(MONSTERS.map((def) => def.kind).sort(), ['frost-lich', 'frost-wisp', 'skeleton', 'skeleton-archer'])
+  assert.deepEqual(MONSTERS.map((def) => def.kind).sort(), ['bee', 'frost-lich', 'frost-wisp', 'goblin', 'mummy', 'queen-bee', 'skeleton', 'skeleton-archer'])
 })
 
 test('close in, a skeleton winds up a swing (the pages are told which way), is not knocked back while it does, swings, and stands a moment before going again', () => {

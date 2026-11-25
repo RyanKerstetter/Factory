@@ -26,6 +26,7 @@ export const CommandSchema = z.discriminatedUnion('k', [
   z.object({ k: z.literal('apply'), x: tile, y: tile, slot: int.min(0).max(255) }),
   z.object({ k: z.literal('machine'), id: int.min(1), action: z.enum(['light', 'douse', 'seal', 'unseal']) }),
   z.object({ k: z.literal('use'), id: int.min(0), hand: z.literal(true).optional() }),
+  z.object({ k: z.literal('lift'), id: int.min(1) }),
   z.object({ k: z.literal('toggle'), id: int.min(1) }),
   z.object({ k: z.literal('interact'), animal: int.min(1), slot: int.min(-1).max(255) }),
   z.object({ k: z.literal('raftRope'), raft: int.min(1), slot: int.min(-1).max(255) }),

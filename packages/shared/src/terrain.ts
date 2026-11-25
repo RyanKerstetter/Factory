@@ -3,13 +3,17 @@ import { DUNGEON_AIR, isInDungeons } from './dungeon.ts'
 import { WORLD_GEN } from './world-gen-data.ts'
 import { CHUNK_SIZE } from './constants.ts'
 import { chunkId } from './geometry.ts'
+import { TileFacts } from './tile-facts.ts'
 
 // The land: a chain of biomes, one per step of progression, each an island of its own (a rough, bumpy disc) in a sea
 // that goes on for ever. Each lies a short way over the sea from the one before it in the chain (`islands` in
 // data/world-gen.json): their coasts wander in and out freely, but only a little on the sides that face each other, so
 // the sea between can never close (see `wanderAt`); the only way over is by raft. The shallow sea (the shelf) reaches
 // further out on the sides facing a neighbour and joins up across the gap (see `shelfWidthAt`), so it shows the way
-// over. Islands not next to each other in the chain keep well clear of each other.
+// over. Islands not next to each other in the chain keep well clear of each other. The first two (the forest, the
+// mountains) lie the way the seed picks; after them the chain curves round (the desert, the meadow: see TURN_DEGREES).
+// The desert and the meadow are shrouded in fog (`fogged`): nobody sees them or sets foot on them until they have eaten a
+// truesight flesh (see `isFoggedAt`).
 //
 // It is all worked out from the world's seed and its TerrainSettings, the same on the server and on every page: the
 // sites are whole numbers, and each tile is tested with whole-number noise and Math.sqrt (which every JavaScript engine
@@ -17,7 +21,7 @@ import { chunkId } from './geometry.ts'
 
 // ---- the biomes, in the order players move through them
 
-export type BiomeKey = 'forest' | 'mountain'
+export type BiomeKey = 'forest' | 'mountain' | 'meadow' | 'desert'
 
 export type BiomeDef = {
   key: BiomeKey
@@ -34,11 +38,19 @@ export type BiomeDef = {
   // Whether plants take root in its ground (grass, berries, saplings: planted or spreading); not in the mountains'
   // rock and snow. Its beaches never (see `canGrowAt`).
   soil: boolean
+  // What its ground is: grass (with sand beaches along the sea, if it has soil), rock (and snow where it is cold), or
+  // sand all over (see `isSandAt`).
+  ground: 'grass' | 'rock' | 'sand'
+  // Shrouded in fog until a player has eaten a truesight flesh: they cannot see it or set foot on it (see `isFoggedAt`).
+  fogged: boolean
 }
 
 export const BIOMES: readonly BiomeDef[] = [
-  { key: 'forest', name: 'Forest', radiusPercent: 100, temperature: { edge: 16, core: 16, curve: 1 }, regrows: ['grass', 'bush'], ponds: false, soil: true },
-  { key: 'mountain', name: 'Mountains', radiusPercent: 95, temperature: { edge: 12, core: -58, curve: 2.2 }, regrows: [], ponds: false, soil: false },
+  { key: 'forest', name: 'Forest', radiusPercent: 100, temperature: { edge: 16, core: 16, curve: 1 }, regrows: ['grass', 'bush'], ponds: false, soil: true, ground: 'grass', fogged: false },
+  { key: 'mountain', name: 'Mountains', radiusPercent: 95, temperature: { edge: 12, core: -58, curve: 2.2 }, regrows: [], ponds: false, soil: false, ground: 'rock', fogged: false },
+  // The same size as the mountains.
+  { key: 'desert', name: 'Desert', radiusPercent: 95, temperature: { edge: 16, core: 16, curve: 1 }, regrows: [], ponds: false, soil: false, ground: 'sand', fogged: true },
+  { key: 'meadow', name: 'Meadow', radiusPercent: 95, temperature: { edge: 16, core: 16, curve: 1 }, regrows: ['grass'], ponds: false, soil: true, ground: 'grass', fogged: true },
 ]
 
 // The islands, from data/world-gen.json: how ragged every coast is (`bumpiness`, 0 near round to 100 deep bays and long
@@ -86,6 +98,8 @@ export type Terrain = {
   readonly seed: number
   readonly settings: TerrainSettings
   readonly sites: readonly BiomeSite[]
+  // The tiles any island can reach (outside it is all sea), each way.
+  readonly reach: { left: number; right: number; top: number; bottom: number }
 }
 
 // The directions a biome can lie in from the one before it: sixteen, as whole numbers out of 1024.
@@ -93,6 +107,19 @@ const DIRECTIONS: ReadonlyArray<readonly [number, number]> = Array.from({ length
   const angle = (i * Math.PI) / 8
   return [Math.round(Math.cos(angle) * 1024), Math.round(Math.sin(angle) * 1024)] as const
 })
+
+// The islands after the second (the desert, the meadow) curve round: each lies TURN_DEGREES round from the way the chain
+// was going (the line from the island two before it to the one before it), always turned to the same side (which side
+// is the seed's: `curveSide`), with its middle as far from the one before's as the second island's is from the
+// first's. The turn as whole numbers out of 4096, so every engine works out the same tiles.
+export const TURN_DEGREES = 70
+const TURN_COS = Math.round(Math.cos((TURN_DEGREES * Math.PI) / 180) * 4096)
+const TURN_SIN = Math.round(Math.sin((TURN_DEGREES * Math.PI) / 180) * 4096)
+
+// Which way the chain curves after the second island: 1 or -1 (clockwise or not, as the map shows it).
+export function curveSide(seed: number): 1 | -1 {
+  return hashInts(seed, 503) % 2 === 0 ? 1 : -1
+}
 
 const made = new Map<string, Terrain>()
 
@@ -102,7 +129,19 @@ export function terrainOf(seed: number, settings?: Partial<TerrainSettings>): Te
   const key = `${seed}|${clean.size}`
   let terrain = made.get(key)
   if (!terrain) {
-    terrain = { seed, settings: clean, sites: layOut(seed, clean) }
+    const sites = layOut(seed, clean)
+    const edge = (site: BiomeSite): number => site.radius + site.bump + 1
+    terrain = {
+      seed,
+      settings: clean,
+      sites,
+      reach: {
+        left: Math.min(...sites.map((site) => site.x - edge(site))),
+        right: Math.max(...sites.map((site) => site.x + edge(site))),
+        top: Math.min(...sites.map((site) => site.y - edge(site))),
+        bottom: Math.max(...sites.map((site) => site.y + edge(site))),
+      },
+    }
     made.set(key, terrain)
   }
   return terrain
@@ -122,6 +161,19 @@ function layOut(seed: number, settings: TerrainSettings): BiomeSite[] {
       continue
     }
     const before = sites[index - 1]
+    if (index >= 2) {
+      // Curving round (see TURN_DEGREES): the way the chain was going, turned, as long a step as the first.
+      const twoBack = sites[index - 2]
+      const dx = before.x - twoBack.x
+      const dy = before.y - twoBack.y
+      const side = curveSide(seed)
+      const rx = dx * TURN_COS - side * dy * TURN_SIN
+      const ry = side * dx * TURN_SIN + dy * TURN_COS
+      const step = Math.sqrt((sites[1].x - sites[0].x) ** 2 + (sites[1].y - sites[0].y) ** 2)
+      const length = Math.sqrt(rx * rx + ry * ry)
+      sites.push({ biome, index, x: before.x + Math.round((rx * step) / length), y: before.y + Math.round((ry * step) / length), radius, bump })
+      continue
+    }
     // Far enough apart that their facing coasts, wandering out as far as they can, still leave `gap` of sea between.
     const apart = before.radius + radius + ISLANDS.gap + facingBump(before.bump) + facingBump(bump)
     // Turn a little from the way the chain was going, trying the turns in an order of the seed's, and take the first
@@ -197,7 +249,20 @@ function depthIn(terrain: Terrain, site: BiomeSite, x: number, y: number): numbe
 
 // The biome a tile is in, or undefined for the sea. The islands never overlap (see `wanderAt`); were two ever to, the
 // tile would be the one it is deeper inside.
+//
+// Everything asks this (walking, water, sand, fog, what grows, the ground's picture), many times a tick, and working it
+// out takes noise at every island near: so it is kept (see TileFacts: the site's index plus one, 0 for the sea). Only
+// chunks within reach of an island are kept (anywhere else is sea at once), a few hundred kilobytes at most.
 export function biomeSiteAt(terrain: Terrain, x: number, y: number): BiomeSite | undefined {
+  const box = terrain.reach
+  if (x < box.left || x > box.right || y < box.top || y > box.bottom) return undefined
+  const index = SITES.at(terrain, x, y)
+  return index === 0 ? undefined : terrain.sites[index - 1]
+}
+const SITES = new TileFacts<Terrain>((terrain, x, y) => (workOutSiteAt(terrain, x, y)?.index ?? -1) + 1)
+
+// What `biomeSiteAt` keeps: worked out from the noise.
+function workOutSiteAt(terrain: Terrain, x: number, y: number): BiomeSite | undefined {
   let best: BiomeSite | undefined
   let bestDepth = Number.NEGATIVE_INFINITY
   for (const site of terrain.sites) {
@@ -266,12 +331,21 @@ export function isSeaAt(terrain: Terrain, x: number, y: number): boolean {
   return biomeSiteAt(terrain, x, y) === undefined
 }
 
-// Whether a tile is sand: a beach, the land right along the sea (a tile beside it, not corner to corner) in a biome
-// with soil (the mountains' shore is rock). As the ground is drawn (ground-colors.ts) and walked on (sounds.ts).
+// Whether a tile is sand: all of a desert, or a beach, the land right along the sea (a tile beside it, not corner to
+// corner) in a biome with soil (the mountains' shore is rock). As the ground is drawn (ground-colors.ts) and walked on
+// (sounds.ts); a cactus only grows on it.
 export function isSandAt(terrain: Terrain, x: number, y: number): boolean {
   const site = biomeSiteAt(terrain, x, y)
-  if (!site || !site.biome.soil) return false
+  if (!site) return false
+  if (site.biome.ground === 'sand') return true
+  if (!site.biome.soil) return false
   return isSeaAt(terrain, x + 1, y) || isSeaAt(terrain, x - 1, y) || isSeaAt(terrain, x, y + 1) || isSeaAt(terrain, x, y - 1)
+}
+
+// Whether a tile is under the fog that shrouds the far islands (a biome that is `fogged`): all of one, its rivers too.
+// A player who has not eaten a truesight flesh cannot set foot there, and sees only fog.
+export function isFoggedAt(terrain: Terrain, x: number, y: number): boolean {
+  return biomeSiteAt(terrain, x, y)?.biome.fogged === true
 }
 
 // Whether plants can take root on a tile (grass, a berry bush, a sapling, planted or spreading there): land in a
@@ -359,7 +433,8 @@ function nearestSite(terrain: Terrain, x: number, y: number): BiomeSite {
   return best
 }
 
-// ---- landmarks: the skeletons' camps and the way into the dungeon, in the mountains
+// ---- landmarks: the skeletons' camps and the way into the dungeon, in the mountains (the goblins' camps, on the meadow,
+// are world-gen.ts's, as they keep clear of its rivers)
 
 // Whether there is sea within `distance` tiles of a tile (looked for on two rings round it, so a narrow inlet could slip
 // between the points looked at; near enough for keeping things off the shore).
@@ -387,8 +462,10 @@ const CAMP_APART = WORLD_GEN.camps.apartFromDungeon
 // Nothing grows within these many tiles of a camp's middle, or of the way into the dungeon.
 export const CAMP_CLEARING = WORLD_GEN.camps.clearing
 export const ENTRANCE_CLEARING = WORLD_GEN.dungeon.clearing
-
-export type Landmarks = { entrance: { x: number; y: number } | undefined; camps: ReadonlyArray<{ x: number; y: number }> }
+export type Landmarks = {
+  entrance: { x: number; y: number } | undefined
+  camps: ReadonlyArray<{ x: number; y: number }>
+}
 const landmarksMade = new WeakMap<Terrain, Landmarks>()
 
 // A world's landmarks (worked out once, from its terrain alone, so every page has them where the server does).

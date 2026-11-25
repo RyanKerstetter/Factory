@@ -1,0 +1,9 @@
+{
+  "workers": 6,
+  "forageRadius": 8,
+  "forageEverySeconds": 6,
+  "gatherSeconds": 3,
+  "honeyMost": 20,
+  "searchRadius": 48,
+  "smokeRadius": 4
+}

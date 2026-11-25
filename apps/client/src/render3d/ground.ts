@@ -7,9 +7,11 @@ import {
   CRYPT_WALL_FOOT,
   groundChunk,
   PIXELS_PER_TILE_3D,
+  SEA_SHELF_COLOR,
   type GroundKind,
 } from './ground-colors.ts'
 import type { TileBounds } from '../camera.ts'
+import { FOG_DEPTH_GLSL, FOG_RAMP, FOG_REACH, fogDepth, fogDepthAt, fogDepthTexture } from './fog-depth.ts'
 
 // How high the ice crypt's walls stand, in tiles; and the colour of the holes spikes come out of.
 const WALL_HEIGHT = 0.9
@@ -18,6 +20,9 @@ const WALL_HEIGHT = 0.9
 export const WATER_DEPTH = 0.14
 const BANK_EARTH = [0x7a5a3c, 0x4e3826] as const
 const BANK_SAND = [0xc9b682, 0x8f7f55] as const
+// A far island's banks under its fog: as pale as the fog (paler than the ground, being in shadow more), so its coast
+// does not show through it (see fog.ts).
+const BANK_FOG = [0xffffff, 0xf2f6f9] as const
 const BANK_ROCK = [0x80858d, 0x575c64] as const
 const CRYPT_HOLE = 0x1a222c
 // Where on a wall's face the spikes of a trap in it come out (and so where its holes are): how far to the side of the
@@ -29,6 +34,59 @@ export const WALL_SPIKES: ReadonlyArray<readonly [side: number, height: number]>
 ]
 
 const isWater = (tile: GroundKind): boolean => tile.kind === 'sea' || tile.kind === 'pond'
+
+// The sea under the far islands' fog (for a player without truesight): the deep ocean's dark fading into the shelf's
+// pale colour as the fog thickens, so the line between them does not show through the fog in steps, and that into a
+// paler, misty blue nearer the island (SEA_MIST), so its coast does not show through either. It is done as the sea is
+// drawn, from the chunk's fog depths (see fog-depth.ts), so it fades smoothly: in the ground's picture its pixels would
+// show.
+const SEA_MIST = 0xb4ccd9
+const seaShelf = new THREE.Color(SEA_SHELF_COLOR)
+const seaMist = new THREE.Color(SEA_MIST)
+function seaUnderFog(material: THREE.MeshStandardMaterial, depths: THREE.Texture, left: number, top: number): void {
+  material.userData.fogDepths = depths
+  // (The same code for every chunk's material, so they share one program, each with its own depths.)
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.fogDepths = { value: depths }
+    shader.uniforms.fogCorner = { value: new THREE.Vector2(left, top) }
+    shader.uniforms.seaShelf = { value: seaShelf }
+    shader.uniforms.seaMist = { value: seaMist }
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        uniform vec2 fogCorner;
+        varying vec2 vFogAt;
+        varying float vSea;`,
+      )
+      .replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+        vFogAt = position.xz - fogCorner;
+        vSea = step(position.y, ${(-WATER_DEPTH / 2).toFixed(3)});`,
+      )
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        uniform sampler2D fogDepths;
+        uniform vec3 seaShelf;
+        uniform vec3 seaMist;
+        varying vec2 vFogAt;
+        varying float vSea;
+        ${FOG_DEPTH_GLSL}`,
+      )
+      .replace(
+        '#include <map_fragment>',
+        `#include <map_fragment>
+        {
+          float inside = fogDepthIn(fogDepths, vFogAt);
+          vec3 under = mix(seaShelf, seaMist, smoothstep(${(FOG_REACH - 6).toFixed(1)}, ${(FOG_REACH - 1).toFixed(1)}, inside));
+          diffuseColor.rgb = mix(diffuseColor.rgb, under, vSea * smoothstep(-1.0, ${(FOG_RAMP - 1).toFixed(1)}, inside));
+        }`,
+      )
+  }
+}
 
 // The surf: waves of white foam rolling in over the sea within SURF_REACH tiles of the land and breaking on it, one
 // every SURF_PERIOD seconds (a little sooner or later along the shore), drawn in pixels of the ground's size, on the
@@ -104,6 +162,11 @@ const surfMaterial = new THREE.ShaderMaterial({
   polygonOffsetUnits: -1,
 })
 
+// How long a frame may spend making the ground of chunks coming into view (see Ground.update), in ms.
+const BUILD_BUDGET_MS = 4
+// The two triangles of a tile's square, as its corners (top left, top right, bottom left, bottom right).
+const QUAD = [0, 2, 1, 1, 2, 3] as const
+
 const wallMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0, side: THREE.DoubleSide })
 
 // The ground: a mesh for each chunk in view, worked out from the world's terrain as it comes into view and let go of
@@ -114,11 +177,14 @@ export class Ground {
   readonly view = new THREE.Group()
   private readonly chunks = new Map<number, THREE.Group>()
   private terrain: Terrain | undefined
+  private fogged = false
 
-  update(terrain: Terrain | undefined, bounds: TileBounds): void {
+  // `fogged`: the far islands are under their fog (the player has no truesight), and painted so.
+  update(terrain: Terrain | undefined, bounds: TileBounds, fogged = false): void {
     surfUniforms.time.value = (performance.now() / 1000) % 100_000
-    if (terrain !== this.terrain) {
+    if (terrain !== this.terrain || fogged !== this.fogged) {
       this.terrain = terrain
+      this.fogged = fogged
       for (const made of this.chunks.values()) this.drop(made)
       this.chunks.clear()
     }
@@ -127,16 +193,20 @@ export class Ground {
     const right = floorDiv(bounds.right, CHUNK_SIZE)
     const top = floorDiv(bounds.top, CHUNK_SIZE)
     const bottom = floorDiv(bounds.bottom, CHUNK_SIZE)
-    // At most a few new chunks a frame, nearest the middle first, so walking into new ground never stalls a frame.
+    // New chunks nearest the middle first, for at most BUILD_BUDGET_MS a frame (but always one), so walking into new
+    // ground never stalls a frame, however slow the computer. With nothing shown yet, all at once.
     const missing: Array<{ cx: number; cy: number }> = []
     for (let cy = top; cy <= bottom; cy++) for (let cx = left; cx <= right; cx++) if (!this.chunks.has(chunkId(cx, cy))) missing.push({ cx, cy })
     const midX = (left + right) / 2
     const midY = (top + bottom) / 2
     missing.sort((a, b) => Math.hypot(a.cx - midX, a.cy - midY) - Math.hypot(b.cx - midX, b.cy - midY))
-    for (const { cx, cy } of missing.slice(0, this.chunks.size === 0 ? missing.length : 2)) {
-      const made = buildChunk(terrain, cx, cy)
+    const all = this.chunks.size === 0
+    const started = performance.now()
+    for (const { cx, cy } of missing) {
+      const made = buildChunk(terrain, cx, cy, fogged)
       this.chunks.set(chunkId(cx, cy), made)
       this.view.add(made)
+      if (!all && performance.now() - started >= BUILD_BUDGET_MS) break
     }
     for (const [id, made] of this.chunks) {
       const { cx, cy } = chunkCoords(id)
@@ -155,38 +225,50 @@ export class Ground {
       if (part.material !== wallMaterial && part.material !== surfMaterial) {
         const material = part.material as THREE.MeshStandardMaterial
         material.map?.dispose()
+        ;(material.userData.fogDepths as THREE.Texture | undefined)?.dispose()
         material.dispose()
       }
     })
   }
 }
 
-function buildChunk(terrain: Terrain, cx: number, cy: number): THREE.Group {
-  const ground = groundChunk(terrain, cx, cy, PIXELS_PER_TILE_3D)
+function buildChunk(terrain: Terrain, cx: number, cy: number, fogged: boolean): THREE.Group {
+  const ground = groundChunk(terrain, cx, cy, PIXELS_PER_TILE_3D, fogged)
   const left = cx * CHUNK_SIZE
   const top = cy * CHUNK_SIZE
   const tileAt = ground.tileAt
   // A square for each tile, the water's a little lower than the land's, so the picture lies on it unstretched and every
-  // edge stays hard.
-  const positions: number[] = []
-  const uvs: number[] = []
-  const indices: number[] = []
+  // edge stays hard. Every square is flat, so every normal is straight up.
+  const tiles = CHUNK_SIZE * CHUNK_SIZE
+  const positions = new Float32Array(tiles * 4 * 3)
+  const normals = new Float32Array(tiles * 4 * 3)
+  const uvs = new Float32Array(tiles * 4 * 2)
+  const indices = new Uint16Array(tiles * 6)
+  let vertex = 0
+  let index = 0
   for (let y = 0; y < CHUNK_SIZE; y++) {
     for (let x = 0; x < CHUNK_SIZE; x++) {
       const h = isWater(tileAt(left + x, top + y)) ? -WATER_DEPTH : 0
-      const a = positions.length / 3
-      for (const [dx, dy] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
-        positions.push(left + x + dx, h, top + y + dy)
-        uvs.push((x + dx) / CHUNK_SIZE, (y + dy) / CHUNK_SIZE)
+      const a = vertex
+      for (let corner = 0; corner < 4; corner++) {
+        const dx = corner & 1
+        const dy = corner >> 1
+        positions[vertex * 3] = left + x + dx
+        positions[vertex * 3 + 1] = h
+        positions[vertex * 3 + 2] = top + y + dy
+        normals[vertex * 3 + 1] = 1
+        uvs[vertex * 2] = (x + dx) / CHUNK_SIZE
+        uvs[vertex * 2 + 1] = (y + dy) / CHUNK_SIZE
+        vertex++
       }
-      indices.push(a, a + 2, a + 1, a + 1, a + 2, a + 3)
+      for (const offset of QUAD) indices[index++] = a + offset
     }
   }
   const sheet = new THREE.BufferGeometry()
-  sheet.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
-  sheet.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
-  sheet.setIndex(indices)
-  sheet.computeVertexNormals()
+  sheet.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  sheet.setAttribute('normal', new THREE.BufferAttribute(normals, 3))
+  sheet.setAttribute('uv', new THREE.BufferAttribute(uvs, 2))
+  sheet.setIndex(new THREE.BufferAttribute(indices, 1))
   const texture = new THREE.DataTexture(ground.pixels, ground.size, ground.size, THREE.RGBAFormat)
   texture.colorSpace = THREE.SRGBColorSpace
   // Its pixels drawn sharp: every edge between grounds is a hard line, never smeared.
@@ -197,7 +279,10 @@ function buildChunk(terrain: Terrain, cx: number, cy: number): THREE.Group {
   texture.wrapT = THREE.ClampToEdgeWrapping
   texture.anisotropy = 4
   texture.needsUpdate = true
-  const mesh = new THREE.Mesh(sheet, new THREE.MeshStandardMaterial({ map: texture, roughness: 1, metalness: 0 }))
+  const material = new THREE.MeshStandardMaterial({ map: texture, roughness: 1, metalness: 0 })
+  const depth = fogged ? fogDepth(terrain, cx, cy) : undefined
+  if (depth) seaUnderFog(material, fogDepthTexture(depth), left, top)
+  const mesh = new THREE.Mesh(sheet, material)
   mesh.receiveShadow = true
   const made = new THREE.Group()
   made.add(mesh)
@@ -205,14 +290,22 @@ function buildChunk(terrain: Terrain, cx: number, cy: number): THREE.Group {
   if (walls) made.add(walls)
   const banks = banksOf(left, top, tileAt)
   if (banks) made.add(banks)
-  const surf = surfOf(left, top, tileAt, ground.seaDistance)
+  // (No surf breaks on a far island's coast under its fog: it would show through where the coast is.)
+  const fogCoast = depth ? (x: number, y: number) => fogDepthAt(depth, x - left + 0.5, y - top + 0.5) > FOG_REACH - SURF_REACH - 2 : () => false
+  const surf = surfOf(left, top, tileAt, ground.seaDistance, fogCoast)
   if (surf) made.add(surf)
   return made
 }
 
 // The surf over a chunk's sea near the land (see surfMaterial): a square over each tile of it, on the water, with how far
-// from the land each of its corners is, for the waves to roll in by.
-function surfOf(left: number, top: number, tileAt: (x: number, y: number) => GroundKind, seaDistance: (x: number, y: number) => number): THREE.Mesh | undefined {
+// from the land each of its corners is, for the waves to roll in by. None by the coasts `hidden` says are hidden.
+function surfOf(
+  left: number,
+  top: number,
+  tileAt: (x: number, y: number) => GroundKind,
+  seaDistance: (x: number, y: number) => number,
+  hidden: (x: number, y: number) => boolean,
+): THREE.Mesh | undefined {
   // How far from the land's edge a corner of tiles is (0 where it touches land).
   const cornerDistance = (x: number, y: number): number => {
     const round = [[x - 1, y - 1], [x, y - 1], [x - 1, y], [x, y]]
@@ -224,7 +317,7 @@ function surfOf(left: number, top: number, tileAt: (x: number, y: number) => Gro
   const local: number[] = []
   for (let y = top; y < top + CHUNK_SIZE; y++) {
     for (let x = left; x < left + CHUNK_SIZE; x++) {
-      if (tileAt(x, y).kind !== 'sea' || seaDistance(x, y) > SURF_REACH + 1.5) continue
+      if (tileAt(x, y).kind !== 'sea' || seaDistance(x, y) > SURF_REACH + 1.5 || hidden(x, y)) continue
       const c = [cornerDistance(x, y), cornerDistance(x + 1, y), cornerDistance(x, y + 1), cornerDistance(x + 1, y + 1)]
       const h = 0.01 - WATER_DEPTH
       for (const [cx, cy] of [[0, 0], [0, 1], [1, 0], [1, 0], [0, 1], [1, 1]]) {
@@ -291,7 +384,7 @@ function banksOf(left: number, top: number, tileAt: (x: number, y: number) => Gr
       for (const [nx, ny, ax, ay, bx, by] of sides) {
         const beside = tileAt(nx, ny)
         if (beside.kind !== 'land') continue
-        const [upper, lower] = beside.rocky ? BANK_ROCK : tile.kind === 'sea' ? BANK_SAND : BANK_EARTH
+        const [upper, lower] = beside.fogged ? BANK_FOG : beside.rocky ? BANK_ROCK : tile.kind === 'sea' ? BANK_SAND : BANK_EARTH
         faces.add(
           [
             [ax, 0, ay],

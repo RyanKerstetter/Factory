@@ -77,5 +77,57 @@
     "leash": 0,
     "attack": { "kind": "touch", "damage": 30, "lifetime": 9 },
     "drops": []
+  },
+  "goblin": {
+    "id": 5,
+    "name": "Goblin",
+    "hp": 50,
+    "armor": 2,
+    "speed": 4.2,
+    "size": 0.85,
+    "halfSize": 0.28,
+    "aggroRadius": 6,
+    "leash": 30,
+    "attack": { "kind": "melee", "reach": 0.25, "damage": 12, "cooldown": 1, "knockback": 0.5 },
+    "drops": []
+  },
+  "bee": {
+    "id": 6,
+    "name": "Bee",
+    "hp": 4,
+    "armor": 0,
+    "speed": 3.6,
+    "size": 0.35,
+    "halfSize": 0.12,
+    "aggroRadius": 0,
+    "leash": 22,
+    "attack": { "kind": "sting", "damage": 4, "cooldown": 1.2 },
+    "drops": []
+  },
+  "mummy": {
+    "id": 8,
+    "name": "Mummy",
+    "hp": 110,
+    "armor": 4,
+    "speed": 2.6,
+    "size": 1.0,
+    "halfSize": 0.3,
+    "aggroRadius": 6,
+    "leash": 30,
+    "attack": { "kind": "melee", "reach": 0.3, "damage": 20, "cooldown": 1.5, "knockback": 0.8 },
+    "drops": []
+  },
+  "queen-bee": {
+    "id": 7,
+    "name": "Queen bee",
+    "hp": 12,
+    "armor": 0,
+    "speed": 1.8,
+    "size": 0.5,
+    "halfSize": 0.16,
+    "aggroRadius": 0,
+    "leash": 0,
+    "attack": { "kind": "queen" },
+    "drops": []
   }
 }

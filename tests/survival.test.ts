@@ -135,22 +135,20 @@ test('deer drop meat and hides; wolves drop hides and fangs; the items they used
   assert.equal(cookingOf(itemId('egg'), 'campfire')?.into, itemId('fried-egg'), 'an egg fries')
 })
 
-test('a wolf that gives up a chase at the edge of its ground does not take it up again and again', () => {
+test('a wolf never gives up a hunt, however far the player gets, until they leave the game', () => {
   const { room, client } = arena('CALM')
   const wolf = room.animals!.spawn(animalDef('wolf'), center(10, 0).x, center(10, 0).y)
-  const leash = animalDef('wolf').hunt!.leash
-  // The player stands just past the leash from the wolf's home, and the wolf beside them (as if it chased them there).
-  client.player.position = { x: wolf.homeX - leash - SUB, y: wolf.homeY }
-  wolf.x = client.player.position.x + 2 * SUB
   room.animals!.damage(wolf.id, 1, client.player.position, room.tick, {}, client.player.id)
-  let changes = 0
-  let last = wolf.target
-  for (let i = 0; i < 8 * TPS; i++) {
-    run(room, [client], 1)
-    if (wolf.target !== last) changes++
-    last = wolf.target
-  }
-  assert.ok(changes <= 1, `it gave up once and stayed calm (${changes} changes)`)
+  run(room, [client], 2)
+  client.player.position = center(-80, 0)
+  run(room, [client], 10 * TPS)
+  assert.equal(wolf.target, client.player.id, 'still after them, 90 tiles off')
+  // Someone else nearby keeps the wolf's ground going (animals only run where players are).
+  const watcher = new TestClient(room, 'Watcher')
+  watcher.player.position = { x: wolf.x, y: wolf.y - 20 * SUB }
+  room.leave(client.player)
+  run(room, [watcher], 2 * TPS)
+  assert.equal(wolf.target, 0, 'they left: it lets them be')
 })
 
 test('a deer on a rope runs, and drags whoever holds it', () => {
@@ -234,8 +232,6 @@ test('a wolf that is hit backs off and does not bite straight back; once its rec
   const wolf = animalDef('wolf')
   const at = client.player.position
   const biter = room.animals!.spawn(wolf, at.x + Math.round(0.7 * SUB), at.y)
-  biter.homeX = at.x
-  biter.homeY = at.y
   // On the player, its bite ready.
   room.animals!.damage(biter.id, 0, { x: at.x + 5 * SUB, y: at.y }, room.tick, {}, client.player.id)
   biter.recoilUntil = 0

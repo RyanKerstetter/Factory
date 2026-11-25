@@ -44,8 +44,11 @@ export type ItemDef = {
   // Armour: the slot it is worn in, how many degrees warmer it keeps its wearer (see cold.ts), and how much less damage
   // each hit does to them (see `damageAfterArmor`).
   armor?: { slot: ArmorSlot; warmth: number; defense: number }
-  // Food: how much health eating one gives back.
+  // Food: how much health eating one gives back; or how much it hurts (`hurts`: it is not eaten if that would kill),
+  // and whether it gives truesight (the far islands' fog lifts for whoever eats it: see `isFoggedAt`).
   heals?: number
+  hurts?: number
+  truesight?: boolean
 }
 
 export const ARMOR_SLOTS = ['head', 'body', 'feet'] as const
@@ -65,7 +68,7 @@ export type ToolKind = (typeof TOOL_KINDS)[number]
 // the items are read, so each is checked as part of its item.
 const ITEM_FIELDS = ['id', 'key', 'name', 'category', 'color', 'mineTicks', 'weight', 'places', 'tool', 'stack', 'tags', 'crop', 'icon', 'fuel', 'bucket']
 const STAT_FILES = [
-  { file: 'food.json', data: foodData as Record<string, unknown>, fields: ['heals'] },
+  { file: 'food.json', data: foodData as Record<string, unknown>, fields: ['heals', 'hurts', 'truesight'] },
   { file: 'armor.json', data: armorData as Record<string, unknown>, fields: ['slot', 'warmth', 'defense'] },
 ] as const
 
@@ -133,6 +136,8 @@ function parseItems(data: unknown): ItemDef[] {
       ...(bucket !== undefined ? { bucket: bucket as string } : {}),
       ...(armor ? { armor: { slot: armor.slot as ArmorSlot, warmth: wholeField(armor, 'warmth', fail), defense: wholeField(armor, 'defense', fail, 0, 0) } } : {}),
       ...(food?.heals !== undefined ? { heals: wholeField(food, 'heals', fail, 1) } : {}),
+      ...(food?.hurts !== undefined ? { hurts: wholeField(food, 'hurts', fail, 1) } : {}),
+      ...(food?.truesight === true ? { truesight: true } : {}),
     }
   })
   return items

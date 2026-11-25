@@ -67,18 +67,28 @@ export type IsSolid = (x: number, y: number) => Solid
 // Whether a tile slows whoever walks over it (a bush).
 export type IsSlow = (x: number, y: number) => boolean
 
-const WHOLE_TILE: readonly Box[] = [[0, 0, SUB, SUB]]
-
 const MIN_UNITS = WORLD_MIN_TILE * SUB
 const MAX_UNITS = (WORLD_MAX_TILE + 1) * SUB - 1
 
-// Calls `each` with every solid box in the tiles from tx0, ty0 to tx1, ty1, in world units: [left, top, right, bottom).
-function eachBox(solid: IsSolid, tx0: number, ty0: number, tx1: number, ty1: number, each: (box: Box) => void): void {
+// Calls `each` with every solid box in the tiles from tx0, ty0 to tx1, ty1, in world units: left, top, right, bottom
+// (the right and bottom edges not included). As numbers, not arrays: everything that walks calls this many times a tick,
+// and it allocates nothing.
+type EachBox = (left: number, top: number, right: number, bottom: number) => void
+function eachBox(solid: IsSolid, tx0: number, ty0: number, tx1: number, ty1: number, each: EachBox): void {
   for (let ty = ty0; ty <= ty1; ty++) {
     for (let tx = tx0; tx <= tx1; tx++) {
       const found = solid(tx, ty)
       if (found === false) continue
-      for (const [x0, y0, x1, y1] of found === true ? WHOLE_TILE : found) each([tx * SUB + x0, ty * SUB + y0, tx * SUB + x1, ty * SUB + y1])
+      const ox = tx * SUB
+      const oy = ty * SUB
+      if (found === true) {
+        each(ox, oy, ox + SUB, oy + SUB)
+        continue
+      }
+      for (let i = 0; i < found.length; i++) {
+        const box = found[i]
+        each(ox + box[0], oy + box[1], ox + box[2], oy + box[3])
+      }
     }
   }
 }
@@ -183,9 +193,12 @@ function stopAlong(from: number, to: number, across: number, solid: IsSolid, ver
   const a0 = floorDiv(acrossLow, SUB)
   const a1 = floorDiv(acrossHigh, SUB)
   let stop = to
-  const each = (box: Box): void => {
+  const each: EachBox = (left, top, right, bottom) => {
     // Along is the axis it moves on, across the other.
-    const [along0, across0, along1, across1] = vertical ? [box[1], box[0], box[3], box[2]] : box
+    const along0 = vertical ? top : left
+    const along1 = vertical ? bottom : right
+    const across0 = vertical ? left : top
+    const across1 = vertical ? right : bottom
     if (acrossLow >= across1 || acrossHigh < across0) return
     // Already over it: it does not stop it.
     if (from - half < along1 && from + half >= along0) return
@@ -199,7 +212,15 @@ function stopAlong(from: number, to: number, across: number, solid: IsSolid, ver
 
 // Whether a player (or a square `half` units to each side) standing at `position` is over anything solid.
 export function overlapsSolid(position: PlayerPosition, solid: IsSolid, half = PLAYER_HALF_SIZE): boolean {
-  return overlapping(position, solid, half).length > 0
+  const x0 = position.x - half
+  const x1 = position.x + half
+  const y0 = position.y - half
+  const y1 = position.y + half
+  let over = false
+  eachBox(solid, floorDiv(x0, SUB), floorDiv(y0, SUB), floorDiv(x1, SUB), floorDiv(y1, SUB), (left, top, right, bottom) => {
+    if (!over && x0 < right && x1 >= left && y0 < bottom && y1 >= top) over = true
+  })
+  return over
 }
 
 // The solid boxes a square standing at `position` is over.
@@ -209,8 +230,8 @@ function overlapping(position: PlayerPosition, solid: IsSolid, half: number): Bo
   const y0 = position.y - half
   const y1 = position.y + half
   const found: Box[] = []
-  eachBox(solid, floorDiv(x0, SUB), floorDiv(y0, SUB), floorDiv(x1, SUB), floorDiv(y1, SUB), (box) => {
-    if (x0 < box[2] && x1 >= box[0] && y0 < box[3] && y1 >= box[1]) found.push(box)
+  eachBox(solid, floorDiv(x0, SUB), floorDiv(y0, SUB), floorDiv(x1, SUB), floorDiv(y1, SUB), (left, top, right, bottom) => {
+    if (x0 < right && x1 >= left && y0 < bottom && y1 >= top) found.push([left, top, right, bottom])
   })
   return found
 }

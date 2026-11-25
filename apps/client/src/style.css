@@ -1149,6 +1149,25 @@ kbd {
   background: #8a1420;
 }
 
+.liquid-drop.is-honey {
+  background: #e0961a;
+}
+
+/* Smoke, as what a fire makes from leaves: a grey puff. */
+.smoke-puff {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #e4e4e0 0 30%, #b8b8b4 60%, #8c8c88 100%);
+  box-shadow: 6px -4px 0 -3px #c8c8c4, -5px 3px 0 -4px #a8a8a4;
+}
+
+.recipe-detail-img.smoke-puff {
+  width: 32px;
+  height: 32px;
+}
+
 .recipe-detail-img.liquid-drop {
   width: 32px;
   height: 32px;
@@ -1363,6 +1382,10 @@ kbd {
 
 .gauge-fill.is-blood {
   background: #9a1a26;
+}
+
+.gauge-fill.is-honey {
+  background: #e8a020;
 }
 
 .gauge-fill.is-plain {

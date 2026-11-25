@@ -31,6 +31,11 @@ export type StreamEvent =
   | { k: 'room'; host: string; pvp: boolean }
   // A player was hurt by another (`amount`), and whether that knocked them out (back to the spawn, healed).
   | { k: 'hurt'; id: number; amount: number; died: boolean }
+  // A target dummy was hit, this hard (it never breaks: this is only to show the number).
+  | { k: 'dummy'; id: number; amount: number }
+  // The player has truesight (they ate a truesight flesh): the fog over the far islands is lifted for them. Sent on
+  // joining, if they have it, and when they get it.
+  | { k: 'sight' }
   // What a player holds (an item ID, 0 for nothing) and wears (head, body, feet: item IDs, 0 for none), for drawing
   // them: sent to everyone when it changes, and of everyone to a player who joins.
   | { k: 'gear'; id: number; held: number; armor: number[] }
@@ -90,6 +95,8 @@ export function eventPhase(event: StreamEvent): EventPhase {
     case 'roster':
     case 'room':
     case 'hurt':
+    case 'dummy':
+    case 'sight':
     case 'gear':
     case 'swung':
     case 'monster':

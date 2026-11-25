@@ -241,7 +241,8 @@ export function flightTicks(range: number, speed: number): number {
   return Math.max(1, Math.ceil(range / Math.max(1, speed)))
 }
 
-// Bare fists: what a player attacks with holding nothing that is a weapon.
+// Bare fists: what a player attacks with holding nothing that is a weapon (nothing at all, or logs, seeds, a hide: any
+// item that is not a weapon or a tool is punched with).
 const HAND = WEAPONS.get('hand')!
 
 // What an attack holding an item is made with: the item's weapon, if it is one; fists otherwise (and holding nothing).
@@ -255,13 +256,6 @@ export function weaponIn(inventory: Inventory, slot: number): Weapon {
   return weaponOf(held && held.count > 0 ? held.item : NO_ITEM)
 }
 
-// Whether a player can attack holding what is in a slot: a weapon (or a tool), or nothing (an empty slot, or the bare
-// hand, slot -1). Holding anything else (logs, seeds), there is no attack: fists are for an empty hand.
-export function canAttackWith(inventory: Inventory, slot: number): boolean {
-  const held = inventory.slots[slot]
-  return !held || held.count === 0 || WEAPONS.has(getItem(held.item).key)
-}
-
 // What an attack with a weapon does to a plant, a rock or a building: a tree only gives way to an axe and a rock to a
 // pickaxe, and what a player put down only to an axe, each by the weapon's `harvest` (0: it cannot be broken that way;
 // a tree hit with anything else gives up sticks, or bark to a knife). A bush takes any weapon's; grass, saplings and
@@ -271,9 +265,17 @@ export function resourceDamage(kind: BuildingKind, weapon: Weapon, tool: ToolKin
     case 'tree':
       return tool === 'axe' ? weapon.harvest : 0
     case 'rock':
+    case 'clay':
+    case 'copper-rock':
+    case 'tin-rock':
       return tool === 'pickaxe' ? weapon.harvest : 0
     case 'bush':
+    case 'sand':
+    case 'cactus':
       return weapon.harvest
+    // A wild beehive: a punch knocks a honeycomb out of it without hurting it; anything else hurts it.
+    case 'hive':
+      return weapon.key === 'hand' ? 0 : weapon.harvest
     default:
       // Anything a player put down (see `breakable` in buildings.ts) only comes down to an axe.
       return BUILDINGS[kind].breakable ? (tool === 'axe' ? weapon.harvest : 0) : 1

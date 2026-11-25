@@ -8,7 +8,7 @@ import { playerOverlapsTile, type Box, type IsSlow, type IsSolid } from './movem
 import type { FactoryWorld } from './sim/factory-world.ts'
 import { groundBlocks, oreAt, waterAt } from './world-gen.ts'
 import { isInDungeons } from './dungeon.ts'
-import { canGrowAt, type Terrain } from './terrain.ts'
+import { canGrowAt, isSandAt, type Terrain } from './terrain.ts'
 
 // What a player asks to happen to the factory. A client sends it stamped with the tick it should run on; the server
 // checks it on that tick and runs it, runs part of it ("take up to 50"), or turns it down, and logs what happened.
@@ -44,6 +44,8 @@ export type Command =
   // their inventory is open with nothing else (its crafting book showing), which hand crafting only goes on while
   // (closing it calls off everything being made by hand).
   | { k: 'use'; id: number; hand?: true }
+  // Pick a target dummy back up (Ctrl + right click), as the item that put it down.
+  | { k: 'lift'; id: number }
   // Open a gate and keep it open, or shut it and keep it shut.
   | { k: 'toggle'; id: number }
   // Attack with what is in slot `slot` (-1: bare-handed), towards the point x, y (in units) (see weapons.ts). `seen` is
@@ -130,12 +132,17 @@ export const REFUSALS = {
   postTaken: 'Something is already tied to that fence.',
   notTied: 'Nothing is tied to that fence.',
   notEmpty: 'Something is already growing there.',
+  notDryable: 'That does not dry on a drying rack.',
+  rackFull: 'There is already a hide on the rack.',
   noRecipe: 'There is no such recipe.',
   lacking: 'You do not have what that needs.',
   full: 'There is no room for it.',
   notPlaceable: 'That cannot be put down.',
   notFood: 'That cannot be eaten.',
   fullHealth: 'You are not hurt.',
+  wouldKill: 'Eating that now would kill you: you need more health.',
+  fogged: 'That is lost in the fog: eat a truesight flesh to see your way there.',
+  onlySand: 'A cactus only grows on sand.',
   notBed: 'That is not a sleeping bag.',
   invalid: 'The server could not read that.',
   busy: 'It is making something else.',
@@ -159,8 +166,10 @@ function checkTile(world: FactoryWorld, terrain: Terrain | undefined, player: { 
   if (world.entityAt(x, y)) return 'occupied'
   if (isInDungeons(x, y)) return 'dungeon'
   if (terrain !== undefined && waterAt(terrain, x, y)) return 'water'
-  // A plant only on ground it grows in: not sand, not the mountains' rock and snow.
-  if (terrain !== undefined && (kind === 'grass' || kind === 'sprout' || kind === 'sapling') && !canGrowAt(terrain, x, y)) return 'barren'
+  // A plant only on ground it grows in: not sand, not the mountains' rock and snow (a sunflower seed needs no garden
+  // plot, only soil); a cactus only on sand.
+  if (terrain !== undefined && (kind === 'grass' || kind === 'sprout' || kind === 'sapling' || kind === 'seedling') && !canGrowAt(terrain, x, y)) return 'barren'
+  if (terrain !== undefined && kind === 'cactus' && !isSandAt(terrain, x, y)) return 'onlySand'
   if (BUILDINGS[kind].solid && playerOverlapsTile(player, x, y)) return 'standing'
   return undefined
 }

@@ -14,6 +14,8 @@ export type BookEntry = {
   category: string
   output: ItemId
   outputLiquid?: BookLiquid
+  // A fire's recipe that makes smoke rather than anything (leaves burnt for it).
+  outputSmoke?: boolean
   count: number
   inputs: ReadonlyArray<{ item: ItemId; need: number; have: number; liquid?: BookLiquid; label?: string }>
   tool?: { name: string; have: boolean }
@@ -63,11 +65,26 @@ export function itemIcon(item: ItemId, className = 'slot-icon'): HTMLImageElemen
 
 // What a recipe makes, as its name (and how many), and its picture.
 function nameOf(entry: BookEntry): string {
-  const name = entry.outputLiquid ? liquidName(entry.outputLiquid) : getItem(entry.output).name
+  const name = entry.outputSmoke ? 'Smoke' : entry.outputLiquid ? liquidName(entry.outputLiquid) : getItem(entry.output).name
   return entry.count > 1 ? `${name} × ${entry.count}` : name
 }
 function outputIcon(entry: BookEntry, className?: string): HTMLElement {
+  if (entry.outputSmoke) return smokeIcon(className)
   return entry.outputLiquid ? liquidIcon(entry.outputLiquid, className) : itemIcon(entry.output, className)
+}
+
+// What hovering a recipe's tile says: what it makes and how many, and what that is good for (a weapon's damage, a
+// food's healing, armour's warmth: see itemTip).
+function tileTip(entry: BookEntry): string {
+  if (entry.outputSmoke || entry.outputLiquid) return nameOf(entry)
+  return [nameOf(entry), ...itemTip(entry.output).split('\n').slice(1)].join('\n')
+}
+
+// Smoke's picture: a grey puff.
+function smokeIcon(className = 'slot-icon'): HTMLElement {
+  const puff = element('span', `${className} smoke-puff`)
+  puff.dataset.tip = 'Smoke: angry bees near the fire calm down'
+  return puff
 }
 
 // The groups recipes are shown in, in this order (a recipe's `category`); any other group (a machine's own: cooking,
@@ -175,8 +192,10 @@ export function createRecipeBook(title: string, actionLabel: string, onAction: (
         nodes.push(element('h3', 'recipe-category', category), grid)
       }
       const tile = button('recipe-tile', '', () => select(entry.id))
-      tile.append(outputIcon(entry))
-      tile.dataset.tip = nameOf(entry)
+      // The whole tile tells what its picture does (its name, how many, and what it is good for), edge and all.
+      const icon = outputIcon(entry)
+      icon.dataset.tip = tile.dataset.tip = tileTip(entry)
+      tile.append(icon)
       if (entry.count > 1) tile.append(element('span', 'recipe-tile-count', `${entry.count}`))
       if (entry.heat) tile.append(element('span', 'recipe-tile-heat', `${entry.heat.need}°`))
       tiles.set(entry.id, tile)

@@ -7,5 +7,6 @@
   "cooked-chicken": { "heals": 20 },
   "fried-egg": { "heals": 16 },
   "bread": { "heals": 20 },
-  "breakfast-sandwich": { "heals": 50 }
+  "breakfast-sandwich": { "heals": 50 },
+  "truesight-flesh": { "hurts": 99, "truesight": true }
 }

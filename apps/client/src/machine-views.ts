@@ -12,8 +12,6 @@ import {
   CAMPFIRE_COOKED,
   CAMPFIRE_FUEL,
   countIn,
-  RACK_INPUT,
-  RACK_OUTPUT,
   BARREL_OUTPUT,
   BARREL_SOLIDS,
   barrelFraction,
@@ -26,7 +24,6 @@ import {
   bucketFor,
   LIQUIDS,
   matches,
-  RACK_RECIPES,
   type Match,
   cookFraction,
   cookingOf,
@@ -38,7 +35,6 @@ import {
   HEAT_MAX,
   haveForStation,
   ITEMS,
-  rackFraction,
   STATION_LAYOUT,
   STATION_RECIPES,
   TPS,
@@ -116,22 +112,6 @@ export function machineView(entity: Entity, player: Inventory, inv: Inventory, a
         status: barrelStatus(entity),
       }
     }
-    case 'rack': {
-      return {
-        inputs: [{ index: RACK_INPUT }],
-        outputs: [{ index: RACK_OUTPUT }],
-        gauges: [heatGauge(entity.heat)],
-        buttons: [],
-        status: entity.inv.slots[RACK_INPUT].count > 0 ? `Drying ${matchName(entity.inv.slots[RACK_INPUT].item).toLowerCase()}` : 'Not drying',
-        recipes: {
-          title: 'Drying rack',
-          action: '',
-          entries: RACK_RECIPES.map((recipe) =>
-            entry(recipe.index, 'Drying', recipe.output, 1, [ingredient(recipe.input, 1, haveForStation(player, inv, recipe.input, [RACK_INPUT]))], recipe.ticks / TPS),
-          ),
-        },
-      }
-    }
     default:
       return undefined
   }
@@ -148,6 +128,7 @@ function fireStatus(kind: FireKind, inv: Inventory, heat: number): string {
   const cooks = raw.count > 0 ? cookingOf(raw.item, kind) : undefined
   if (!cooks) return kind === 'oven' ? 'Not baking' : 'Not cooking'
   const what = matchName(raw.item).toLowerCase()
+  if (cooks.smoke) return heat >= cooks.heat ? `Making smoke from ${what}` : `Waiting for ${cooks.heat}° to make smoke from ${what}`
   return heat >= cooks.heat ? `${cooks.oven ? 'Baking' : 'Cooking'} ${what}` : `Waiting for ${cooks.heat}° to cook ${what}`
 }
 function barrelStatus(barrel: Barrel): string {
@@ -170,8 +151,6 @@ export function machineProgress(entity: Entity, alpha: number): number | undefin
       return cookFraction(entity)
     case 'barrel':
       return barrelFraction(entity)
-    case 'rack':
-      return rackFraction(entity)
     case 'altar':
       return ritualFraction(entity, entity.recipe ? alpha : 0)
     default:
@@ -240,11 +219,12 @@ function stationBook(kind: StationKind, player: Inventory, inv: Inventory): Book
 }
 
 // What a campfire or an oven cooks (and how hot it has to be: it is `heat` now; an oven quicker, and what only an oven
-// can).
+// can). What burns away into smoke (leaves) shows smoke as what it makes.
 function fireBook(kind: FireKind, player: Inventory, inv: Inventory, heat: number): BookEntry[] {
   const speed = kind === 'oven' ? OVEN_COOK_SPEED : 1
   return fireRecipes(kind).map((recipe) => ({
-    ...entry(recipe.index, recipe.oven ? 'Baking' : 'Cooking', recipe.into, 1, [ingredient(recipe.input, 1, haveForStation(player, inv, recipe.input, [CAMPFIRE_COOK]))], recipe.ticks / TPS / speed),
+    ...entry(recipe.index, recipe.oven ? 'Baking' : 'Cooking', recipe.smoke ? recipe.input : recipe.into, 1, [ingredient(recipe.input, 1, haveForStation(player, inv, recipe.input, [CAMPFIRE_COOK]))], recipe.ticks / TPS / speed),
+    ...(recipe.smoke ? { outputSmoke: true } : {}),
     heat: { need: recipe.heat, now: heat },
   }))
 }

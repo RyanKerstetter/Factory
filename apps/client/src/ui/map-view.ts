@@ -6,6 +6,9 @@ import {
   chunkId,
   dungeonEntrance,
   floorDiv,
+  goblinCampSites,
+  tombSites,
+  isFoggedAt,
   isSeaAt,
   coastAround,
   isShelf,
@@ -26,6 +29,7 @@ import { element } from './dom.ts'
 // explored (sea, shelf, beach, forest, ponds, rock and snow), with what stands on it (trees, bushes, rocks, and what
 // players have built, each a little picture PX pixels a side), and the camps and the way into the dungeon show once
 // found. What stands on ground the page has loaded is drawn as it is now (`things`); elsewhere, as the seed grew it.
+// The far islands (the desert, the meadow) show only as fog, with nothing on them, until the player has truesight.
 // It shows round the player, and dragging it with the left button looks around, as far as you like (a double click, or
 // opening it again, brings it back to the player). The mouse wheel (or its + and - buttons) zooms it in and out, from
 // ZOOM_MIN to ZOOM_MAX times its own size, about the mouse; the zoom is kept while the page is open.
@@ -56,6 +60,9 @@ const GRASS: Rgb = [0x6a, 0x8f, 0x3e]
 const POND: Rgb = [0x3a, 0x74, 0xb0]
 const ROCK: Rgb = [0x8b, 0x8f, 0x96]
 const SNOW: Rgb = [0xe8, 0xef, 0xf8]
+const MEADOW: Rgb = [0x7f, 0xa8, 0x48]
+// The fog over the far islands, for a player without truesight.
+const FOG: Rgb = [0xc4, 0xc8, 0xcc]
 // What stands on the ground, as a little picture: each row of PX letters, '.' the ground showing through.
 const LEAF: Rgb = [0x2f, 0x5a, 0x24]
 const LEAF_LIGHT: Rgb = [0x44, 0x75, 0x30]
@@ -70,10 +77,23 @@ const SOIL: Rgb = [0x4e, 0x36, 0x24]
 const SPROUT: Rgb = [0x7c, 0xb0, 0x4a]
 const FIRE: Rgb = [0xf0, 0x8a, 0x2c]
 const BONE: Rgb = [0xe6, 0xdf, 0xc8]
+const HAY: Rgb = [0xd8, 0xc2, 0x7a]
 const BLOOD: Rgb = [0x7a, 0x0f, 0x1a]
 const DARK_STONE: Rgb = [0x2c, 0x28, 0x30]
 const WAYSTONE: Rgb = [0x87, 0x8c, 0xa7]
 const ESSENCE: Rgb = [0x8f, 0xd6, 0xff]
+const PETAL: Rgb = [0xf2, 0xc4, 0x1c]
+const SEED: Rgb = [0x5a, 0x3a, 0x1c]
+const STEM: Rgb = [0x4f, 0x8a, 0x3a]
+const CLAY: Rgb = [0xa8, 0x64, 0x4a]
+const CLAY_DARK: Rgb = [0x84, 0x4c, 0x38]
+const COPPER: Rgb = [0xd2, 0x7a, 0x3c]
+const TIN: Rgb = [0xdc, 0xdf, 0xd4]
+const CACTUS: Rgb = [0x3c, 0x7a, 0x3a]
+const SAND_DARK: Rgb = [0xc0, 0xa4, 0x68]
+const WEB: Rgb = [0xee, 0xee, 0xe8]
+const HONEY: Rgb = [0xe8, 0xa8, 0x2c]
+const COMB: Rgb = [0xb8, 0x7a, 0x1c]
 type Glyph = { rows: readonly string[]; colors: Readonly<Record<string, Rgb>> }
 const GLYPHS: Partial<Record<BuildingKind, Glyph>> = {
   tree: { rows: ['.ll.', 'lLLL', 'LLLL', '.tt.'], colors: { l: LEAF_LIGHT, L: LEAF, t: TRUNK } },
@@ -90,7 +110,18 @@ const GLYPHS: Partial<Record<BuildingKind, Glyph>> = {
   altar: { rows: ['b..b', 'bRRb', 'sRRs', 'ssss'], colors: { b: BONE, R: BLOOD, s: DARK_STONE } },
   pedestal: { rows: ['ssss', '.s..', '.s..', 'ssss'], colors: { s: STONE } },
   waystone: { rows: ['.ss.', 'sees', 'ssss', 'dddd'], colors: { s: WAYSTONE, e: ESSENCE, d: DARK_STONE } },
+  dummy: { rows: ['.hh.', 'hhhh', '.hh.', '.ww.'], colors: { h: HAY, w: WOOD } },
   worker: { rows: ['.bb.', '.eb.', 'bbbb', '.bb.'], colors: { b: BONE, e: ESSENCE } },
+  sunflower: { rows: ['.pp.', 'pssp', '.pp.', '.g..'], colors: { p: PETAL, s: SEED, g: STEM } },
+  seedling: { rows: ['....', '.g..', '.gg.', '....'], colors: { g: SPROUT } },
+  clay: { rows: ['....', '.cc.', 'cCCc', 'CCCC'], colors: { c: CLAY, C: CLAY_DARK } },
+  'copper-rock': { rows: ['....', '.so.', 'sSoS', 'SoSS'], colors: { s: STONE_LIGHT, S: STONE, o: COPPER } },
+  'tin-rock': { rows: ['....', '.so.', 'sSoS', 'SoSS'], colors: { s: STONE_LIGHT, S: STONE, o: TIN } },
+  cactus: { rows: ['.c..', 'cc.c', '.ccc', '.c..'], colors: { c: CACTUS } },
+  sand: { rows: ['....', '.dd.', 'dddd', '....'], colors: { d: SAND_DARK } },
+  cobweb: { rows: ['w..w', '.ww.', '.ww.', 'w..w'], colors: { w: WEB } },
+  hive: { rows: ['.hh.', 'hcch', 'hcch', '.hh.'], colors: { h: HONEY, c: COMB } },
+  'beebox': { rows: ['wwww', 'whhw', 'whhw', 'wwww'], colors: { w: WOOD, h: HONEY } },
 }
 // Anything else a player put down (a chest, the stations, a barrel...): a block of wood.
 const BUILT: Glyph = { rows: ['dddd', 'dwwd', 'dwwd', 'dddd'], colors: { d: WOOD_DARK, w: WOOD } }
@@ -121,6 +152,8 @@ export type MapFrame = {
   // What stands in each chunk the page has loaded (by chunk ID), as it is now; the rest is drawn as the seed grew it.
   loadedChunks: readonly number[]
   things: (chunk: number) => ReadonlyArray<{ x: number; y: number; kind: BuildingKind }>
+  // Whether the player has truesight: the far islands show as they are, not as fog.
+  fogLifted: boolean
 }
 
 export type MapView = {
@@ -174,7 +207,8 @@ export function createMapView(container: HTMLElement): MapView {
   let key = ''
   let dirty = false
   let savedAt = 0
-  let landmarks: Array<{ x: number; y: number; kind: 'camp' | 'dungeon' }> = []
+  let landmarks: Array<{ x: number; y: number; kind: 'camp' | 'goblins' | 'tomb' | 'dungeon' }> = []
+  let fogLifted = false
   // How far the view has been dragged from round the player (tiles), the drag going on, and how far it is zoomed
   // (times PX pixels a tile).
   let pan = { x: 0, y: 0 }
@@ -244,8 +278,9 @@ export function createMapView(container: HTMLElement): MapView {
         const ly = cy * CELL + ty
         const x = region.rx * REGION + lx
         const y = region.ry * REGION + ly
-        const ground = tileColor(terrain, x, y, shelfAt)
-        const kind = thingAt(x, y)
+        const fogged = !fogLifted && isFoggedAt(terrain, x, y)
+        const ground = fogged ? FOG : tileColor(terrain, x, y, shelfAt)
+        const kind = fogged ? undefined : thingAt(x, y)
         const glyph = kind === undefined || UNDRAWN.has(kind) ? undefined : (GLYPHS[kind] ?? BUILT)
         for (let py = 0; py < PX; py++) {
           for (let px = 0; px < PX; px++) {
@@ -296,9 +331,10 @@ export function createMapView(container: HTMLElement): MapView {
     flush()
   }
 
-  const start = (next: Terrain, nextKey: string): void => {
+  const start = (next: Terrain, nextKey: string, lifted: boolean): void => {
     terrain = next
     key = nextKey
+    fogLifted = lifted
     regions.clear()
     shelves.clear()
     grown.clear()
@@ -320,7 +356,14 @@ export function createMapView(container: HTMLElement): MapView {
     }
     flush()
     const entrance = dungeonEntrance(next)
-    landmarks = [...campSites(next).map((site) => ({ ...site, kind: 'camp' as const })), ...(entrance ? [{ ...entrance, kind: 'dungeon' as const }] : [])]
+    landmarks = [
+      ...campSites(next).map((site) => ({ ...site, kind: 'camp' as const })),
+      ...(entrance ? [{ ...entrance, kind: 'dungeon' as const }] : []),
+      // The goblins' camps are on the meadow and the mummies' tombs in the desert, under the fog until the player has
+      // truesight.
+      ...(lifted ? goblinCampSites(next).map((site) => ({ ...site, kind: 'goblins' as const })) : []),
+      ...(lifted ? tombSites(next).map((site) => ({ ...site, kind: 'tomb' as const })) : []),
+    ]
   }
 
   // Explores the cells round a point (tiles): those within REVEAL of it.
@@ -372,11 +415,11 @@ export function createMapView(container: HTMLElement): MapView {
     for (const mark of landmarks) {
       if (!isExplored(mark.x, mark.y)) continue
       const [px, py] = at(mark.x + 0.5, mark.y + 0.5)
-      context.fillStyle = mark.kind === 'camp' ? '#d9483b' : '#9fd6ff'
+      context.fillStyle = mark.kind === 'camp' ? '#d9483b' : mark.kind === 'goblins' ? '#7fae3a' : mark.kind === 'tomb' ? '#d9b56a' : '#9fd6ff'
       context.strokeStyle = '#0d1218'
       context.lineWidth = 2
       context.beginPath()
-      if (mark.kind === 'camp') context.arc(px, py, 5, 0, Math.PI * 2)
+      if (mark.kind !== 'dungeon') context.arc(px, py, 5, 0, Math.PI * 2)
       else context.rect(px - 5, py - 5, 10, 10)
       context.fill()
       context.stroke()
@@ -501,9 +544,9 @@ export function createMapView(container: HTMLElement): MapView {
     },
     update(frame) {
       last = frame
-      if (frame.terrain !== terrain || frame.key !== key) {
+      if (frame.terrain !== terrain || frame.key !== key || frame.fogLifted !== fogLifted) {
         save()
-        start(frame.terrain, frame.key)
+        start(frame.terrain, frame.key, frame.fogLifted)
       }
       const now = performance.now()
       if (now - refreshedAt > REFRESH_MS) {
@@ -532,6 +575,7 @@ function tileColor(terrain: Terrain, x: number, y: number, shelfAt: (x: number, 
   const biome = biomeAt(terrain, x, y)
   // Snow where the ground's picture has it (see ground-colors.ts), its line as bumpy.
   if (biome?.key === 'mountain') return snowOnTile(terrain, x, y) ? SNOW : ROCK
+  if (biome?.ground === 'sand') return SAND
   for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) if (isSeaAt(terrain, x + dx, y + dy)) return SAND
-  return GRASS
+  return biome?.key === 'meadow' ? MEADOW : GRASS
 }

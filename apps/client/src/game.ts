@@ -9,7 +9,6 @@ import {
   BOSS_MASS,
   BUILDINGS,
   canAfford,
-  canAttackWith,
   checkPlace,
   CHUNK_SIZE,
   chunkCoords,
@@ -44,6 +43,7 @@ import {
   isInDungeons,
   isStation,
   isRaftItem,
+  itemId,
   isWithinReach,
   itemByKey,
   KEY_SLOW,
@@ -73,6 +73,7 @@ import {
   playerInventory as playerInventoryOf,
   RACK_INPUT,
   RACK_OUTPUT,
+  rackRefusal,
   RECIPES,
   PLAYER_CRAFT_SPEED,
   raftOnTile,
@@ -83,6 +84,8 @@ import {
   toRaft,
   REFUSALS,
   roomFor,
+  isFoggedAt,
+  isSmoking,
   rotateCCW,
   rotateCW,
   slowIn,
@@ -147,10 +150,12 @@ import type {
   TrapView,
   WarpFlashView,
   WarpView,
+  WorldFrame,
 } from './render3d/frame.ts'
 import { drawnAt, offeringWindows } from './ritual-timeline.ts'
 import { CROP_GROWTH_STAGES } from './render3d/models.ts'
 import { createThreeView } from './render3d/three-view.ts'
+import { FrameTimer } from './frame-timer.ts'
 import { HOTBAR_ACTIONS, Settings } from './settings.ts'
 import { createDebugOverlay } from './ui/debug-overlay.ts'
 import { copyText, element } from './ui/dom.ts'
@@ -190,6 +195,8 @@ const RUSTLE_DISTANCE = 1.1 * SUB
 // A point in units, in tiles (where something is drawn, or a sound comes from).
 // How long the flash of someone going from or arriving at a waystone lasts (ms), and how long past the end of a warp
 // this page waits to hear of it before letting the player move again anyway.
+// A notch of the mouse wheel, in pixels (about what browsers call one): a hotbar slot.
+const WHEEL_NOTCH = 100
 const WARP_FLASH_MS = 900
 const WARP_GRACE_MS = 2000
 
@@ -316,6 +323,10 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   const shotSeen = new Map<number, number>()
   const shattered = new Set<number>()
   let health = PLAYER_MAX_HEALTH
+  // Whether the player has truesight (they ate a truesight flesh): until then the far islands are under fog, and
+  // nothing on them is drawn or can be walked onto. And whether they have just eaten one (to say the fog lifts).
+  let truesight = false
+  let expectingSight = false
   // How warm the player's body is, in tenths of a °C, as the server last said (see cold.ts).
   let bodyTenths = BODY_NORMAL * 10
   // The world's name (the server says it when the page joins).
@@ -454,6 +465,19 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       if (id === mirror.playerId) sounds.play('hurt')
       else if (spot) sounds.play('hit/animal', { ...tilesOf(spot), other: true })
       if (died) hud.toast(id === mirror.playerId ? 'You were knocked out, and woke up back at the start.' : `${roster.get(id) ?? 'Someone'} was knocked out.`)
+    },
+    // A target dummy hit (by anyone): it sways, with how hard rising off it.
+    onSight: () => {
+      truesight = true
+      if (expectingSight) hud.toast('The fog over the far islands lifts: you can see your way there now.')
+      expectingSight = false
+    },
+    onDummyHit: (id, amount) => {
+      const dummy = mirror.world.entity(id)
+      if (!dummy) return
+      const now = performance.now()
+      shakes.set(id, now)
+      numbers.push({ x: dummy.x + 0.5, y: dummy.y + 0.5, text: `-${amount}`, at: now })
     },
     onAnimal: (info) => {
       const lost = animalTracks.told(info, performance.now())
@@ -683,7 +707,9 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   const connection = solo ? connectLocal(solo.seed, name, handlers, solo.terrain) : connect(code, name, handlers)
   // The player walks into what the page's copy of the world says is solid, and is pushed out of it, and is slowed by
   // what it says is slow (bushes).
-  local.solid = solidIn(mirror.world, () => (mirror.started ? mirror.terrain : undefined))
+  // Without truesight, the far islands' fog is as solid as a wall (as on the server).
+  const solid = solidIn(mirror.world, () => (mirror.started ? mirror.terrain : undefined))
+  local.solid = (x, y) => (!truesight && mirror.started && mirror.terrain !== undefined && isFoggedAt(mirror.terrain, x, y) ? true : solid(x, y))
   local.slow = slowIn(mirror.world)
   // Freezing, the player is slowed here as on the server (see cold.ts), by how cold the server says its body is.
   local.speedPercent = () => coldSpeedPercent(bodyTenths)
@@ -850,7 +876,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   const startCharge = (): void => {
     const inventory = predictedInventory()
     const weapon = heldWeapon()
-    if (!welcomed || !weapon.charged || !canAttackWith(inventory, selectedSlot)) return
+    if (!welcomed || !weapon.charged) return
     if (weapon.basic === 'shot' && (weapon.ammo === undefined || countOf(inventory, weapon.ammo) === 0)) return void attack(weapon)
     charging = { slot: selectedSlot, weapon, since: performance.now(), ready: false }
     send({ k: 'charge', slot: selectedSlot })
@@ -877,10 +903,22 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     const first = targets[0]
     if (first) sounds.play(hitSound(first.kind))
   }
-  const hitColor = (kind: Entity['kind']): number =>
-    kind === 'rock' ? 0xb9bcc2 : kind === 'bush' || kind === 'grass' || kind === 'plot' ? 0x6fbf4a : 0xc49562
-  const hitSound = (kind: Entity['kind']): SoundId =>
-    kind === 'rock' ? 'punch/stone' : kind === 'bush' || kind === 'grass' || kind === 'plot' ? 'punch/leaves' : 'punch/wood'
+  // Rock and what is like it (copper, tin, clay) knock like stone; what is green or soft (sunflowers, cacti, sand, a
+  // cobweb, a wild hive's comb) rustles; the rest knocks like wood. Each sparks in its own colour.
+  const STONY: ReadonlySet<string> = new Set(['rock', 'copper-rock', 'tin-rock', 'clay'])
+  const SOFT: ReadonlySet<string> = new Set(['bush', 'grass', 'plot', 'sunflower', 'seedling', 'cactus', 'sand', 'cobweb', 'hive'])
+  const SPARKS: Readonly<Record<string, number>> = {
+    rock: 0xb9bcc2,
+    'copper-rock': 0xd27a3c,
+    'tin-rock': 0xdcdfd4,
+    clay: 0xa8644a,
+    sand: 0xe3cd94,
+    cobweb: 0xf2f2ee,
+    hive: 0xe8a020,
+    sunflower: 0xf2c41c,
+  }
+  const hitColor = (kind: Entity['kind']): number => SPARKS[kind] ?? (SOFT.has(kind) ? 0x6fbf4a : 0xc49562)
+  const hitSound = (kind: Entity['kind']): SoundId => (STONY.has(kind) ? 'punch/stone' : SOFT.has(kind) ? 'punch/leaves' : 'punch/wood')
 
   const attackSound = (weapon: Weapon): SoundId =>
     weapon.basic === 'shot' ? 'attack/shoot' : weapon.basic === 'jab' ? 'attack/jab' : weapon.basic === 'thrust' ? 'attack/thrust' : 'attack/swing'
@@ -901,10 +939,9 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     }
   }
 
-  // The left button pressed: an attack with what is held, if it is a weapon, a tool, or nothing (see canAttackWith).
-  const pressAttack = (): void => {
-    if (canAttackWith(predictedInventory(), selectedSlot)) attack(heldWeapon())
-  }
+  // The left button pressed: an attack with what is held, if it is a weapon or a tool; with anything else, or nothing,
+  // a punch (see weaponOf).
+  const pressAttack = (): void => attack(heldWeapon())
 
   // Whether the picked slot holds something put down or planted with the right button (so a drag goes on doing it).
   const holdsPlaceable = (): boolean => {
@@ -959,10 +996,24 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     return true
   }
 
+  // Whether a point (tiles) is under the far islands' fog for this player (no truesight): what is there is not drawn,
+  // and cannot be used.
+  const inFog = (x: number, y: number): boolean => !truesight && mirror.terrain !== undefined && isFoggedAt(mirror.terrain, Math.floor(x), Math.floor(y))
+
+  // Ctrl + right click: quick moves, without opening anything. A target dummy is picked back up (with no room for it,
+  // nothing). Gives whether it was one of those, else the click goes on as a plain one.
+  const quickUse = (x: number, y: number): boolean => {
+    if (inFog(x, y)) return false
+    const there = mirror.world.entityAt(x, y)
+    if (there?.kind !== 'dummy') return false
+    if (roomFor(predictedInventory(), itemId('target-dummy'), 1) > 0) send({ k: 'lift', id: there.id })
+    return true
+  }
+
   // A right click on a tile: opens a building with an inventory there, or puts down what the picked hotbar slot holds
   // (plants an acorn). A drag over tiles plants along it, skipping quietly where it cannot; a click says why not.
   const place = (x: number, y: number, quiet: boolean): void => {
-    if (!welcomed) return
+    if (!welcomed || inFog(x, y)) return
     const there = mirror.world.entityAt(x, y)
     if (there?.kind === 'gate') {
       if (!quiet) send({ k: 'toggle', id: there.id })
@@ -975,8 +1026,8 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     // A bucket or compost is used on what it is pointed at: a pond, a barrel, a garden plot.
     const using = predictedInventory().slots[selectedSlot]
     const tool = using && using.count > 0 ? getItem(using.item) : undefined
-    // A bucket fills at a pond or a well (fresh water) or the sea (salt water), empties into a barrel or onto a plot, or is emptied
-    // out on bare ground.
+    // A bucket fills at a pond or a well (fresh water) or the sea (salt water), empties into a barrel or onto a plot, or is
+    // emptied out on bare ground.
     const dumps = tool?.bucket !== undefined && tool.bucket !== 'empty' && !there
     if (tool && tool.bucket && (there?.kind === 'barrel' || there?.kind === 'plot' || (there?.kind === 'well' && tool.bucket === 'empty') || (!there && mirror.terrain !== undefined && waterAt(mirror.terrain, x, y)) || dumps)) {
       if (!quiet) send({ k: 'apply', x, y, slot: selectedSlot })
@@ -994,6 +1045,17 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
         openBuilding = undefined
         openWaystone = there.id
       }
+      return
+    }
+    // A drying rack has no panel: what is held (a hide) is hung on it, if nothing is on it yet. What has dried on it comes
+    // off with a hit, as a grown crop does (see the server's `hit`).
+    if (there?.kind === 'rack') {
+      const held = predictedInventory().slots[selectedSlot]
+      if (quiet || !held || held.count === 0) return
+      const refused = rackRefusal(there, held.item)
+      if (refused) return void hud.toast(REFUSALS[refused], 'error')
+      send({ k: 'put', id: there.id, item: held.item, max: 1, slot: selectedSlot })
+      sounds.play('move')
       return
     }
     if (there && hasInventory(there)) {
@@ -1075,6 +1137,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
         else if (mirror.world.entityAt(tile.x, tile.y)?.id !== fence) hud.toast('Nothing tied: right click an animal or a raft after the fence.')
         return
       }
+      if (event.ctrlKey && hoveredAnimal === undefined && quickUse(tile.x, tile.y)) return
       if (hoveredAnimal !== undefined) interact(hoveredAnimal)
       else if (raft === undefined || !raftClicked(raft)) place(tile.x, tile.y, false)
     }
@@ -1089,11 +1152,35 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   const onPointerLeave = (): void => {
     pointer = undefined
   }
+  // The wheel picks the hotbar slot, a slot a notch (down for the next, wrapping round; from bare hands, from the slot
+  // held before); with Ctrl held (or a trackpad pinch, which comes as one) it zooms. A trackpad's many small turns are
+  // added up, a slot for each notch's worth.
+  let wheelSlots = 0
   const onWheel = (event: WheelEvent): void => {
     event.preventDefault()
     // Lines or pages (some mice, some browsers) as pixels, a notch being about 100.
     const scale = event.deltaMode === 1 ? 33 : event.deltaMode === 2 ? 800 : 1
-    zoomTarget = zoomAfterWheel(zoomTarget, event.deltaY * scale)
+    if (event.ctrlKey) {
+      zoomTarget = zoomAfterWheel(zoomTarget, event.deltaY * scale)
+      return
+    }
+    const pixels = event.deltaY * scale
+    if (pixels === 0) return
+    let steps: number
+    if (Math.abs(pixels) >= WHEEL_NOTCH / 2) {
+      // A mouse wheel's notch (however many pixels the browser calls it): one slot.
+      steps = Math.sign(pixels)
+      wheelSlots = 0
+    } else {
+      // A trackpad's small turns, added up (starting again when it turns the other way).
+      if (Math.sign(pixels) !== Math.sign(wheelSlots)) wheelSlots = 0
+      wheelSlots += pixels / WHEEL_NOTCH
+      steps = Math.trunc(wheelSlots)
+      wheelSlots -= steps
+      if (steps === 0) return
+    }
+    const from = selectedSlot === -1 ? slotBeforeHand : selectedSlot
+    selectedSlot = (((from + steps) % HOTBAR_SLOTS) + HOTBAR_SLOTS) % HOTBAR_SLOTS
   }
   const onContextMenu = (event: Event): void => event.preventDefault()
 
@@ -1208,6 +1295,8 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   let localClock = 0
   let lastUiAt = 0
   let lastDebugAt = 0
+  // What each part of a frame takes, for the debug view.
+  const timer = new FrameTimer()
 
   const frame = (): void => {
     if (disposed) return
@@ -1215,6 +1304,9 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     const elapsed = Math.min(250, now - lastFrameAt)
     lastFrameAt = now
     const clock = connection.clock
+    // The view drew the last frame after this was last called.
+    timer.add('render', view.stats().renderMs)
+    timer.start(now)
 
     // The player's own movement, a tick at a time, sent as it is played.
     if (placed && clock.ready) {
@@ -1233,6 +1325,8 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       }
     }
 
+    timer.lap('input')
+
     // The world, as soon as it can be: every tick the server's log is complete for is simulated now, so what the player
     // did shows a round trip after they did it, and no later. (A long way behind, after a stall, it catches up a slice
     // at a time, so a frame is never held up for long.)
@@ -1248,6 +1342,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       }
       alpha = Math.min(1, Math.max(0, clock.arrivalTick(now) - mirror.simTick))
     }
+    timer.lap('world')
 
     // The animals, drawn a little in the past like the other players, and the one under the mouse.
     const remoteTick = clock.ready ? clock.arrivalTick(now) - REMOTE_DELAY_TICKS : 0
@@ -1290,8 +1385,9 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       frost.update(frostOf(bodyTenths / 10), elapsed)
       snow.update(inside ? DUNGEON_FLURRY : snowAt(airTemperatureAt(mirror.terrain, position.x / SUB, position.y / SUB)), elapsed)
     }
-    view.draw({
+    const worldFrame: WorldFrame = {
       terrain: mirror.terrain,
+      fogLifted: truesight,
       buildings,
       removingIds: removing,
       shaking: shaking(now),
@@ -1313,7 +1409,10 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       warps: warpViews(now, playerX / SUB, playerY / SUB, remoteTick),
       warpFlashes: warpFlashViews(now),
       ...(debug ? { debug: debugView() } : {}),
-    })
+    }
+    timer.lap('scene')
+    view.draw(worldFrame)
+    timer.lap('draw')
 
     if (openBuilding !== undefined) panels.setProgress(workProgress(alpha))
     else if (inventoryOpen && craftState) panels.setHandProgress(handFraction())
@@ -1334,6 +1433,8 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       lastDebugAt = now
       debugOverlay.update(debug ? debugLines(now) : undefined)
     }
+    timer.lap('ui')
+    timer.end()
   }
   view.start(frame)
 
@@ -1419,6 +1520,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       if ((cx + 1) * CHUNK_SIZE <= bounds.left || cx * CHUNK_SIZE > bounds.right + 1) continue
       if ((cy + 1) * CHUNK_SIZE <= bounds.top || cy * CHUNK_SIZE > bounds.bottom + 1) continue
       for (const drop of mirror.world.dropsInChunk(chunkId)) {
+        if (inFog(drop.x / SUB, drop.y / SUB)) continue
         // What a creature just killed drops shows once it has fallen.
         const fresh = mirror.simTick - drop.born < 2 * TPS
         if (fresh && (animalTracks.fellNear(drop.x / SUB, drop.y / SUB, now) || monsterTracks.fellNear(drop.x / SUB, drop.y / SUB, now))) continue
@@ -1563,6 +1665,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     let hovered: number | undefined
     let hoveredDistance = Number.POSITIVE_INFINITY
     for (const track of animalTracks.at(tick)) {
+      if (inFog(track.x / SUB, track.y / SUB)) continue
       const { info } = track
       const def = animalDef(info.kind)
       const baby = info.growth < 100
@@ -1621,6 +1724,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   const monsterViews = (tick: number, now: number): MonsterView[] => {
     const views: MonsterView[] = []
     for (const track of monsterTracks.at(tick)) {
+      if (inFog(track.x / SUB, track.y / SUB)) continue
       const { info } = track
       const def = monsterDef(info.kind)
       // An attack faces its way; a boss, which never moves, faces the player.
@@ -1742,22 +1846,18 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     // Far enough out that the beams from pedestals and barrels in view are drawn.
     const margin = 3
     const found: RitualView[] = []
-    for (const chunkId of mirror.world.chunkIds) {
-      const { cx, cy } = chunkCoords(chunkId)
-      if ((cx + 1) * CHUNK_SIZE <= bounds.left - margin || cx * CHUNK_SIZE > bounds.right + margin) continue
-      if ((cy + 1) * CHUNK_SIZE <= bounds.top - margin || cy * CHUNK_SIZE > bounds.bottom + margin) continue
-      for (const entity of mirror.world.chunk(chunkId)!.entities) {
-        if (entity.kind !== 'altar' || (entity.recipe === 0 && entity.glow === 0)) continue
-        const busy = entity.recipe !== 0
-        found.push({
-          id: entity.id,
-          x: entity.x,
-          y: entity.y,
-          t: busy ? ritualFraction(entity, alpha) : 1,
-          offerings: offeringsOf(entity.offerings),
-          glow: busy ? 0 : Math.max(0, (entity.glow - alpha) / ALTAR_GLOW_TICKS),
-        })
-      }
+    for (const entity of mirror.world.ofKind('altar')) {
+      if (entity.recipe === 0 && entity.glow === 0) continue
+      if (entity.x < bounds.left - margin || entity.x > bounds.right + margin || entity.y < bounds.top - margin || entity.y > bounds.bottom + margin) continue
+      const busy = entity.recipe !== 0
+      found.push({
+        id: entity.id,
+        x: entity.x,
+        y: entity.y,
+        t: busy ? ritualFraction(entity, alpha) : 1,
+        offerings: offeringsOf(entity.offerings),
+        glow: busy ? 0 : Math.max(0, (entity.glow - alpha) / ALTAR_GLOW_TICKS),
+      })
     }
     return found
   }
@@ -1786,7 +1886,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
         const open = entity.kind === 'gate' && gateIsOpen(entity, walkers)
         return { ...entity, connect, open, ...(tied.has(entity.id) ? { tied: true } : {}) }
       }
-      if ('lit' in entity) return { ...entity, lit: entity.lit === 1 }
+      if ('lit' in entity) return { ...entity, lit: entity.lit === 1, ...(isSmoking(entity) ? { smoking: true } : {}) }
       if (entity.kind === 'barrel') {
         const plan = barrelPlan(entity)
         const composting = plan.ready && plan.recipe?.output === itemByKey('compost')?.id
@@ -1823,6 +1923,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       for (const entity of mirror.world.chunk(chunkId)!.entities) {
         if (entity.x < bounds.left - margin || entity.x > bounds.right + margin) continue
         if (entity.y < bounds.top - margin || entity.y > bounds.bottom + margin) continue
+        if (inFog(entity.x, entity.y)) continue
         found.push(viewOf(entity))
       }
     }
@@ -1880,6 +1981,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     const present = new Set<number>()
     for (const remote of remotes.positionsAt(remoteTick)) {
       present.add(remote.id)
+      if (inFog(remote.x / SUB, remote.y / SUB)) continue
       // Facing the way it is going, or the way it last went; aboard a raft, the way it last walked on the raft, turning
       // as the raft turns.
       const raft = raftTracks.riders.get(remote.id)
@@ -1927,7 +2029,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   const overlay = (buildings: readonly BuildingView[]): OverlayView => {
     // Holding a weapon or tool, a click is an attack the way the mouse points, not at a tile: no tile lights up.
     const hover = pointer && !pause.isOpen && heldWeapon().key === 'hand' ? tileUnderPointer() : undefined
-    const target = hover && hoveredAnimal === undefined ? punchable(hover.x, hover.y) : undefined
+    const target = hover && hoveredAnimal === undefined && !inFog(hover.x, hover.y) ? punchable(hover.x, hover.y) : undefined
     // With something that can be put down in the picked slot, a ghost of it under the mouse, red where it cannot go.
     let ghost: GhostView | undefined
     let raftGhost: OverlayView['raftGhost']
@@ -1946,7 +2048,8 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     }
     const bars: Array<OverlayView['bars'][number]> = []
     for (const building of buildings) {
-      if (building.kind !== 'tree' && building.kind !== 'bush' && building.kind !== 'rock' && !BUILDINGS[building.kind].breakable) continue
+      // Whatever is broken a little at a time (not what goes at a hit).
+      if (!(BUILDINGS[building.kind].natural || BUILDINGS[building.kind].breakable) || BUILDINGS[building.kind].maxHp <= 1) continue
       const entity = mirror.world.entity(building.id)
       if (!entity) continue
       const max = BUILDINGS[entity.kind].maxHp
@@ -1990,11 +2093,12 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       me,
       others: remotes
         .positionsAt(lastRemoteTick)
-        .filter((remote) => !isInDungeons(tileOfUnits(remote.x), tileOfUnits(remote.y)))
+        .filter((remote) => !isInDungeons(tileOfUnits(remote.x), tileOfUnits(remote.y)) && !inFog(remote.x / SUB, remote.y / SUB))
         .map((remote) => ({ ...tilesOf(remote), name: roster.get(remote.id) ?? '?' })),
       away: isInDungeons(tileOfUnits(local.position.x), tileOfUnits(local.position.y)),
       loadedChunks: mirror.world.chunkIds,
       things: (chunk) => mirror.world.chunk(chunk)?.entities ?? [],
+      fogLifted: truesight,
     })
   }
 
@@ -2138,15 +2242,23 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     for (let i = 0; i < count; i++) send({ k: 'craft', recipe: index })
   }
 
-  // Eats one of what is in the food slot, if the cooldown is over and the player is hurt (else just a sound).
+  // Eats one of what is in the food slot, if the cooldown is over and the player is hurt (else just a sound). Food that
+  // hurts (a truesight flesh) is eaten whatever the player's health, so long as it would not knock them out (else they
+  // are told why not).
   let eatReadyAt = 0
   const eat = (): void => {
     const held = predictedInventory().slots[FOOD_SLOT]
     const food = held && held.count > 0 ? getItem(held.item) : undefined
     const now = performance.now()
-    if (!food?.heals || health >= PLAYER_MAX_HEALTH || now < eatReadyAt) return void sounds.play('craft/fail')
+    if (!food || (!food.heals && !food.hurts) || now < eatReadyAt) return void sounds.play('craft/fail')
+    if (food.hurts !== undefined && health <= food.hurts) {
+      hud.toast(REFUSALS.wouldKill, 'error')
+      return void sounds.play('craft/fail')
+    }
+    if (!food.hurts && health >= PLAYER_MAX_HEALTH) return void sounds.play('craft/fail')
     send({ k: 'eat', slot: FOOD_SLOT })
     eatReadyAt = now + EAT_COOLDOWN_TICKS * TICK_MS
+    if (food.truesight) expectingSight = true
     sounds.play('eat')
   }
 
@@ -2279,6 +2391,8 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       `commands      ${prediction.size} waiting`,
       `position      ${(local.position.x / SUB).toFixed(1)}, ${(local.position.y / SUB).toFixed(1)}`,
       `view          ${view.describe()}, zoom ${zoom.toFixed(2)}×`,
+      `drawn         ${view.stats().calls} draw calls, ${Math.round(view.stats().triangles / 1000)}k triangles`,
+      ...timer.lines(),
       ...(lag.latencyMs || lag.jitterMs || lag.loss ? [`lag sim       ${lag.latencyMs} ms +${lag.jitterMs} jitter, ${Math.round(lag.loss * 100)}% loss`] : []),
       ...(import.meta.env.DEV ? ['F9            break a chunk here, to test desync repair'] : []),
       `animals       ${animalTracks.info.size} near, monsters ${monsterTracks.info.size}`,

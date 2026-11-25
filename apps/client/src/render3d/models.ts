@@ -101,6 +101,18 @@ export function material(color: number): THREE.MeshStandardMaterial {
   return made
 }
 
+const glowingMaterials = new Map<number, THREE.MeshBasicMaterial>()
+// A colour that is not lit, but glows as it is (embers, flames, eyes), shared by everything that colour. (One that
+// changes as it is drawn, fading or flashing, has its own.)
+function glowing(color: number): THREE.MeshBasicMaterial {
+  let made = glowingMaterials.get(color)
+  if (!made) {
+    made = new THREE.MeshBasicMaterial({ color })
+    glowingMaterials.set(color, made)
+  }
+  return made
+}
+
 const shinyMaterials = new Map<number, THREE.MeshStandardMaterial>()
 // The same, smooth and a little glossy (flint, catching the light).
 function shiny(color: number): THREE.MeshStandardMaterial {
@@ -729,14 +741,14 @@ export function campfire(lit: boolean): THREE.Group {
   if (lit) {
     // Embers glowing among the logs.
     for (const [ex, ez] of [[0.08, 0.02], [-0.07, 0.06], [0.02, -0.09], [-0.1, -0.05], [0.12, -0.04]]) {
-      const ember = new THREE.Mesh(lump(), new THREE.MeshBasicMaterial({ color: ex > 0 ? 0xff5a1a : 0xff8a2a }))
+      const ember = new THREE.Mesh(lump(), glowing(ex > 0 ? 0xff5a1a : 0xff8a2a))
       ember.position.set(ex, 0.05, ez)
       ember.scale.set(0.08, 0.05, 0.08)
       made.add(ember)
     }
     // Flames: a tall one in the middle and lower tongues round it, each with a bright core.
     const flame = (color: number, at: [number, number, number], scale: [number, number, number]): void => {
-      const mesh = new THREE.Mesh(cone(6), new THREE.MeshBasicMaterial({ color }))
+      const mesh = new THREE.Mesh(cone(6), glowing(color))
       mesh.position.set(...at)
       mesh.scale.set(...scale)
       mesh.name = 'flame'
@@ -822,13 +834,13 @@ export function oven(lit: boolean): THREE.Group {
   }
   made.add(part(cylinder(7), 0x141312, [0, OVEN_HEIGHT + 0.145, -0.02], [0.1, 0.01, 0.1]))
   if (lit) {
-    const glow = new THREE.Mesh(box(), new THREE.MeshBasicMaterial({ color: 0xff6a1a }))
+    const glow = new THREE.Mesh(box(), glowing(0xff6a1a))
     // Just in front of the dark inside (never on it), behind the frame stones.
     glow.position.set(0, 0.07, mouthZ + 0.03)
     glow.scale.set(MOUTH_HALF * 1.6, 0.08, 0.02)
     made.add(glow)
     for (const [fx, height] of [[-0.05, 0.13], [0.05, 0.1], [0, 0.17]] as const) {
-      const flame = new THREE.Mesh(cone(6), new THREE.MeshBasicMaterial({ color: fx === 0 ? PALETTE.flameCore : PALETTE.flame }))
+      const flame = new THREE.Mesh(cone(6), glowing(fx === 0 ? PALETTE.flameCore : PALETTE.flame))
       flame.position.set(fx, 0.06 + height / 2, mouthZ + 0.05)
       flame.scale.set(0.07, height, 0.07)
       flame.name = 'flame'
@@ -1148,11 +1160,44 @@ export function waystone(): THREE.Group {
   return made
 }
 
+// A target dummy: a post driven into the ground, a sack stuffed with straw for a body tied round with rope, a crossbar
+// for arms with straw sticking out of the ends, a sack for a head, and a red target painted on its chest (facing the
+// camera). It sways when hit, like a plant (see `shakes`).
+export function targetDummy(): THREE.Group {
+  const sack = 0xc9b07a
+  const sackDark = 0xa88f5c
+  const rope = 0x8a6a3e
+  const red = 0xb8322c
+  return group(
+    // The post, and a stake either side at its foot.
+    part(box(), PALETTE.wood, [0, 0.4, 0], [0.08, 0.8, 0.08]),
+    part(box(), PALETTE.woodLight, [0, 0.03, 0], [0.26, 0.06, 0.1]),
+    // The crossbar for arms, the straw poking out of each end.
+    part(box(), PALETTE.wood, [0, 0.78, 0], [0.62, 0.06, 0.06]),
+    part(box(), PALETTE.hay, [-0.34, 0.78, 0], [0.08, 0.1, 0.1]),
+    part(box(), PALETTE.hay, [0.34, 0.78, 0], [0.08, 0.1, 0.1]),
+    // The body, a stuffed sack, tied round at the waist and the neck.
+    part(box(), sack, [0, 0.62, 0], [0.34, 0.42, 0.26]),
+    part(box(), rope, [0, 0.45, 0], [0.36, 0.035, 0.28]),
+    part(box(), rope, [0, 0.83, 0], [0.2, 0.035, 0.18]),
+    // Straw sticking out under the body.
+    part(box(), PALETTE.hay, [0, 0.38, 0], [0.24, 0.08, 0.18]),
+    // The head, a smaller sack, with stitched eyes.
+    part(box(), sack, [0, 0.98, 0], [0.24, 0.24, 0.22]),
+    part(box(), sackDark, [-0.05, 1.0, 0.112], [0.04, 0.04, 0.01]),
+    part(box(), sackDark, [0.05, 1.0, 0.112], [0.04, 0.04, 0.01]),
+    // The target on its chest: rings of red and straw.
+    part(box(), red, [0, 0.64, 0.131], [0.22, 0.22, 0.01]),
+    part(box(), sack, [0, 0.64, 0.136], [0.14, 0.14, 0.01]),
+    part(box(), red, [0, 0.64, 0.141], [0.06, 0.06, 0.01]),
+  )
+}
+
 // A worker skeleton (waiting for orders: it does nothing yet), facing out of its tile towards the camera: a skeleton
 // standing easy, a heart of essence glowing blue in its ribs and in its eyes, a leather apron, and a pickaxe slung on
 // its back.
 export function workerSkeleton(): THREE.Group {
-  const essence = new THREE.MeshBasicMaterial({ color: 0x8fd6ff })
+  const essence = glowing(0x8fd6ff)
   const glow = (at: [number, number, number], scale: [number, number, number]): THREE.Mesh => {
     const mesh = new THREE.Mesh(box(), essence)
     mesh.position.set(...at)
@@ -1657,7 +1702,7 @@ export function skeleton(): THREE.Group {
   body.add(arm)
   // The eyes ablaze, over the dark ones, shown only while it charges.
   const fury = group(...[-0.055, 0.055].map((z) => {
-    const eye = new THREE.Mesh(box(), new THREE.MeshBasicMaterial({ color: 0xff2a3a }))
+    const eye = new THREE.Mesh(box(), glowing(0xff2a3a))
     eye.position.set(0.135, 0.98, z)
     eye.scale.set(0.03, 0.08, 0.07)
     return eye
@@ -1806,6 +1851,59 @@ export function camp(): THREE.Group {
   return made
 }
 
+// A goblins' camp on the meadow: a ring of stones round a fire burnt down to ash, a lean-to of patched hides on two
+// poles, sharpened stakes stuck in the ground, and a heap of gnawed bones.
+export function goblinCamp(): THREE.Group {
+  const made = group()
+  for (let i = 0; i < 8; i++) {
+    const angle = (i / 8) * Math.PI * 2
+    made.add(part(lump(), i % 2 ? PALETTE.stone : PALETTE.stoneDark, [Math.cos(angle) * 0.45, 0.07, Math.sin(angle) * 0.45], [0.2, 0.15, 0.2]))
+  }
+  made.add(part(cylinder(8), PALETTE.ash, [0, 0.02, 0], [0.7, 0.04, 0.7]))
+  for (const angle of [0.3, 1.4, 2.5]) made.add(part(cylinder(5), PALETTE.char, [0, 0.08, 0], [0.08, 0.6, 0.08], [Math.PI / 2, angle, 0]))
+  // The lean-to: a sloping roof of patched hides on two poles.
+  const shelter = group(
+    stick(PALETTE.bark, [-0.7, 0, 0], [-0.7, 1.1, 0], 0.06),
+    stick(PALETTE.bark, [0.7, 0, 0], [0.7, 1.1, 0], 0.06),
+    part(box(), PALETTE.hide, [0, 0.6, -0.42], [1.6, 0.05, 1.15], [0.85, 0, 0]),
+    part(box(), 0x7a6a3a, [-0.3, 0.62, -0.4], [0.5, 0.055, 0.5], [0.85, 0, 0]),
+  )
+  shelter.position.set(-1.8, 0, -1.5)
+  shelter.rotation.y = 0.5
+  made.add(shelter)
+  // Sharpened stakes, leaning.
+  for (const [sx, sz, tilt] of [[1.5, -1.2, 0.3], [1.8, 0.4, -0.2], [-1.3, 1.6, 0.25]]) {
+    const stake = group(part(cylinder(5), PALETTE.bark, [0, 0.4, 0], [0.08, 0.8, 0.08]), part(cone(5), PALETTE.woodLight, [0, 0.88, 0], [0.08, 0.18, 0.08]))
+    stake.position.set(sx, 0, sz)
+    stake.rotation.set(tilt, 0, tilt / 2)
+    made.add(stake)
+  }
+  // A heap of gnawed bones.
+  for (const [bx, bz, turn] of [[1.1, 1.0, 0.4], [1.25, 1.1, 1.9], [0.95, 1.2, 2.8]]) made.add(part(box(), PALETTE.bone, [bx, 0.04, bz], [0.32, 0.05, 0.06], [0, turn, 0]))
+  return made
+}
+
+// A mummies' tomb in the desert: a squat sandstone tomb on a low plinth, a heavy capstone on it, its doorway a dark
+// hole between two pillars under a lintel (facing south, as the camera looks), a step before it, and blocks fallen from
+// it lying in the sand.
+export function tomb(): THREE.Group {
+  const sandstone = 0xd2b47a
+  const sandstoneDark = 0xa98a55
+  const made = group(
+    part(box(), sandstoneDark, [0, 0.05, 0], [1.7, 0.1, 1.7]),
+    part(box(), sandstone, [0, 0.55, -0.05], [1.3, 0.9, 1.3]),
+    part(box(), sandstoneDark, [0, 1.06, -0.05], [1.46, 0.12, 1.46]),
+    part(box(), sandstone, [0, 1.2, -0.05], [1.0, 0.18, 1.0]),
+    part(box(), PALETTE.void, [0, 0.42, 0.61], [0.42, 0.64, 0.02]),
+    part(box(), sandstoneDark, [-0.31, 0.45, 0.66], [0.16, 0.8, 0.12]),
+    part(box(), sandstoneDark, [0.31, 0.45, 0.66], [0.16, 0.8, 0.12]),
+    part(box(), sandstone, [0, 0.9, 0.68], [0.84, 0.16, 0.16]),
+    part(box(), sandstoneDark, [0, 0.06, 0.88], [0.6, 0.12, 0.3]),
+  )
+  for (const [bx, bz, turn] of [[1.15, 0.6, 0.4], [1.0, -0.95, 1.1], [-1.2, 0.9, 2.0]]) made.add(part(box(), sandstoneDark, [bx, 0.11, bz], [0.32, 0.22, 0.24], [0, turn, 0]))
+  return made
+}
+
 // The way into the dungeon: dark steps going down into the snow between two standing stones, under a lintel, with
 // skulls either side.
 export function dungeonEntrance(): THREE.Group {
@@ -1899,3 +1997,340 @@ export function projectile(kind: 'arrow' | 'spear' | 'stone' | 'shard' | 'icicle
   )
 }
 
+// ---- the desert and the meadow
+
+// A sunflower, as tall as a player: a green stem leaning a little (each its own way), broad leaves, and a big head
+// tipped to face the camera, a dark disc of seeds ringed with yellow petals.
+export function sunflower(x: number, y: number): THREE.Group {
+  const lean = (vary(x, y, 70) - 0.5) * 0.2
+  const tall = 1.0 + vary(x, y, 71) * 0.25
+  const made = group(
+    part(cylinder(5), PALETTE.leafDark, [0, tall / 2, 0], [0.05, tall, 0.05]),
+    part(blob(), PALETTE.leaf, [0.12, tall * 0.35, 0], [0.26, 0.04, 0.14], [0, 0.3, -0.5]),
+    part(blob(), PALETTE.leafLight, [-0.12, tall * 0.55, 0.02], [0.24, 0.04, 0.13], [0, -0.4, 0.5]),
+  )
+  const head = group(part(cylinder(10), SUNFLOWER.seeds, [0, 0, 0], [0.26, 0.05, 0.26]))
+  for (let i = 0; i < 12; i++) {
+    const angle = (i / 12) * Math.PI * 2
+    head.add(part(blob(), i % 2 ? SUNFLOWER.petal : SUNFLOWER.petalDark, [Math.cos(angle) * 0.2, -0.005, Math.sin(angle) * 0.2], [0.13, 0.025, 0.07], [0, -angle, 0]))
+  }
+  head.position.set(0, tall + 0.04, 0.04)
+  // Its face towards the camera (south), and up a little.
+  head.rotation.x = Math.PI / 2 - 0.45
+  made.add(head)
+  made.rotation.z = lean
+  made.rotation.x = lean / 2
+  return made
+}
+const SUNFLOWER = { petal: 0xf2c41c, petalDark: 0xe0a812, seeds: 0x4a3018 }
+
+// A sunflower seedling, at each of its looks on the way to a sunflower (see `growthLook`): two seed leaves; then a short
+// stem with a few leaves; then a tall stem with a green bud not yet open.
+export function seedling(look: number): THREE.Group {
+  if (look <= 0) {
+    return group(
+      part(cylinder(5), PALETTE.leafDark, [0, 0.05, 0], [0.025, 0.1, 0.025]),
+      part(blob(), PALETTE.sprout, [0.05, 0.1, 0], [0.1, 0.02, 0.05], [0, 0, 0.3]),
+      part(blob(), PALETTE.sprout, [-0.05, 0.1, 0], [0.1, 0.02, 0.05], [0, 0, -0.3]),
+    )
+  }
+  if (look === 1) {
+    return group(
+      part(cylinder(5), PALETTE.leafDark, [0, 0.18, 0], [0.035, 0.36, 0.035]),
+      part(blob(), PALETTE.leaf, [0.08, 0.16, 0], [0.16, 0.03, 0.09], [0, 0.3, -0.4]),
+      part(blob(), PALETTE.leafLight, [-0.08, 0.26, 0], [0.15, 0.03, 0.08], [0, -0.4, 0.4]),
+      part(blob(), PALETTE.sprout, [0, 0.38, 0], [0.08, 0.05, 0.08]),
+    )
+  }
+  return group(
+    part(cylinder(5), PALETTE.leafDark, [0, 0.33, 0], [0.045, 0.66, 0.045]),
+    part(blob(), PALETTE.leaf, [0.1, 0.24, 0], [0.22, 0.035, 0.12], [0, 0.3, -0.5]),
+    part(blob(), PALETTE.leafLight, [-0.1, 0.42, 0.02], [0.2, 0.035, 0.11], [0, -0.4, 0.5]),
+    part(blob(), PALETTE.leafDark, [0, 0.7, 0], [0.16, 0.14, 0.16]),
+  )
+}
+
+// Clay on a river's bank: a few smooth, wet, reddish lumps heaped together.
+export function clay(x: number, y: number): THREE.Group {
+  const turn = vary(x, y, 72) * Math.PI * 2
+  const lumps = group(
+    part(lump(), 0xa8644a, [0, 0.16, 0], [0.7, 0.34, 0.6]),
+    part(lump(), 0x8c5440, [0.24, 0.1, 0.14], [0.36, 0.22, 0.34], [0, 1.1, 0]),
+    part(lump(), 0xb8765a, [-0.2, 0.12, -0.12], [0.32, 0.2, 0.3], [0, 2.3, 0]),
+  )
+  for (const mesh of lumps.children as THREE.Mesh[]) mesh.material = shiny((mesh.material as THREE.MeshStandardMaterial).color.getHex())
+  lumps.rotation.y = turn
+  return group(lumps)
+}
+
+// A rock with ore in it (copper, tin): a rock, with nuggets of the metal showing in it, catching the light.
+export function oreRock(x: number, y: number, metal: 'copper' | 'tin'): THREE.Group {
+  const made = rock(x, y)
+  const color = metal === 'copper' ? 0xd27a3c : 0xdcdfd4
+  const turn = vary(x, y, 5) * Math.PI * 2
+  const nuggets = group()
+  // On the rock's face, poking out of it, all the way round.
+  for (const [nx, ny, nz, size] of [[0, 0.47, 0.08, 0.16], [0.25, 0.36, 0.2, 0.15], [-0.22, 0.33, 0.25, 0.14], [0.08, 0.2, 0.36, 0.13], [-0.1, 0.42, -0.18, 0.14], [0.3, 0.26, -0.2, 0.12]] as const) {
+    const nugget = part(lump(), color, [nx, ny, nz], [size, size * 0.8, size], [nx * 3, nz * 5, 0])
+    nugget.material = shiny(color)
+    nuggets.add(nugget)
+  }
+  nuggets.rotation.y = turn
+  made.add(nuggets)
+  return made
+}
+
+// A cactus: a tall, ribbed green column with an arm or two turned up, dotted with pale spines, and a flower on top of
+// some.
+export function cactus(x: number, y: number): THREE.Group {
+  const tall = 0.95 + vary(x, y, 73) * 0.35
+  const green = 0x4f8a4a
+  const dark = 0x3a6e3a
+  const made = group(
+    part(cylinder(8), green, [0, tall / 2, 0], [0.32, tall, 0.32]),
+    part(ball(), green, [0, tall, 0], [0.32, 0.2, 0.32]),
+  )
+  // Its ribs.
+  for (let i = 0; i < 8; i += 2) {
+    const angle = (i / 8) * Math.PI * 2
+    made.add(part(box(), dark, [Math.cos(angle) * 0.155, tall / 2, Math.sin(angle) * 0.155], [0.03, tall * 0.96, 0.03], [0, -angle, 0]))
+  }
+  // An arm or two, out and then up.
+  const arms = vary(x, y, 74) > 0.4 ? [1, -1] : [1]
+  for (const side of arms) {
+    const height = tall * (0.38 + vary(x, y, 75 + side) * 0.2)
+    const up = 0.28 + vary(x, y, 77 + side) * 0.18
+    made.add(part(cylinder(6), green, [side * 0.24, height, 0], [0.2, 0.16, 0.2], [0, 0, Math.PI / 2]))
+    made.add(part(cylinder(6), green, [side * 0.33, height + up / 2, 0], [0.18, up, 0.18]))
+    made.add(part(ball(), green, [side * 0.33, height + up, 0], [0.18, 0.12, 0.18]))
+  }
+  // Spines.
+  for (let i = 0; i < 10; i++) {
+    const angle = vary(x, y, 80 + i) * Math.PI * 2
+    const at = 0.15 + vary(x, y, 90 + i) * (tall - 0.2)
+    made.add(part(box(), 0xf0ead0, [Math.cos(angle) * 0.17, at, Math.sin(angle) * 0.17], [0.05, 0.012, 0.012], [0, -angle, 0]))
+  }
+  if (vary(x, y, 79) > 0.6) made.add(part(blob(), 0xe85a8a, [0, tall + 0.1, 0], [0.12, 0.08, 0.12]))
+  made.rotation.y = vary(x, y, 78) * Math.PI * 2
+  return made
+}
+
+// A pocket of loose sand: a low drift heaped a little higher than the desert round it, rippled by the wind.
+export function sandPile(x: number, y: number): THREE.Group {
+  const turn = vary(x, y, 81) * Math.PI * 2
+  const made = group(
+    part(lump(), 0xe3cd94, [0, 0.07, 0], [0.86, 0.18, 0.72]),
+    part(lump(), 0xd2b87c, [0.18, 0.05, 0.12], [0.44, 0.12, 0.38], [0, 1.3, 0]),
+    part(box(), 0xc9ad70, [0, 0.135, -0.05], [0.4, 0.012, 0.04], [0, 0.2, 0]),
+    part(box(), 0xc9ad70, [0.05, 0.12, 0.12], [0.36, 0.012, 0.04], [0, 0.25, 0]),
+  )
+  made.rotation.y = turn
+  return group(made)
+}
+
+// A cobweb: a web strung between two dry twigs, facing the camera, threads radiating from its middle with rings of
+// thread round them.
+export function cobweb(x: number, y: number): THREE.Group {
+  const made = group(
+    stick(PALETTE.barkDark, [-0.36, 0, 0], [-0.3, 0.62, 0], 0.025),
+    stick(PALETTE.barkDark, [0.34, 0, 0], [0.4, 0.56, 0], 0.025),
+    stick(PALETTE.barkDark, [0.4, 0.4, 0], [0.48, 0.54, 0.02], 0.015),
+  )
+  const points: number[] = []
+  const middle = { x: 0.02, y: 0.34 }
+  const spokes = 8
+  const tip = (i: number, r: number): [number, number, number] => {
+    const angle = (i / spokes) * Math.PI * 2 + 0.2
+    return [middle.x + Math.cos(angle) * r * 1.15, middle.y + Math.sin(angle) * r, 0]
+  }
+  for (let i = 0; i < spokes; i++) points.push(middle.x, middle.y, 0, ...tip(i, 0.3))
+  for (const r of [0.08, 0.15, 0.22, 0.29]) for (let i = 0; i < spokes; i++) points.push(...tip(i, r), ...tip(i + 1, r))
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(points, 3))
+  const web = new THREE.LineSegments(geometry, COBWEB_THREAD)
+  made.add(web)
+  made.rotation.y = (vary(x, y, 82) - 0.5) * 0.5
+  return made
+}
+const COBWEB_THREAD = new THREE.LineBasicMaterial({ color: 0xf4f4ee, transparent: true, opacity: 0.85 })
+
+// A wild beehive: a rounded heap of papery comb in tiers, banded darker between them, with a dark hole to fly in by at
+// its foot, facing the camera.
+export function beehive(): THREE.Group {
+  const comb = 0xd9a441
+  const band = 0xa8742a
+  const made = group()
+  const tiers = [[0.3, 0.18], [0.36, 0.2], [0.33, 0.2], [0.26, 0.17], [0.16, 0.13]] as const
+  let height = 0
+  tiers.forEach(([radius, tall], i) => {
+    made.add(part(ball(), i % 2 ? band : comb, [0, height + tall / 2, 0], [radius * 2, tall * 1.3, radius * 2]))
+    height += tall
+  })
+  made.add(part(box(), 0x2a1c0e, [0, 0.2, 0.33], [0.14, 0.1, 0.04]))
+  // A drip of honey down its side.
+  made.add(part(blob(), 0xe8a020, [0.2, 0.42, 0.27], [0.06, 0.12, 0.05]))
+  return made
+}
+
+// A bee box, after its icon (icons/buildings/beebox.png): a round hive of coiled straw, golden, each coil a band round
+// it, wider in the middle and drawing in to a knob on top, with dark holes for the bees in its face (towards the
+// camera): one up near the top and two either side lower down.
+const BEE_BOX = { middle: 0.36, radius: 0.33, coils: 8 }
+export function beeBox(): THREE.Group {
+  const { middle, radius, coils } = BEE_BOX
+  const made = group()
+  // How far out its round reaches at a height.
+  const across = (y: number): number => radius * Math.sqrt(Math.max(0, 1 - ((y - middle) / (middle + 0.02)) ** 2))
+  const step = (middle * 2) / coils
+  for (let i = 0; i < coils; i++) {
+    const y = step * (i + 0.5)
+    const r = Math.max(0.06, across(y))
+    made.add(part(cylinder(12), i % 2 ? 0xc98a32 : 0xe8b04a, [0, y, 0], [r * 2, step * 1.02, r * 2]))
+    // The coil's rounded edge, a little proud of the band under it.
+    made.add(part(cylinder(12), i % 2 ? 0xa86e24 : 0xd59a3a, [0, y - step * 0.42, 0], [r * 2 + 0.02, step * 0.16, r * 2 + 0.02]))
+  }
+  made.add(part(ball(), 0xf0c860, [0, middle * 2 + 0.01, 0], [0.12, 0.08, 0.12]))
+  // The holes, on its face.
+  for (const [x, y] of [[0, middle * 1.55], [-0.17, middle * 0.95], [0.17, middle * 0.95]] as const) {
+    const out = Math.sqrt(Math.max(0, across(y) ** 2 - x * x))
+    made.add(part(cylinder(8), 0x1a0e06, [x, y, out - 0.005], [0.1, 0.02, 0.1], [Math.PI / 2, 0, 0]))
+  }
+  return made
+}
+
+// A spider of the desert: a big round abdomen banded dark, a smaller head with a cluster of eyes, and eight long legs,
+// each bent at the knee. A male is slighter, with a paler band.
+export function spider(male: boolean): THREE.Group {
+  const coat = male ? 0x9a7a4a : 0x7a5a34
+  const dark = 0x3a2a1a
+  const made = group(
+    part(ball(), coat, [-0.16, 0.26, 0], [0.4, 0.3, 0.34]),
+    part(box(), male ? 0xc9a870 : dark, [-0.16, 0.4, 0], [0.24, 0.03, 0.14]),
+    part(ball(), coat, [0.12, 0.2, 0], [0.24, 0.18, 0.22]),
+    part(box(), 0x1a1410, [0.23, 0.24, -0.04], [0.03, 0.03, 0.03]),
+    part(box(), 0x1a1410, [0.23, 0.24, 0.04], [0.03, 0.03, 0.03]),
+    part(box(), 0x7a1a1a, [0.235, 0.21, 0], [0.02, 0.02, 0.06]),
+  )
+  // Four legs each side: up from the body to the knee, and down to the ground.
+  for (const side of [-1, 1]) {
+    for (let i = 0; i < 4; i++) {
+      const along = 0.2 - i * 0.12
+      const knee: [number, number, number] = [along + 0.02, 0.34, side * 0.28]
+      made.add(stick(dark, [0.08, 0.2, side * 0.08], knee, 0.03, 4))
+      made.add(stick(dark, knee, [along + (i < 2 ? 0.12 : -0.08), 0, side * 0.44], 0.025, 4))
+    }
+  }
+  return made
+}
+
+// A goblin: small and green, a big head with long pointed ears and red eyes, a ragged hide tunic, and a crude club in
+// its fist.
+export function goblin(): THREE.Group {
+  const skin = 0x6a9a3a
+  const skinDark = 0x4e7a2a
+  const rag = 0x6a4a2a
+  const made = group(
+    part(box(), rag, [0, 0.42, 0], [0.24, 0.3, 0.3]),
+    part(box(), 0x4a3418, [0, 0.29, 0], [0.26, 0.06, 0.32]),
+    part(box(), skin, [0.02, 0.72, 0], [0.26, 0.24, 0.26]),
+    part(box(), skinDark, [0.15, 0.66, 0], [0.06, 0.08, 0.1]),
+    part(cone(4), skin, [0.0, 0.76, -0.2], [0.06, 0.24, 0.06], [-Math.PI / 2 + 0.4, 0, 0]),
+    part(cone(4), skin, [0.0, 0.76, 0.2], [0.06, 0.24, 0.06], [Math.PI / 2 - 0.4, 0, 0]),
+    part(box(), 0xff3a1a, [0.15, 0.75, -0.06], [0.02, 0.04, 0.05]),
+    part(box(), 0xff3a1a, [0.15, 0.75, 0.06], [0.02, 0.04, 0.05]),
+    // Arms: one hanging, one with the club.
+    part(box(), skin, [0.02, 0.42, -0.2], [0.07, 0.26, 0.07], [0.2, 0, 0]),
+    part(box(), skin, [0.08, 0.46, 0.2], [0.07, 0.24, 0.07], [-0.3, 0, -0.5]),
+    stick(PALETTE.bark, [0.16, 0.36, 0.24], [0.42, 0.62, 0.24], 0.05),
+    part(lump(), PALETTE.barkDark, [0.44, 0.65, 0.24], [0.12, 0.14, 0.12]),
+    // Legs.
+    part(box(), skinDark, [0, 0.13, -0.08], [0.08, 0.26, 0.08]),
+    part(box(), skinDark, [0, 0.13, 0.08], [0.08, 0.26, 0.08]),
+  )
+  return made
+}
+
+// A mummy: tall, wrapped head to foot in old linen gone yellow, the wrappings in bands and stained here and there, two
+// dim eyes glowing out of a dark gap in its head's wrappings, its arms held stiffly out in front, and a loose end of
+// wrapping hanging from one.
+export function mummy(): THREE.Group {
+  const linen = 0xd8c9a2
+  const band = 0xb3a074
+  const stain = 0x8f7c56
+  const made = group(
+    // Legs.
+    part(box(), linen, [0, 0.2, -0.08], [0.11, 0.4, 0.11]),
+    part(box(), linen, [0, 0.2, 0.08], [0.11, 0.4, 0.11]),
+    part(box(), band, [0, 0.12, -0.08], [0.12, 0.04, 0.12]),
+    part(box(), band, [0, 0.28, 0.08], [0.12, 0.04, 0.12]),
+    // The body, wrapped in slanting bands.
+    part(box(), linen, [0, 0.6, 0], [0.24, 0.42, 0.34]),
+    part(box(), band, [0, 0.5, 0], [0.25, 0.05, 0.35], [0.15, 0, 0]),
+    part(box(), band, [0, 0.68, 0], [0.25, 0.05, 0.35], [-0.2, 0, 0]),
+    part(box(), stain, [0.125, 0.57, 0.08], [0.01, 0.1, 0.08]),
+    // The head, and the dark gap its eyes look out of.
+    part(box(), linen, [0.02, 0.95, 0], [0.24, 0.26, 0.24]),
+    part(box(), band, [0.02, 1.03, 0], [0.25, 0.04, 0.25]),
+    part(box(), 0x1e1a14, [0.14, 0.93, 0], [0.01, 0.05, 0.16]),
+    // Arms straight out in front, and the loose end.
+    part(box(), linen, [0.2, 0.74, -0.2], [0.38, 0.09, 0.09]),
+    part(box(), linen, [0.2, 0.74, 0.2], [0.38, 0.09, 0.09]),
+    part(box(), band, [0.24, 0.74, -0.2], [0.04, 0.1, 0.1]),
+    part(box(), band, [0.3, 0.74, 0.2], [0.04, 0.1, 0.1]),
+    part(box(), linen, [0.16, 0.62, 0.25], [0.04, 0.2, 0.03], [0.3, 0, 0]),
+  )
+  for (const z of [-0.05, 0.05]) {
+    const eye = new THREE.Mesh(box(), glowing(0xe8d060))
+    eye.position.set(0.146, 0.935, z)
+    eye.scale.set(0.015, 0.035, 0.035)
+    made.add(eye)
+  }
+  return made
+}
+
+// A worker bee: a striped body, black and gold, a small dark head, and two pale, see-through wings. It flies, and the
+// view bobs it.
+export function bee(): THREE.Group {
+  return beeModel(0.32, 0xf2b61c)
+}
+
+// A queen bee: bigger, with a longer, richer gold body.
+export function queenBee(): THREE.Group {
+  const made = beeModel(0.5, 0xe0961a)
+  made.add(part(box(), 0xf6d860, [0, 0.62, 0], [0.1, 0.03, 0.1]))
+  return made
+}
+
+function beeModel(length: number, gold: number): THREE.Group {
+  const made = group(
+    part(ball(), gold, [-length * 0.15, 0.5, 0], [length * 0.7, length * 0.45, length * 0.45]),
+    part(box(), 0x1e1a14, [-length * 0.12, 0.5, 0], [length * 0.12, length * 0.47, length * 0.47]),
+    part(box(), 0x1e1a14, [-length * 0.32, 0.5, 0], [length * 0.1, length * 0.4, length * 0.4]),
+    part(ball(), 0x2a2218, [length * 0.28, 0.52, 0], [length * 0.28, length * 0.28, length * 0.28]),
+  )
+  for (const side of [-1, 1]) {
+    const wing = new THREE.Mesh(blob(), BEE_WING)
+    wing.position.set(0, 0.5 + length * 0.3, side * length * 0.22)
+    wing.scale.set(length * 0.5, length * 0.06, length * 0.4)
+    wing.rotation.x = side * 0.4
+    wing.name = 'wing'
+    made.add(wing)
+  }
+  return made
+}
+const BEE_WING = new THREE.MeshBasicMaterial({ color: 0xf0f6ff, transparent: true, opacity: 0.55, depthWrite: false })
+
+// The smoke off a fire cooking leaves: grey puffs, named so the view can float them up and fade them (see
+// `smokePuffs` in three-view.ts).
+export const SMOKE_PUFFS = 6
+export function smoke(): THREE.Group {
+  const made = group()
+  for (let i = 0; i < SMOKE_PUFFS; i++) {
+    const puff = new THREE.Mesh(blob(), new THREE.MeshBasicMaterial({ color: i % 2 ? 0xd6d6d2 : 0xbcbcb8, transparent: true, opacity: 0.5, depthWrite: false }))
+    puff.name = 'smoke-puff'
+    puff.userData.offset = i / SMOKE_PUFFS
+    made.add(puff)
+  }
+  made.name = 'smoke'
+  return made
+}

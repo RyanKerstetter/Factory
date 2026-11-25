@@ -36,9 +36,11 @@ import {
   WEAPONS,
   STATION_RECIPES,
   RECIPES,
+  BUILDINGS,
   biomeSiteAt,
   islandChunks,
   isSandAt,
+  biomeAt,
   canGrowAt,
   isSeaAt,
   ANIMALS,
@@ -117,9 +119,13 @@ test('a seed sown in a garden plot grows, and breaking it when grown gives the c
   run(room, [client], PUNCH_COOLDOWN_TICKS)
   assert.equal(client.results.at(-1)?.why, 'needsAxe')
   client.player.inventory.slots[4] = { item: itemId('axe'), count: 1 }
-  client.command({ k: 'punch', id: plot.id, slot: 4 })
-  run(room, [client], PUNCH_COOLDOWN_TICKS)
-  assert.equal(room.world.entity(plot.id), undefined, 'one hit with an axe')
+  const hits = Math.ceil(BUILDINGS.plot.maxHp / WEAPONS.get('axe')!.harvest)
+  for (let i = 0; i < hits; i++) {
+    assert.ok(room.world.entity(plot.id), `still there before hit ${i + 1} of ${hits}`)
+    client.command({ k: 'punch', id: plot.id, slot: 4 })
+    run(room, [client], PUNCH_COOLDOWN_TICKS)
+  }
+  assert.equal(room.world.entity(plot.id), undefined, `${hits} hits with an axe`)
   assert.equal(countOf(client.player.inventory, itemId('garden-plot')), 1)
   assert.deepEqual(differingChunks(room, client), [])
 })
@@ -394,7 +400,8 @@ test('what a player put down only comes down to an axe', () => {
   client.command({ k: 'punch', id: fence.id, slot: 5 })
   run(room, [client], PUNCH_COOLDOWN_TICKS)
   assert.equal(client.results.at(-1)?.why, 'needsAxe')
-  for (let i = 0; i < 5 && room.world.entity(fence.id); i++) {
+  const hits = Math.ceil(BUILDINGS.fence.maxHp / WEAPONS.get('axe')!.harvest)
+  for (let i = 0; i < hits && room.world.entity(fence.id); i++) {
     client.command({ k: 'punch', id: fence.id, slot: 1 })
     run(room, [client], PUNCH_COOLDOWN_TICKS)
   }
@@ -628,8 +635,8 @@ test('a crowded farm still breeds: there is no limit on how many of a kind can b
 
 test('pulled grass gives grass seed too, which plants grass; planted by a pen, it spreads there (wild grass keeps clear of what is built)', () => {
   const { room, client } = farm('LAWN', {}, { animals: false })
-  // Pulling: some grass seed.
-  const tufts = entitiesOf(room, 'grass')
+  // Pulling: some grass seed (the forest's grass).
+  const tufts = entitiesOf(room, 'grass').filter((tuft) => biomeAt(room.terrain, tuft.x, tuft.y)?.key === 'forest')
   for (const tuft of tufts.slice(0, 30)) {
     client.player.position = center(tuft.x, tuft.y)
     client.command({ k: 'punch', id: tuft.id, slot: 0 })
@@ -732,6 +739,8 @@ test('nothing is grown on the beaches when the world is made', () => {
   for (const chunk of room.world.chunkIds) {
     for (const entity of room.world.chunk(chunk)!.entities) {
       if (entity.kind === 'loose') continue
+      // The desert is sand all over, and what is on it grows there.
+      if (biomeAt(room.terrain, entity.x, entity.y)?.ground === 'sand') continue
       assert.ok(!isSandAt(room.terrain, entity.x, entity.y), `${entity.kind} on the sand at ${entity.x},${entity.y}`)
     }
   }

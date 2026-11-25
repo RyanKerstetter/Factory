@@ -3,6 +3,8 @@ import type { WorldFrame } from './frame.ts'
 
 // How the world is shown on the page (three-view.ts: three.js, from above at a slant). game.ts works out what to draw
 // (a WorldFrame) and talks to the view only through this.
+export type ViewStats = { renderMs: number; calls: number; triangles: number }
+
 export interface GameView {
   readonly canvas: HTMLCanvasElement
   // Points the camera at `focus` (in tiles) at `zoom` (see camera.ts's camera tuning) for this frame. `pick` and
@@ -20,5 +22,8 @@ export interface GameView {
   start(frame: () => void): void
   // A line about the view for the debug overlay.
   describe(): string
+  // How much the last frame drawn took: the time spent drawing it (on the page: the graphics card's own time comes
+  // after), and how many draw calls and triangles it was.
+  stats(): ViewStats
   destroy(): void
 }

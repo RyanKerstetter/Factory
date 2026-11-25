@@ -24,6 +24,8 @@ export class TestClient {
   linkResults = 0
   // What the server has told this client about the animals near it.
   readonly animals = new Map<number, AnimalInfo>()
+  // Whether the server has told this client its player has truesight (the far islands' fog lifted).
+  sight = false
   private readonly receiver = new ReliableReceiver<LogMessage>()
   private readonly requests: ReliableSender<{ r: RequestMessage['r'] }>
   private inbox: LogMessage[] = []
@@ -41,6 +43,9 @@ export class TestClient {
       },
       onAnimalGone: (id) => {
         this.animals.delete(id)
+      },
+      onSight: () => {
+        this.sight = true
       },
       onDesync: (report) => {
         this.desyncReports++

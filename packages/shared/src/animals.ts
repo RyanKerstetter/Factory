@@ -23,14 +23,17 @@ import { ITEMS, itemFromKey, type ItemId } from './items.ts'
 //   tiles, and from a hit, at `fleePace` times its speed, and its herd runs with it) or "hostile" (see `hunt`).
 // - `hunt`, for a hostile one (a wolf): it keeps to its ground, and goes for a player who comes within `aggroRadius`
 //   tiles or hurts it, and so does every one of its pack within `packRadius` tiles of it. It chases at `pace` times its
-//   speed, bites for `damage` when within `reach` tiles, every `cooldown` seconds, and gives up on a player more than
-//   `leash` tiles from where it lives. With `flank`, the pack spreads out round its prey and darts in from different
+//   speed, bites for `damage` when within `reach` tiles, every `cooldown` seconds, and never gives a player up once it
+//   has gone for them (only if they leave the game). With `flank`, the pack spreads out round its prey and darts in from different
 //   sides, falling back between bites, rather than all running straight at it. It only notices a player it can see.
-//   A pack has its ground: they all live at one spot, and no new pack turns up within `territory` tiles of another's
-//   (so packs keep apart instead of clumping together); and each wolf wanders back if it strays more than half of
-//   that from home. Hit, a hunter backs off and does not bite again for `recoil` seconds (1 if not given), so a
+//   Packs keep apart: a wolf wanders where it likes, but with a wolf of another pack within half of `territory` tiles,
+//   it walks off away from it; and no new pack turns up within `territory` tiles of another's wolves. Hit, a hunter backs off and does not bite again for `recoil` seconds (1 if not given), so a
 //   player who lands a blow is not bitten straight back.
 // - `grazes`: whether it eats grass (true unless false).
+// - `solitary`: it lives alone (a spider): it never goes back to others of its kind, and turns up one at a time (each
+//   one's sex by chance), whatever its `herd` says.
+// - `webs`: it spins cobwebs round itself (a spider): one every `everySeconds` or so, on a free tile within `radius`
+//   tiles of it, while fewer than `most` of the cobwebs it has spun still stand (wherever it has wandered since).
 // - `drops`: what an adult drops when killed: a fixed `min` to `max`, or about as many as its `stat` (meat).
 // - `milk`: the item a cow is milked for (as many as its milk stat, built up over time); `lays`: the item a chicken
 //   lays (every eggTime seconds).
@@ -62,7 +65,6 @@ export type Temper = 'calm' | 'skittish' | 'hostile'
 export type Hunt = {
   aggroRadius: number
   packRadius: number
-  leash: number
   pace: number
   damage: number
   reach: number
@@ -96,6 +98,9 @@ export type AnimalDef = {
   fleePace: number
   hunt?: Hunt
   grazes: boolean
+  solitary: boolean
+  // Ticks, tiles, and how many.
+  webs?: { every: number; radius: number; most: number }
   drops: readonly AnimalDrop[]
   milk?: ItemId
   lays?: ItemId
@@ -103,9 +108,9 @@ export type AnimalDef = {
   stats: readonly StatDef[]
 }
 
-const ANIMAL_FIELDS = ['id', 'name', 'hp', 'armor', 'speed', 'size', 'halfSize', 'mass', 'foods', 'herd', 'population', 'biomes', 'temper', 'fleeRadius', 'fleePace', 'hunt', 'grazes', 'drops', 'milk', 'lays', 'life', 'stats']
+const ANIMAL_FIELDS = ['id', 'name', 'hp', 'armor', 'speed', 'size', 'halfSize', 'mass', 'foods', 'herd', 'population', 'biomes', 'temper', 'fleeRadius', 'fleePace', 'hunt', 'grazes', 'solitary', 'webs', 'drops', 'milk', 'lays', 'life', 'stats']
 const LIFE_FIELDS = ['hungerMinutes', 'hungryAt', 'grassFills', 'grassRadius', 'wellFedMinutes', 'breedCooldownMinutes', 'milkMinutes']
-const HUNT_FIELDS = ['aggroRadius', 'packRadius', 'leash', 'pace', 'damage', 'reach', 'cooldown', 'flank', 'territory', 'recoil']
+const HUNT_FIELDS = ['aggroRadius', 'packRadius', 'pace', 'damage', 'reach', 'cooldown', 'flank', 'territory', 'recoil']
 
 export const ANIMALS: readonly AnimalDef[] = parseAnimals(animalsData)
 const BY_KIND = new Map(ANIMALS.map((def) => [def.kind, def]))
@@ -184,6 +189,8 @@ function parseAnimals(data: unknown): AnimalDef[] {
       fleePace: numberField(raw, 'fleePace', fail, 0, 1.8),
       ...(raw.hunt !== undefined ? { hunt: huntOf(fieldsOf(raw.hunt, '"hunt"', fail), fail) } : {}),
       grazes: raw.grazes !== false,
+      solitary: raw.solitary === true,
+      ...(raw.webs !== undefined ? { webs: websOf(fieldsOf(raw.webs, '"webs"', fail), fail) } : {}),
       drops,
       ...(raw.milk !== undefined ? { milk: itemFromKey(raw.milk, fail) } : {}),
       ...(raw.lays !== undefined ? { lays: itemFromKey(raw.lays, fail) } : {}),
@@ -201,12 +208,16 @@ function parseAnimals(data: unknown): AnimalDef[] {
   })
 }
 
+function websOf(webs: Fields, fail: Fail): { every: number; radius: number; most: number } {
+  onlyFields(webs, ['everySeconds', 'radius', 'most'], fail, '"webs": ')
+  return { every: secondsField(webs, 'everySeconds', fail), radius: wholeField(webs, 'radius', fail, 1), most: wholeField(webs, 'most', fail, 1) }
+}
+
 function huntOf(hunt: Fields, fail: Fail): Hunt {
   onlyFields(hunt, HUNT_FIELDS, fail, '"hunt": ')
   return {
     aggroRadius: tilesField(hunt, 'aggroRadius', fail),
     packRadius: tilesField(hunt, 'packRadius', fail),
-    leash: tilesField(hunt, 'leash', fail),
     pace: numberField(hunt, 'pace', fail),
     damage: numberField(hunt, 'damage', fail, 1),
     reach: tilesField(hunt, 'reach', fail),

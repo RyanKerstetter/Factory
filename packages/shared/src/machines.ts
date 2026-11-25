@@ -38,8 +38,9 @@ export const OVEN_COOK_SPEED = 2
 // What a fire cooks, from data/stations.json: the campfire's list is "fire"; the oven is a station of its own, "oven",
 // `{ "includes": ["fire"], "recipes": [...] }`: its own recipes and everything a campfire cooks besides. One `input` at a
 // time in its cook slot becomes `into`, once the fire is at least `heat`, taking `ticks` at that heat (quicker the
-// hotter it is; an oven quicker still). `oven`: an oven's own (only an oven cooks it).
-export type FireRecipe = { index: number; input: ItemId; into: ItemId; heat: number; ticks: number; oven: boolean }
+// hotter it is; an oven quicker still). `oven`: an oven's own (only an oven cooks it). `smoke`: it makes nothing, but
+// burns away into smoke (leaves), and the fire smokes while it cooks (see `isSmoking`: it calms angry bees).
+export type FireRecipe = { index: number; input: ItemId; into: ItemId; heat: number; ticks: number; oven: boolean; smoke: boolean }
 
 // What a fire of a kind cooks (an oven its own recipes first, then the campfire's).
 export function fireRecipes(kind: FireKind): readonly FireRecipe[] {
@@ -112,7 +113,7 @@ export function stepCampfire(fire: Campfire): void {
   // Cooking: the fire has to be hot enough, and the hotter it is the quicker it goes.
   const raw = fire.inv.slots[CAMPFIRE_COOK]
   const cooks = raw.count > 0 ? cookingOf(raw.item, fire.kind) : undefined
-  if (!cooks || fire.heat < cooks.heat || !fitsIn(fire.inv, CAMPFIRE_COOKED, cooks.into)) {
+  if (!cooks || fire.heat < cooks.heat || (!cooks.smoke && !fitsIn(fire.inv, CAMPFIRE_COOKED, cooks.into))) {
     if (!cooks) fire.cook = 0
     return
   }
@@ -120,7 +121,15 @@ export function stepCampfire(fire: Campfire): void {
   if (fire.cook < cooks.heat * cooks.ticks) return
   fire.cook = 0
   takeFromSlot(fire.inv, CAMPFIRE_COOK, 1)
-  putIn(fire.inv, CAMPFIRE_COOKED, cooks.into, 1)
+  if (!cooks.smoke) putIn(fire.inv, CAMPFIRE_COOKED, cooks.into, 1)
+}
+
+// Whether a fire is smoking: hot enough to be cooking something that goes up in smoke (leaves). The same on the server
+// (bees within BEES.smokeRadius of it calm down) and the page (it draws the smoke).
+export function isSmoking(fire: Pick<Campfire, 'kind' | 'inv' | 'heat'>): boolean {
+  const raw = fire.inv.slots[CAMPFIRE_COOK]
+  const cooks = raw && raw.count > 0 ? cookingOf(raw.item, fire.kind) : undefined
+  return cooks !== undefined && cooks.smoke && fire.heat >= cooks.heat
 }
 
 // How far through cooking what is on it the fire is, 0 to 1.
@@ -197,14 +206,17 @@ function fireList(list: unknown[], station: string, first: number, oven: boolean
   return list.map((entry, i) => {
     const fail = failIn(`data/stations.json, ${station} recipe ${i + 1}`)
     const raw = fieldsOf(entry, 'it', fail)
-    onlyFields(raw, ['input', 'output', 'heat', 'seconds'], fail)
+    onlyFields(raw, ['input', 'output', 'smoke', 'heat', 'seconds'], fail)
+    const smoke = raw.smoke === true
+    if (smoke && raw.output !== undefined) fail('a "smoke" recipe makes nothing: no "output"')
     return {
       index: first + i,
       input: itemFromKey(raw.input, fail),
-      into: itemFromKey(raw.output, fail),
+      into: smoke ? 0 : itemFromKey(raw.output, fail),
       heat: wholeField(raw, 'heat', fail),
       ticks: secondsField(raw, 'seconds', fail),
       oven,
+      smoke,
     }
   })
 }
@@ -301,6 +313,13 @@ export function rackRecipe(item: ItemId): RackRecipe | undefined {
   return RACK_RECIPES.find((recipe) => recipe.input === item)
 }
 
+// Why a rack will not take an item hung on it (a right click holding it), or undefined if it will: it takes one thing
+// that dries (a hide) at a time, only while nothing is on it, drying or dried.
+export function rackRefusal(rack: Rack, item: ItemId): 'notDryable' | 'rackFull' | undefined {
+  if (!rackRecipe(item)) return 'notDryable'
+  return rack.inv.slots[RACK_INPUT].count > 0 || rack.inv.slots[RACK_OUTPUT].count > 0 ? 'rackFull' : undefined
+}
+
 export function stepRack(rack: Rack): void {
   const hide = rack.inv.slots[RACK_INPUT]
   const recipe = hide.count > 0 ? rackRecipe(hide.item) : undefined
@@ -313,12 +332,6 @@ export function stepRack(rack: Rack): void {
   rack.progress = 0
   takeFromSlot(rack.inv, RACK_INPUT, 1)
   putIn(rack.inv, RACK_OUTPUT, recipe.output, 1)
-}
-
-export function rackFraction(rack: Rack): number {
-  const hide = rack.inv.slots[RACK_INPUT]
-  const recipe = hide.count > 0 ? rackRecipe(hide.item) : undefined
-  return recipe ? Math.min(1, rack.progress / (100 * recipe.ticks)) : 0
 }
 
 // ---- the barrel

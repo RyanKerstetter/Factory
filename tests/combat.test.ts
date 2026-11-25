@@ -61,7 +61,7 @@ test('a basic attack hits what is in front of the player, not behind, and chops 
   const axe = WEAPONS.get('axe')!
   assert.equal(ahead.hp, animalDef('cow').hp - after(axe.damage, animalDef('cow').armor))
   assert.equal(behind.hp, animalDef('cow').hp, 'the one behind is untouched')
-  assert.equal((room.world.entity(900) as { hp: number }).hp, 30 - axe.harvest, 'the tree in the swing was chopped')
+  assert.equal((room.world.entity(900) as { hp: number }).hp, BUILDINGS.tree.maxHp - axe.harvest, 'the tree in the swing was chopped')
 })
 
 test('every weapon shares one cooldown, and attacking slows the player', () => {

@@ -40,9 +40,11 @@ function fillsBySelf(slot: Slot, item: ItemId): boolean {
   return slot.only === undefined || (slot.only === 'ammo' && isAmmo(item)) || (slot.only === 'food' && slot.count > 0 && slot.item === item)
 }
 
-// Whether an item can be eaten (and so go in the food slot).
+// Whether an item can be eaten (and so go in the food slot): what heals, and what hurts to eat (a truesight flesh).
 export function isFood(item: ItemId): boolean {
-  return item !== NO_ITEM && (getItem(item).heals ?? 0) > 0
+  if (item === NO_ITEM) return false
+  const def = getItem(item)
+  return (def.heals ?? 0) > 0 || (def.hurts ?? 0) > 0
 }
 
 // What a player wears: how many degrees warmer it keeps them, and how much less damage each hit does.

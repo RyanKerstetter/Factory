@@ -7,6 +7,7 @@ import {
   offeringsOf,
   planRitual,
   addItems,
+  roomFor,
   cloneInventory,
   DROP_THROW,
   moveBetween,
@@ -65,6 +66,8 @@ import {
   NO_ITEM,
   oreAt,
   PUNCH_COOLDOWN_TICKS,
+  RACK_OUTPUT,
+  rackRefusal,
   SUB,
   takeFromSlot,
   transferItems,
@@ -87,6 +90,8 @@ import {
   HOTBAR_SLOTS,
   CHEST_NAME_LENGTH,
   tileMiddle,
+  isFoggedAt,
+  type HiveEntity,
 } from '../../../packages/shared/src/index.ts'
 import type { Animals } from './animals.ts'
 import type { Combat } from './combat.ts'
@@ -121,17 +126,28 @@ export type CommandContext = {
     handOpen?: boolean
     // Travelling between two waystones: from and to which, and the tick it started (see waystones.ts).
     warp?: { from: number; to: number; at: number }
+    // Whether they have eaten a truesight flesh: the fog over the far islands is lifted for them (see `isFoggedAt`).
+    truesight?: boolean
   }
   // Where every player is, for whether a gate is open.
   players?: () => ReadonlyArray<PlayerPosition>
   // A work station has been started (it is watched, and stopped when nobody is at it).
   onWork?: (id: number) => void
+  // A target dummy was hit (by a swing of this player's), this hard.
+  onDummyHit?: (id: number, amount: number) => void
   // A tool went into a work station's tool slot from the player's things when they pressed Craft (to go back to them
   // when they leave it: see GameRoom.returnLentTools); or one was put in or taken out of a station by hand.
   onToolLent?: (station: number, item: ItemId) => void
   onToolHandled?: (station: number) => void
   // A player started travelling between two waystones.
   onWarp?: (from: Entity, to: Entity) => void
+  // Something was done to a beehive by the player (see the server's bees.ts): hit (or, `destroyed`, broken), or punched
+  // for a honeycomb. Its bees answer.
+  onHive?: (hive: HiveEntity, what: 'hit' | 'destroyed' | 'punched', by: number) => void
+  // The player ate something that hurt them (`amount`), and something that gave them truesight: the room tells the
+  // pages.
+  onHurtSelf?: (amount: number) => void
+  onTruesight?: () => void
   emit: (event: WorldEvent) => void
   nextEntityId: () => number
   nextLinkId: () => number
@@ -171,9 +187,17 @@ export type CommandOutcome = { ok: true; moved?: number } | { ok: false; why: Re
 // - Grass: pulled up by hand, it now and then gives a seed; cut with a knife, it gives hay.
 // - A garden plot with a grown crop gives the crop's produce and seeds (see crops.json), and stays, empty, unhurt; one
 //   with a crop still growing gives the seed back; an empty one is taken down with an axe and given back.
+// - A drying rack with a dried hide on it gives the hide, and stays, empty, unhurt (as a plot with a grown crop); one
+//   with nothing dried on it is like anything else put down.
 // - Anything else a player put down (fences, gates, the stump, feed boxes) only comes down to an axe, and is given
 //   back, with whatever was in it.
-// - A sapling or berry sprout is dug back up as its acorn or berries.
+// - A sapling or berry sprout is dug back up as its acorn or berries, a sunflower seedling as its seed.
+// - On the meadow and in the desert: clay, a copper rock or a tin rock only breaks to a pickaxe, a little each hit; sand
+//   and a cactus to anything (sand even to fists); a sunflower, or a spider's cobweb, at a hit. Each gives what
+//   drops.json says when it is gone.
+// - A beehive: a punch knocks a honeycomb out of it (if it has honey) without hurting it; anything else hurts it (a
+//   bee box only an axe, as anything put down), and broken it is gone (a bee box comes back as itself).
+//   Either way its bees are angered (see `onHive`), and broken, its queen leaves.
 export const STICK_EVERY = DROP_TABLES.tree.punchesPerBranch
 
 // What a hit drops: by item key and count, `stack` for a pile that lands as one (what was in a broken box).
@@ -205,12 +229,41 @@ export function hit(context: CommandContext, target: Entity, tool: ToolKind | un
       return count > 0 ? [[getItem(entry.item).key, count]] : []
     })
   switch (target.kind) {
+    // A target dummy takes every hit and never breaks (the hit is shown: see Combat's strike).
+    case 'dummy':
+      return { drops: [] }
     case 'sapling':
       fell()
       return { drops: from(DROP_TABLES.sapling.dug, 100) }
     case 'sprout':
       fell()
       return { drops: from(DROP_TABLES.sprout.dug, 120) }
+    case 'seedling':
+      fell()
+      return { drops: from(DROP_TABLES.sunflower.dug, 600) }
+    case 'sunflower':
+      fell()
+      return { drops: from(DROP_TABLES.sunflower.broken, 610) }
+    case 'cobweb':
+      fell()
+      return { drops: from(DROP_TABLES.cobweb.broken, 620) }
+    case 'clay':
+    case 'copper-rock':
+    case 'tin-rock':
+    case 'sand':
+    case 'cactus': {
+      if (damage === 0) return { refused: 'needsPickaxe' }
+      const hp = target.hp - damage
+      if (hp > 0) {
+        context.emit({ t: 'hp', id: target.id, hp })
+        return { drops: [] }
+      }
+      fell()
+      return { drops: from(DROP_TABLES[target.kind].broken, 630) }
+    }
+    case 'hive':
+    case 'beebox':
+      return hitHive(context, target, damage, weapon)
     case 'tree': {
       if (damage === 0) {
         // Every STICK_EVERY punches give a stick (or bark), without end.
@@ -269,10 +322,42 @@ export function hit(context: CommandContext, target: Entity, tool: ToolKind | un
       }
       return breakStructure(context, target, damage)
     }
+    case 'rack': {
+      // (Read before it is taken off: the event empties the slot as it is sent.)
+      const { item, count } = target.inv.slots[RACK_OUTPUT]
+      if (count === 0) return breakStructure(context, target, damage)
+      context.emit({ t: 'inv', id: target.id, item, delta: -count })
+      return { drops: [[getItem(item).key, count]] }
+    }
     default:
       // Anything a player put down (see `breakable` in buildings.ts): fences, gates, the stations, chests...
       return BUILDINGS[target.kind].breakable ? breakStructure(context, target, damage) : { refused: 'notPlant' }
   }
+}
+
+// A hit on a beehive (see `hit`): a punch for a honeycomb, anything else to break it; its bees are angered either way.
+function hitHive(context: CommandContext, target: HiveEntity, damage: number, weapon: Weapon): Hit {
+  const by = context.player.id
+  if (weapon.key === 'hand') {
+    context.onHive?.(target, 'punched', by)
+    if (target.honey <= 0) return { drops: [] }
+    context.emit({ t: 'set', e: entityToState({ ...target, honey: target.honey - 1 }) })
+    return { drops: [['honeycomb', 1]] }
+  }
+  if (target.kind === 'beebox') {
+    const result = breakStructure(context, target, damage)
+    if ('drops' in result) context.onHive?.(target, context.world.entity(target.id) ? 'hit' : 'destroyed', by)
+    return result
+  }
+  const hp = target.hp - damage
+  if (hp > 0) {
+    context.emit({ t: 'hp', id: target.id, hp })
+    context.onHive?.(target, 'hit', by)
+    return { drops: [] }
+  }
+  context.emit({ t: 'remove', id: target.id })
+  context.onHive?.(target, 'destroyed', by)
+  return { drops: [] }
 }
 
 // A hit on something a player put down: without an axe it does nothing; with one it loses `damage`, and when it has
@@ -483,6 +568,11 @@ export function runCommand(context: CommandContext, command: Command): CommandOu
       if (!hasInventory(entity)) return { ok: false, why: 'noInventory' }
       if (!isWithinReach(player.position, entity.x, entity.y)) return { ok: false, why: 'reach' }
       if (command.k === 'put' && !BUILDINGS[entity.kind].acceptsDeposits) return { ok: false, why: 'noDeposit' }
+      // A drying rack takes one hide, hung on it with a right click while nothing is on it.
+      if (command.k === 'put' && entity.kind === 'rack') {
+        const refused = rackRefusal(entity, command.item)
+        if (refused) return { ok: false, why: refused }
+      }
       if (entity.kind === 'barrel' && entity.sealed) return { ok: false, why: 'sealed' }
       if (context.guarded?.(entity.id)) return { ok: false, why: 'guarded' }
       // Worked out on a copy of the building; the moves are sent, and change the real one the same way.
@@ -500,14 +590,26 @@ export function runCommand(context: CommandContext, command: Command): CommandOu
     }
     case 'eat': {
       const held = player.inventory.slots[command.slot]
-      const heals = held && held.count > 0 ? getItem(held.item).heals : undefined
-      if (!heals) return { ok: false, why: 'notFood' }
-      if (player.health === undefined || player.health >= PLAYER_MAX_HEALTH) return { ok: false, why: 'fullHealth' }
+      const food = held && held.count > 0 ? getItem(held.item) : undefined
+      if (!food || (!food.heals && !food.hurts) || player.health === undefined) return { ok: false, why: 'notFood' }
+      // Food that hurts (a truesight flesh) is not eaten if it would knock the player out; food that heals, only when
+      // they are hurt.
+      if (food.hurts) {
+        if (player.health - food.hurts <= 0) return { ok: false, why: 'wouldKill' }
+      } else if (player.health >= PLAYER_MAX_HEALTH) return { ok: false, why: 'fullHealth' }
       // A couple of ticks' grace, as for attacks: the page times the cooldown by its own clock.
       if (context.tick + 2 < (player.eatReadyAt ?? 0)) return { ok: false, why: 'eatTooSoon' }
       player.eatReadyAt = context.tick + EAT_COOLDOWN_TICKS
       takeFromSlot(player.inventory, command.slot, 1)
-      player.health = Math.min(PLAYER_MAX_HEALTH, player.health + heals)
+      if (food.heals) player.health = Math.min(PLAYER_MAX_HEALTH, player.health + food.heals)
+      if (food.hurts) {
+        player.health -= food.hurts
+        context.onHurtSelf?.(food.hurts)
+      }
+      if (food.truesight) {
+        player.truesight = true
+        context.onTruesight?.()
+      }
       return { ok: true }
     }
     case 'sleep': {
@@ -552,6 +654,17 @@ export function runCommand(context: CommandContext, command: Command): CommandOu
       context.emit({ t: 'set', e: entityToState({ ...chest, inv }) })
       return { ok: true, moved }
     }
+    // A target dummy picked back up, as the item that put it down, if there is room for it.
+    case 'lift': {
+      const entity = world.entity(command.id)
+      if (!entity || entity.kind !== 'dummy') return { ok: false, why: 'missing' }
+      if (!isWithinReach(player.position, entity.x, entity.y)) return { ok: false, why: 'reach' }
+      const item = itemId('target-dummy')
+      if (roomFor(player.inventory, item, 1) < 1) return { ok: false, why: 'inventoryFull' }
+      addItems(player.inventory, item, 1)
+      context.emit({ t: 'remove', id: entity.id })
+      return { ok: true, moved: 1 }
+    }
     case 'rename': {
       // A chest or a waystone.
       const chest = world.entity(command.id)
@@ -575,6 +688,8 @@ export function runCommand(context: CommandContext, command: Command): CommandOu
       const to = world.entity(command.to)
       if (!to || to.kind !== 'waystone' || to.id === from.id) return { ok: false, why: 'noWaystone' }
       if (player.warp) return { ok: false, why: 'warping' }
+      // Not into the fog over the far islands, without truesight.
+      if (!player.truesight && isFoggedAt(context.terrain, to.x, to.y)) return { ok: false, why: 'fogged' }
       player.warp = { from: from.id, to: to.id, at: context.tick }
       context.onWarp?.(from, to)
       return { ok: true }

@@ -81,6 +81,9 @@ export abstract class CreatureSet<C extends Creature> implements Creatures {
   // The tick being run (or last run).
   protected tickNow = 0
   private readonly history = new PositionHistory()
+  // Each one by the chunk it was in when last remembered (see `remember`), so what is near a player is found from the
+  // chunks round them, not by going through every one in the world.
+  private readonly byChunk = new Map<number, C[]>()
   // The ones killed on the tick being run, and the damage of the blow that killed each (pages show it, and it falling,
   // before its drops).
   private readonly killed = new Map<number, number>()
@@ -97,9 +100,14 @@ export abstract class CreatureSet<C extends Creature> implements Creatures {
     return [...this.all.values()]
   }
 
-  // The ones in some chunks (what a page is told of).
+  // The ones in some chunks (what a page is told of), by where they were at the end of the last tick remembered, in ID
+  // order.
   inChunks(chunks: ReadonlySet<number>): C[] {
-    return this.list().filter((creature) => chunks.has(chunkOfTile(floorDiv(creature.x, SUB), floorDiv(creature.y, SUB))))
+    const found: C[] = []
+    for (const chunk of chunks) {
+      for (const creature of this.byChunk.get(chunk) ?? []) if (this.all.has(creature.id)) found.push(creature)
+    }
+    return found.sort((a, b) => a.id - b.id)
   }
 
   where(id: number): PlayerPosition | undefined {
@@ -115,6 +123,13 @@ export abstract class CreatureSet<C extends Creature> implements Creatures {
   // Notes where each one is at the end of `tick` (after they have moved), for attacks judged against the past.
   remember(tick: number): void {
     this.history.remember(tick, this.all.values())
+    this.byChunk.clear()
+    for (const creature of this.all.values()) {
+      const chunk = chunkOfTile(floorDiv(creature.x, SUB), floorDiv(creature.y, SUB))
+      const list = this.byChunk.get(chunk)
+      if (list) list.push(creature)
+      else this.byChunk.set(chunk, [creature])
+    }
   }
 
   // The ones near a point as they were at the end of tick `seen` (where a page drew them), each where it was then; or

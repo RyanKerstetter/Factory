@@ -2,3 +2,5 @@ node_modules/
 dist/
 # Worlds are saved outside the project (see defaultSavesDir in apps/server/src/save-folder.ts); old ones here are ignored.
 saves/
+bench/dist/
+bench/profiles/

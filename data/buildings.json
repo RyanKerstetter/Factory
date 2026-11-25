@@ -19,5 +19,14 @@
   "altar": { "hp": 30 },
   "pedestal": { "hp": 30 },
   "waystone": { "hp": 30 },
-  "worker": { "hp": 30 }
+  "worker": { "hp": 30 },
+  "clay": { "hp": 9 },
+  "copper-rock": { "hp": 12 },
+  "tin-rock": { "hp": 12 },
+  "sand": { "hp": 2 },
+  "cactus": { "hp": 6 },
+  "sunflower": { "hp": 1 },
+  "cobweb": { "hp": 1 },
+  "hive": { "hp": 20 },
+  "beebox": { "hp": 30 }
 }

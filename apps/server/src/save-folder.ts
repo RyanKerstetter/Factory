@@ -17,7 +17,8 @@ export function fromBytes(bytes: Buffer): unknown {
 }
 
 // Where the worlds are saved unless SAVES_DIR says otherwise: outside the project, in the user's own data folder, so
-// git never touches them (a pull or a checkout cannot overwrite or delete a world). On Windows %APPDATA%\FactoryGame\saves,
+// git never touches them (a pull or a checkout cannot overwrite or delete a world). (The folders keep the game's first
+// name, Factory Game, so the worlds saved before it was renamed are still found.) On Windows %APPDATA%\FactoryGame\saves,
 // on a Mac ~/Library/Application Support/FactoryGame/saves, elsewhere $XDG_DATA_HOME (or ~/.local/share)/factory-game/saves.
 export function defaultSavesDir(): string {
   if (process.platform === 'win32') return join(process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming'), 'FactoryGame', 'saves')

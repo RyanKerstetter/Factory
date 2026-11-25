@@ -8,8 +8,8 @@
 import { biomeAt, isInDungeons, isSeaAt, WARP_LIGHT_LEVELS, WARP_SECONDS, warpLightAt, type Terrain } from '../../../../packages/shared/src/index.ts'
 import { snowOnTile } from '../snow.ts'
 
-// What the ground underfoot sounds like: grass in the forest, sand on its beaches, rock in the mountains and snow where
-// it lies, and the ice crypt's frozen flagstones. A new surface needs a footstep recipe in FOOTSTEPS (or only its files)
+// What the ground underfoot sounds like: grass in the forest and on the meadow, sand on the beaches and all over the
+// desert, rock in the mountains and snow where it lies, and the ice crypt's frozen flagstones. A new surface needs a footstep recipe in FOOTSTEPS (or only its files)
 // and a place in `surfaceAt`.
 export type Surface = 'grass' | 'sand' | 'stone' | 'snow' | 'ice' | 'wood'
 
@@ -23,6 +23,7 @@ export function surfaceAt(terrain: Terrain | undefined, x: number, y: number): S
   const biome = biomeAt(terrain, x, y)
   // Snow exactly where the ground is drawn white (a whole tile at a time: see isSnowAt), so what you hear is what you see.
   if (biome?.key === 'mountain') return snowOnTile(terrain, x, y) ? 'snow' : 'stone'
+  if (biome?.ground === 'sand') return 'sand'
   for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) if (isSeaAt(terrain, x + dx, y + dy)) return 'sand'
   return 'grass'
 }
@@ -32,12 +33,18 @@ export function animalSound(kind: string): SoundId {
   if (kind === 'chicken') return 'animal/chicken'
   if (kind === 'deer') return 'animal/deer'
   if (kind === 'wolf') return 'animal/wolf'
+  if (kind === 'spider') return 'animal/spider'
   return 'animal/cow'
 }
 
-// The sound a monster of a kind makes when it is hurt: a skeleton's bones rattle; a wisp tinkles like ice.
+// The sound a monster of a kind makes when it is hurt: a skeleton's bones rattle; a wisp tinkles like ice; a goblin
+// squeals; a mummy groans; a bee buzzes.
 export function monsterSound(kind: string): SoundId {
-  return kind === 'frost-wisp' ? 'punch/stone' : 'animal/skeleton'
+  if (kind === 'frost-wisp') return 'punch/stone'
+  if (kind === 'goblin') return 'animal/goblin'
+  if (kind === 'mummy') return 'animal/mummy'
+  if (kind === 'bee' || kind === 'queen-bee') return 'animal/bee'
+  return 'animal/skeleton'
 }
 
 export function footstep(surface: Surface): SoundId {
@@ -72,6 +79,10 @@ export const SOUND_VOLUME: Readonly<Record<SoundId, number>> = {
   'animal/chicken': 1,
   'animal/deer': 1,
   'animal/wolf': 1,
+  'animal/spider': 1,
+  'animal/goblin': 1,
+  'animal/mummy': 1,
+  'animal/bee': 0.7,
   'animal/skeleton': 1,
   // Attacks.
   'attack/jab': 1,
@@ -295,6 +306,25 @@ const RECIPES = {
     burst(context, out, noise, { at, length: 0.14, gain: 0.2, filter: 'lowpass', frequency: 420 })
     tone(context, out, { at, type: 'sawtooth', from: 140 * vary(0.08), to: 110, length: 0.14, gain: 0.12 })
     tone(context, out, { at: at + 0.12, type: 'triangle', from: 1100 * vary(0.1), to: 700, length: 0.12, gain: 0.16 })
+  },
+  // A hurt spider: a dry hiss. A hurt goblin: a squeal, high and nasal. A hurt bee: an angry buzz.
+  'animal/spider': (context, out, at, noise) => {
+    burst(context, out, noise, { at, length: 0.22, gain: 0.22, filter: 'highpass', frequency: 3200 * vary(0.1), attack: 0.02 })
+    burst(context, out, noise, { at: at + 0.03, length: 0.12, gain: 0.1, filter: 'bandpass', frequency: 5200, q: 2, attack: 0.01 })
+  },
+  'animal/goblin': (context, out, at) => {
+    tone(context, out, { at, type: 'sawtooth', from: 620 * vary(0.1), to: 900, length: 0.08, gain: 0.12 })
+    tone(context, out, { at: at + 0.08, type: 'sawtooth', from: 880 * vary(0.1), to: 420, length: 0.16, gain: 0.12 })
+  },
+  // A hurt mummy: a low, dry groan through dusty wrappings.
+  'animal/mummy': (context, out, at, noise) => {
+    tone(context, out, { at, type: 'sawtooth', from: 95 * vary(0.08), to: 70, length: 0.42, gain: 0.14 })
+    tone(context, out, { at: at + 0.03, type: 'triangle', from: 190 * vary(0.08), to: 140, length: 0.36, gain: 0.08 })
+    burst(context, out, noise, { at, length: 0.3, gain: 0.08, filter: 'bandpass', frequency: 700 * vary(0.1), q: 1.5, attack: 0.06 })
+  },
+  'animal/bee': (context, out, at) => {
+    tone(context, out, { at, type: 'sawtooth', from: 230 * vary(0.08), to: 260, length: 0.22, gain: 0.08 })
+    tone(context, out, { at, type: 'square', from: 460 * vary(0.08), to: 520, length: 0.22, gain: 0.03 })
   },
   // A skeleton: a dry rattle of bones.
   'animal/skeleton': (context, out, at, noise) => {

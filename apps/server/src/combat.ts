@@ -3,7 +3,6 @@ import {
   areaReach,
   basicArea,
   BUILDINGS,
-  canAttackWith,
   chunkOfTile,
   countOf,
   dungeonBlocks,
@@ -87,6 +86,8 @@ export type CombatContext = {
   dropAt: (item: ItemId, count: number, x: number, y: number) => void
   // What a creature killed by something in flight drops, round it.
   dropRound: (middle: PlayerPosition, salt: number, drops: Dropped) => void
+  // A target dummy hit by something a player shot or threw, this hard.
+  dummyHit: (id: number, amount: number) => void
   // A thrown weapon sticking in the ground at a point (units), as something to knock loose (or, where it cannot stand,
   // lying there).
   stick: (item: ItemId, x: number, y: number) => void
@@ -127,7 +128,6 @@ export class Combat {
     // A couple of ticks' grace: the page times the cooldown by its own clock, and an attack sent the moment it is over
     // can land on a tick or two early here.
     if (tick + COOLDOWN_GRACE_TICKS < player.attackReadyAt) return { ok: false, why: 'tooSoon' }
-    if (!canAttackWith(player.inventory, command.slot)) return { ok: false, why: 'nothing' }
     const weapon = weaponIn(player.inventory, command.slot)
     // A charged attack: only with the button held down long enough (since its `charge`), a couple of ticks' grace again.
     const charged = command.charged ? weapon.charged : undefined
@@ -210,6 +210,8 @@ export class Combat {
       if (inArea(area, origin, facing, other, PLAYER_HALF_SIZE)) this.players!.hurt(other.id, damage, from, 0)
     }
     for (const target of tilesHitBy(this.world, area, origin, facing)) {
+      // A target dummy shows the hit it took (what it would do to a creature), and never breaks.
+      if (target.kind === 'dummy') context.onDummyHit?.(target.id, damage)
       const result = hit(context, target, tool, weapon)
       if ('drops' in result) moved += giveDrops(context, tileMiddle(target.x, target.y), target.id, result.drops)
     }
@@ -300,6 +302,8 @@ export class Combat {
         const tile = this.world.entityAt(floorDiv(x, SUB), floorDiv(y, SUB))
         // Into something solid, or a dungeon's wall: it stops where it was, short of it.
         if ((tile && BUILDINGS[tile.kind].solid) || dungeonBlocks(floorDiv(x, SUB), floorDiv(y, SUB))) {
+          // A player's shot into a target dummy shows how hard it hit.
+          if (tile?.kind === 'dummy' && !shot.hostile) context.dummyHit(tile.id, shot.damage)
           this.land(context, shot)
           done = true
           break

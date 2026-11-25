@@ -13,6 +13,7 @@ import {
   type TerrainSettings,
 } from '../../../packages/shared/src/index.ts'
 import type { AnimalSave } from './animals.ts'
+import type { SwarmSave } from './bees.ts'
 import type { RaftSave } from './rafts.ts'
 
 // A world, saved: everything that is not worked out again from the seed (the ground, ponds, ore are). Written as JSON to
@@ -36,6 +37,8 @@ export type PlayerSave = {
   inventory: Array<[string, number] | null>
   // The raft they were aboard, and where on it: [raft ID, x, y] (see rafts.ts).
   aboard?: [number, number, number]
+  // Whether they have eaten a truesight flesh (the far islands' fog is lifted for them).
+  truesight?: true
 }
 
 export type WorldSave = {
@@ -66,6 +69,9 @@ export type WorldSave = {
   chunks: Array<{ chunk: number; entities: EntityState[]; drops: DropState[]; removed?: number[]; removedDrops?: number[] }>
   links: LinkState[]
   animals?: AnimalSave
+  // Queens without a home (their hive destroyed), and how many workers follow each (see the server's bees.ts). A bee out
+  // of its hive is otherwise counted in it, and comes back there.
+  swarms?: SwarmSave
   // The rafts on the water (see the server's rafts.ts).
   rafts?: RaftSave
   // Everyone who has played in it, by name (lower case, which is how players are linked to their save).

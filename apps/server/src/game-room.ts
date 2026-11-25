@@ -135,13 +135,15 @@ import {
   type StreamEvent,
   type WorldEvent,
   tileMiddle,
+  isFoggedAt,
 } from '../../../packages/shared/src/index.ts'
-import { Animals, type AnimalContext } from './animals.ts'
+import { Bees, type HiveContext } from './bees.ts'
+import { Animals, type Animal, type AnimalContext } from './animals.ts'
 import { Combat } from './combat.ts'
 import { Rafts } from './rafts.ts'
 import { PositionHistory, type CreatureSet, type Creature } from './creatures.ts'
 import { Dungeons, type DungeonContext } from './dungeons.ts'
-import { Monsters, type MonsterContext } from './monsters.ts'
+import { Monsters, type Monster, type MonsterContext } from './monsters.ts'
 import { drawRitual, giveDrops, handCraft, runCommand, scatterAt, type CommandContext } from './commands.ts'
 import { itemKeys, itemRemap, remapEntity, SAVE_VERSION, type PlayerSave, type WorldSave } from './save.ts'
 
@@ -215,6 +217,9 @@ export type ServerPlayer = {
   warp?: { from: number; to: number; at: number }
   // Where they were when it started, to call it off if they are knocked away.
   warpFrom?: PlayerPosition
+  // Whether they have eaten a truesight flesh: the fog over the far islands is lifted for them (without it they cannot
+  // set foot there: see `solidFor`).
+  truesight?: boolean
 }
 
 // How far a player may push themselves (lunging, dashing) in a while, in units (more than a knife's dash, and a lunge
@@ -262,6 +267,8 @@ export type GameRoomOptions = {
 // standing still), or where something has been built (see `builtChunks`, worked out every BUILT_EVERY ticks).
 const ACTIVE_RADIUS = SUBSCRIBE_RADIUS + 1
 const BUILT_EVERY = 2 * TPS
+// The kinds a player puts down (not trees, rocks and the like), for `builtChunks`.
+const BUILT_KINDS = (Object.keys(BUILDINGS) as BuildingKind[]).filter((kind) => !BUILDINGS[kind].natural)
 const SNAPSHOT_ENTITIES_PER_PART = 50
 const SNAPSHOT_LINKS_PER_PART = 200
 const SNAPSHOT_DROPS_PER_PART = 200
@@ -334,19 +341,21 @@ export class GameRoom {
   // The tools pressing Craft put into a work station from a player's things, by station: whose, and what. Each goes back
   // to that player when they leave the station (see `returnLentTools`).
   private readonly lentTools = new Map<number, { player: number; item: ItemId }>()
-  // Every waystone, as the pages are told of them (worked out again when one changes), and what they were last sent.
-  private waystones: WaystoneInfo[] | undefined
-  // Every altar (worked out again when one is put down or taken away), and the ritual each did last, to do again (see
-  // `repeatRituals`).
-  private altars: number[] | undefined
+  // Every waystone, as the pages are told of them, worked out again when one changes (see FactoryWorld.changesOf); and
+  // what they were last sent.
+  private waystones: { changes: number; list: WaystoneInfo[] } | undefined
+  private waystonesSent = { changes: -1, key: '' }
+  // The ritual each altar did last, to do again (see `repeatRituals`).
   private readonly rituals = new Map<number, number>()
-  private waystonesSent = ''
   // The animals, run here only (see animals.ts), if this game has them.
   readonly animals: Animals | undefined
   // Attacks, and the arrows, stones and spears in flight.
   readonly combat: Combat
-  // The monsters (see monsters.ts): the skeletons' camps, and the dungeon's guards and boss.
+  // The monsters (see monsters.ts): the skeletons' and goblins' camps, the dungeon's guards and boss, and the bees out of
+  // their hives.
   readonly monsters: Monsters | undefined
+  // The bees' colonies (see bees.ts).
+  readonly bees: Bees | undefined
   // The copies of the dungeon players are in (see dungeons.ts).
   readonly dungeons: Dungeons
   // The rafts on the water (see rafts.ts).
@@ -391,6 +400,7 @@ export class GameRoom {
     this.dropsOnGround = options.dropsOnGround ?? DROP_ITEMS_ON_GROUND
     this.animals = (options.animals ?? this.plants) ? new Animals(seed, options.wildAnimals ?? true) : undefined
     this.monsters = (options.animals ?? this.plants) ? new Monsters(seed, options.wildAnimals ?? true) : undefined
+    this.bees = this.monsters ? new Bees(this.monsters, seed) : undefined
     this.rng = new Rng((seed ^ 0x6a55) >>> 0)
     this.dungeons = new Dungeons(seed)
     this.rafts = new Rafts(this.terrain)
@@ -472,6 +482,7 @@ export class GameRoom {
         const item = slot ? itemByKey(slot[0]) : undefined
         if (item && i < player.inventory.slots.length) Object.assign(player.inventory.slots[i], { item: item.id, count: slot![1] })
       })
+      if (saved.truesight) player.truesight = true
     }
     this.players.set(player.id, player)
     // What everyone already here holds and wears (theirs goes to everyone on the next tick).
@@ -490,6 +501,7 @@ export class GameRoom {
     })
     player.outbox.push({ k: 'pinv', tick: this.tick, inv: inventoryToWire(player.inventory) })
     player.outbox.push({ k: 'waystones', list: this.waystoneList() })
+    if (player.truesight) player.outbox.push({ k: 'sight' })
     this.updateChunks(player, this.tick)
     this.sendRoster()
     this.sendRoom()
@@ -627,7 +639,7 @@ export class GameRoom {
       if (!slide) continue
       // Aboard a raft, they are knocked about its deck (never off it).
       if (player.aboard) this.movePlayer(player, withPush(0, Math.atan2(slide.vy, slide.vx), Math.hypot(slide.vx, slide.vy)), 100)
-      else player.position = moveBox(player.position, slide.vx, slide.vy, PLAYER_HALF_SIZE, this.solid)
+      else player.position = moveBox(player.position, slide.vx, slide.vy, PLAYER_HALF_SIZE, this.solidFor(player))
       if (--slide.ticks <= 0) player.slide = undefined
     }
 
@@ -652,6 +664,7 @@ export class GameRoom {
     const monsterContext = this.monsterContext(tick)
     this.animals?.step(animalContext)
     this.monsters?.step(monsterContext)
+    this.bees?.step(this.hiveContext(tick))
     // Nobody stands on anybody: players, animals and monsters that overlap are pushed apart (see bodies.ts).
     this.separateBodies(players, animalContext, monsterContext)
     this.animals?.remember(tick)
@@ -666,6 +679,7 @@ export class GameRoom {
       emit: (event) => this.logWorldEvent(event, tick),
       dropAt,
       // What something shot dead drops lands on the ground, whatever the game does with what players knock loose.
+      dummyHit: (id, amount) => this.dummyHit(id, amount),
       dropRound: (middle, salt, drops) => giveDrops({ ...this.commandContext(tick), drops: this.dropping() }, middle, salt, drops),
       // A thrown spear stands stuck in the ground, on a tile with nothing else on it (else it lies there; in water it is
       // lost).
@@ -721,26 +735,15 @@ export class GameRoom {
     }
     const animalPositions = new Map<number, AnimalPosition[]>()
     const monsterPositions = new Map<number, MonsterPosition[]>()
+    // What each creature near anyone is, worked out once this tick however many players are near it.
+    const animals = this.animals
+    const monsters = this.monsters
+    const animalNews = newsOf((animal: Animal) => animals!.info(animal), (info) => ({ k: 'animal', a: info }))
+    const monsterNews = newsOf((monster: Monster) => monsters!.info(monster), (info) => ({ k: 'monster', m: info }))
     for (const player of players) {
       this.updateChunks(player, tick)
-      const animals = this.animals
-      const monsters = this.monsters
-      animalPositions.set(
-        player.id,
-        this.syncNear(player, animals, player.animalsSent, (animal) => animals!.info(animal), (animal) => ({ k: 'animal', a: animals!.info(animal) }), (id, died) => ({
-          k: 'animal-',
-          id,
-          ...(died !== undefined ? { died } : {}),
-        })),
-      )
-      monsterPositions.set(
-        player.id,
-        this.syncNear(player, monsters, player.monstersSent, (monster) => monsters!.info(monster), (monster) => ({ k: 'monster', m: monsters!.info(monster) }), (id, died) => ({
-          k: 'monster-',
-          id,
-          ...(died !== undefined ? { died } : {}),
-        })),
-      )
+      animalPositions.set(player.id, this.syncNear(player, animals, player.animalsSent, animalNews, (id, died) => ({ k: 'animal-', id, ...(died !== undefined ? { died } : {}) })))
+      monsterPositions.set(player.id, this.syncNear(player, monsters, player.monstersSent, monsterNews, (id, died) => ({ k: 'monster-', id, ...(died !== undefined ? { died } : {}) })))
       this.flush(player, tick)
     }
     this.animals?.forgetKills()
@@ -828,11 +831,6 @@ export class GameRoom {
 
   // A change a command made: applied here, and logged to every client that simulates a chunk it touches.
   private logWorldEvent(event: WorldEvent, tick: number): void {
-    // A waystone put down, named or taken away: the list of them is worked out again.
-    const waystone = event.t === 'add' || event.t === 'set' ? event.e.kind === 'waystone' : event.t === 'remove' && this.world.entity(event.id)?.kind === 'waystone'
-    if (waystone) this.waystones = undefined
-    const altar = event.t === 'add' ? event.e.kind === 'altar' : event.t === 'remove' && this.world.entity(event.id)?.kind === 'altar'
-    if (altar) this.altars = undefined
     if (event.t === 'hp' && !this.healing) {
       const entity = this.world.entity(event.id)
       if (entity && BUILDINGS[entity.kind].maxHp > 0 && event.hp < hpOf(entity)) this.hurt.set(event.id, tick)
@@ -954,10 +952,13 @@ export class GameRoom {
   private builtChunks(tick: number): ReadonlySet<number> {
     if (this.built && tick - this.built.at < BUILT_EVERY) return this.built.chunks
     const chunks = new Set<number>()
-    for (const chunk of this.world.chunkIds) {
-      const { cx, cy } = chunkCoords(chunk)
-      if (isInDungeons(cx * CHUNK_SIZE, cy * CHUNK_SIZE)) continue
-      if (this.world.chunk(chunk)?.entities.some((entity) => !BUILDINGS[entity.kind].natural)) chunks.add(chunk)
+    for (const kind of BUILT_KINDS) {
+      for (const entity of this.world.ofKind(kind)) {
+        const chunk = chunkOfTile(entity.x, entity.y)
+        if (chunks.has(chunk)) continue
+        const { cx, cy } = chunkCoords(chunk)
+        if (!isInDungeons(cx * CHUNK_SIZE, cy * CHUNK_SIZE)) chunks.add(chunk)
+      }
     }
     this.built = { at: tick, chunks }
     return chunks
@@ -971,7 +972,7 @@ export class GameRoom {
       half: PLAYER_HALF_SIZE,
       mass: PLAYER_MASS,
       move: (dx, dy) => {
-        player.position = moveBox(player.position, dx, dy, PLAYER_HALF_SIZE, this.solid)
+        player.position = moveBox(player.position, dx, dy, PLAYER_HALF_SIZE, this.solidFor(player))
         return player.position
       },
     }))
@@ -1047,28 +1048,21 @@ export class GameRoom {
 
   // Every waystone in the world, in the order they were put down.
   private waystoneList(): WaystoneInfo[] {
-    if (this.waystones) return this.waystones
-    const list: WaystoneInfo[] = []
-    for (const chunk of this.world.chunkIds) {
-      for (const entity of this.world.chunk(chunk)?.entities ?? []) {
-        if (entity.kind === 'waystone') list.push({ id: entity.id, name: entity.name ?? '', x: entity.x, y: entity.y })
-      }
+    const changes = this.world.changesOf('waystone')
+    if (this.waystones?.changes !== changes) {
+      const list = this.world.ofKind('waystone').map((entity) => ({ id: entity.id, name: entity.name ?? '', x: entity.x, y: entity.y }))
+      this.waystones = { changes, list }
     }
-    this.waystones = list.sort((a, b) => a.id - b.id)
-    return this.waystones
+    return this.waystones.list
   }
 
   // An altar does its ritual again and again: once the burst at the end of one is over, the same one starts, for as
   // long as the pedestals and barrels round it hold what it takes and there is room on the altar for what it makes (the
   // same item, stacking up). Lacking either, it stops, until a player starts one.
   private repeatRituals(tick: number): void {
-    if (!this.altars) {
-      const found: number[] = []
-      for (const chunk of this.world.chunkIds) for (const entity of this.world.chunk(chunk)?.entities ?? []) if (entity.kind === 'altar') found.push(entity.id)
-      this.altars = found.sort((a, b) => a - b)
-    }
-    for (const id of this.rituals.keys()) if (!this.altars.includes(id)) this.rituals.delete(id)
-    for (const id of this.altars) {
+    for (const id of this.rituals.keys()) if (this.world.entity(id)?.kind !== 'altar') this.rituals.delete(id)
+    // By ID, as what is done to one may put a new state in place of it.
+    for (const { id } of this.world.ofKind('altar')) {
       const altar = this.world.entity(id)
       if (altar?.kind !== 'altar') continue
       if (altar.recipe !== 0) {
@@ -1083,12 +1077,20 @@ export class GameRoom {
     }
   }
 
+  // A target dummy was hit: everyone is told, to show the number.
+  private dummyHit(id: number, amount: number): void {
+    for (const player of this.players.values()) player.outbox.push({ k: 'dummy', id, amount })
+  }
+
   // Tells everyone the waystones, when they have changed.
   private sendWaystones(): void {
+    const changes = this.world.changesOf('waystone')
+    if (changes === this.waystonesSent.changes) return
     const list = this.waystoneList()
     const key = JSON.stringify(list)
-    if (key === this.waystonesSent) return
-    this.waystonesSent = key
+    const same = key === this.waystonesSent.key
+    this.waystonesSent = { changes, key }
+    if (same) return
     for (const player of this.players.values()) player.outbox.push({ k: 'waystones', list })
   }
 
@@ -1110,20 +1112,18 @@ export class GameRoom {
   // not have), worked out every BORDER_HEAT_EVERY ticks and sent, rounded down to BORDER_HEAT_STEP, when it changes.
   private spreadBorderHeat(tick: number): void {
     if (tick % BORDER_HEAT_EVERY !== 0) return
-    for (const chunk of this.world.chunkIds) {
-      for (const entity of this.world.chunk(chunk)?.entities ?? []) {
-        if (entity.kind !== 'barrel' && entity.kind !== 'rack') continue
-        let heat = 0
-        for (let y = entity.y - 2; y <= entity.y + 2; y++) {
-          for (let x = entity.x - 2; x <= entity.x + 2; x++) {
-            if (chunkOfTile(x, y) === chunk) continue
-            const fire = this.world.entityAt(x, y)
-            if (fire?.kind === 'campfire' || fire?.kind === 'oven') heat = Math.max(heat, heatFrom(fire.heat, Math.max(Math.abs(x - entity.x), Math.abs(y - entity.y))))
-          }
+    for (const entity of [...this.world.ofKind('barrel'), ...this.world.ofKind('rack')]) {
+      const chunk = chunkOfTile(entity.x, entity.y)
+      let heat = 0
+      for (let y = entity.y - 2; y <= entity.y + 2; y++) {
+        for (let x = entity.x - 2; x <= entity.x + 2; x++) {
+          if (chunkOfTile(x, y) === chunk) continue
+          const fire = this.world.entityAt(x, y)
+          if (fire?.kind === 'campfire' || fire?.kind === 'oven') heat = Math.max(heat, heatFrom(fire.heat, Math.max(Math.abs(x - entity.x), Math.abs(y - entity.y))))
         }
-        heat -= heat % BORDER_HEAT_STEP
-        if (heat !== entity.border) this.logWorldEvent({ t: 'border', id: entity.id, heat }, tick)
       }
+      heat -= heat % BORDER_HEAT_STEP
+      if (heat !== entity.border) this.logWorldEvent({ t: 'border', id: entity.id, heat }, tick)
     }
   }
 
@@ -1197,6 +1197,7 @@ export class GameRoom {
       chunks: this.changedChunks(),
       links: [...this.world.linkIds].map((id) => linkToState(this.world.link(id)!)),
       ...(this.animals ? { animals: this.animals.toSave() } : {}),
+      ...(this.bees && this.bees.toSave().length > 0 ? { swarms: this.bees.toSave() } : {}),
       ...(this.rafts.list().length > 0 ? { rafts: this.rafts.toSave() } : {}),
       players,
       ...(this.host ? { host: this.host } : {}),
@@ -1314,6 +1315,7 @@ export class GameRoom {
     }
     for (const link of save.links) this.world.addLink(linkFromState(link))
     if (save.animals) this.animals?.loadSave(save.animals)
+    if (save.swarms) this.bees?.loadSave(save.swarms)
     if (save.rafts) this.rafts.loadSave(save.rafts)
     for (const [name, player] of Object.entries(save.players)) this.savedPlayers.set(name.toLowerCase(), player)
   }
@@ -1342,6 +1344,13 @@ export class GameRoom {
       onWork: (id) => this.working.add(id),
       onToolLent: (station, item) => this.lentTools.set(station, { player: player.id, item }),
       onToolHandled: (station) => this.lentTools.delete(station),
+      onDummyHit: (id, amount) => this.dummyHit(id, amount),
+      onHive: (hive, what, by) => this.bees?.onHive(hive, what, by),
+      // Hurt by what they ate (a truesight flesh): everyone sees it, as any hurt.
+      onHurtSelf: (amount) => {
+        for (const other of this.players.values()) other.outbox.push({ k: 'hurt', id: player.id, amount, died: false })
+      },
+      onTruesight: () => this.players.get(player.id)?.outbox.push({ k: 'sight' }),
       onWarp: (from, to) => {
         const traveller = this.players.get(player.id)
         if (traveller) traveller.warpFrom = { ...traveller.position }
@@ -1407,9 +1416,20 @@ export class GameRoom {
   // Whether a tile is water a raft floats on (the sea, a pond).
   private readonly isWater = (x: number, y: number): boolean => waterAt(this.terrain, x, y)
 
-  // Whether a player can stand with their middle at a point (units): all of them clear of water and anything solid.
-  private readonly canLand = (point: PlayerPosition): boolean =>
-    this.solid(tileOfUnits(point.x), tileOfUnits(point.y)) === false && !overlapsSolid(point, this.solid)
+  // What a player without truesight cannot walk into besides: the far islands, under their fog (see `isFoggedAt`).
+  private readonly fogged: IsSolid = (x, y) => (isFoggedAt(this.terrain, x, y) ? true : this.solid(x, y))
+
+  // What a player cannot walk into: water and anything solid, and, until they have eaten a truesight flesh, the fog.
+  private solidFor(player: { truesight?: boolean }): IsSolid {
+    return player.truesight ? this.solid : this.fogged
+  }
+
+  // Whether a player can stand with their middle at a point (units): all of them clear of water and anything solid (and
+  // the fog, without truesight).
+  private canLandFor(player: { truesight?: boolean }): (point: PlayerPosition) => boolean {
+    const solid = this.solidFor(player)
+    return (point) => solid(tileOfUnits(point.x), tileOfUnits(point.y)) === false && !overlapsSolid(point, solid)
+  }
 
   // A tick of a player's keys: aboard a raft, they walk about its deck, or step across onto another raft, or off it onto
   // land; on land, they step aboard a raft they walk onto, or else walk as usual.
@@ -1418,7 +1438,7 @@ export class GameRoom {
     const raft = aboard ? this.rafts.get(aboard.raft) : undefined
     if (aboard && raft) {
       const others = this.rafts.poses().filter((other) => other.id !== raft.id)
-      const next = stepAboard(aboard, keys, raft, this.canLand, speed, others)
+      const next = stepAboard(aboard, keys, raft, this.canLandFor(player), speed, others)
       if ('off' in next) {
         player.aboard = undefined
         player.position = next.off
@@ -1438,7 +1458,7 @@ export class GameRoom {
       player.position = fromRaft(this.rafts.get(boarding.raft)!, boarding)
       return
     }
-    player.position = stepPlayer(player.position, keys, this.solid, this.slow, speed)
+    player.position = stepPlayer(player.position, keys, this.solidFor(player), this.slow, speed)
   }
 
   // Each raft on a rope is pulled towards the player leading it or the fence it is tied to (see Rafts.tow). A rope
@@ -1486,18 +1506,37 @@ export class GameRoom {
     return { nextId: () => this.nextDrop++, solid: this.solid }
   }
 
+  // Whether a chunk is where something is going on, on a tick: near a player, or where a player has built something
+  // (see `builtChunks`). Animals and bees' colonies are only run there.
+  private activeOn(tick: number): (chunk: number) => boolean {
+    const near = [...this.players.values()].map((player) => chunkOfTile(tileOfUnits(player.position.x), tileOfUnits(player.position.y)))
+    const built = this.builtChunks(tick)
+    return (chunk) => built.has(chunk) || near.some((at) => chunkDistance(at, chunk) <= ACTIVE_RADIUS)
+  }
+
+  // What the bees need from the room on a tick.
+  private hiveContext(tick: number): HiveContext {
+    return {
+      world: this.world,
+      tick,
+      emit: (event) => this.logWorldEvent(event, tick),
+      players: [...this.players.values()],
+      isActive: this.activeOn(tick),
+      hurtPlayer: (id, damage, from, knockback) => this.hurtPlayer(id, damage, from, knockback),
+    }
+  }
+
   // What the animals need from the room on a tick.
   private animalContext(tick: number): AnimalContext {
     const emit = (event: WorldEvent): void => this.logWorldEvent(event, tick)
-    const near = [...this.players.values()].map((player) => chunkOfTile(tileOfUnits(player.position.x), tileOfUnits(player.position.y)))
-    const built = this.builtChunks(tick)
     return {
-      isActive: (chunk) => built.has(chunk) || near.some((at) => chunkDistance(at, chunk) <= ACTIVE_RADIUS),
+      isActive: this.activeOn(tick),
       world: this.world,
       seed: this.seed,
       terrain: this.terrain,
       tick,
       emit,
+      nextEntityId: () => this.nextEntity++,
       drop: (middle, salt, item, count) => scatterAt({ seed: this.seed, tick, emit }, this.dropping(), middle, salt, item, count),
       players: [...this.players.values()],
       isGrown: (chunk) => this.grown.has(chunk),
@@ -1524,15 +1563,14 @@ export class GameRoom {
   }
 
   // Tells a player's page about the creatures of a set near it (animals or monsters) that it has not been told about, or
-  // that have changed (`info`, as `told` puts it on the log), and that the ones it knew of that are no longer near are
-  // gone (as `gone` puts it, with the damage of the blow if one was killed). `sent` is what the page has been told of
-  // each. Gives where the near ones are, for the state message.
+  // that have changed (as `news` has it, worked out once a tick for everyone), and that the ones it knew of that are no
+  // longer near are gone (as `gone` puts it, with the damage of the blow if one was killed). `sent` is what the page has
+  // been told of each. Gives where the near ones are, for the state message.
   private syncNear<C extends Creature>(
     player: ServerPlayer,
     set: CreatureSet<C> | undefined,
     sent: Map<number, string>,
-    info: (creature: C) => unknown,
-    told: (creature: C) => StreamEvent,
+    news: (creature: C) => CreatureNews,
     gone: (id: number, died: number | undefined) => StreamEvent,
   ): Array<[number, number, number]> {
     if (!set) return []
@@ -1540,10 +1578,10 @@ export class GameRoom {
     const seen = new Set<number>()
     for (const creature of near) {
       seen.add(creature.id)
-      const key = JSON.stringify(info(creature))
+      const { key, event } = news(creature)
       if (sent.get(creature.id) === key) continue
       sent.set(creature.id, key)
-      player.outbox.push(told(creature))
+      player.outbox.push(event)
     }
     for (const id of [...sent.keys()]) {
       if (seen.has(id)) continue
@@ -1793,6 +1831,25 @@ export class GameRoom {
   }
 }
 
+// What the pages are told of a creature on a tick: what it is, as text to compare with what a page was told before, and
+// the event telling it.
+type CreatureNews = { key: string; event: StreamEvent }
+
+// The news of each creature of a set, worked out the first time it is asked for on a tick and kept for the tick, so it
+// costs the same however many players are near it.
+function newsOf<C extends Creature, I>(info: (creature: C) => I, event: (info: I) => StreamEvent): (creature: C) => CreatureNews {
+  const known = new Map<number, CreatureNews>()
+  return (creature) => {
+    let news = known.get(creature.id)
+    if (!news) {
+      const told = info(creature)
+      news = { key: JSON.stringify(told), event: event(told) }
+      known.set(creature.id, news)
+    }
+    return news
+  }
+}
+
 // The player behind what happens with nobody's hand in it (what a creature shot dead drops).
 const NOBODY: CommandContext['player'] = { id: 0, position: { x: 0, y: 0 }, inventory: createInventory(0), lastPunchTick: 0, using: 0, attackReadyAt: 0 }
 
@@ -1820,6 +1877,7 @@ function playerSave(player: ServerPlayer, terrain: Terrain): PlayerSave {
     health: player.health,
     inventory: player.inventory.slots.map((slot) => (slot.count > 0 ? [getItem(slot.item).key, slot.count] : null)),
     ...(player.aboard && !inDungeon ? { aboard: [player.aboard.raft, player.aboard.x, player.aboard.y] as [number, number, number] } : {}),
+    ...(player.truesight ? { truesight: true as const } : {}),
   }
 }
 

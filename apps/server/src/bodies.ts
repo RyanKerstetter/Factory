@@ -19,26 +19,32 @@ export const SEPARATE_PASSES = 3
 // How heavy a body that never moves counts as.
 const FIXED_MASS = 1_000_000
 
+// A tile as one number, for the grid bodies are sorted into (the world is well within 65,536 tiles each way).
+const cellKey = (x: number, y: number): number => (x + 65_536) * 131_072 + (y + 65_536)
+
 export function separateBodies(bodies: readonly Body[]): void {
   if (bodies.length < 2) return
+  // Bodies by the tile they stand on, so each is only checked against those in the tiles round it (made again each
+  // pass, as they move).
+  const cells = new Map<number, number[]>()
   for (let pass = 0; pass < SEPARATE_PASSES; pass++) {
-    // Bodies by the tile they stand on, so each is only checked against those in the tiles round it.
-    const cells = new Map<string, number[]>()
-    const cellOf = (body: Body): [number, number] => [floorDiv(body.x, SUB), floorDiv(body.y, SUB)]
-    bodies.forEach((body, i) => {
-      const [cx, cy] = cellOf(body)
-      const key = `${cx},${cy}`
+    cells.clear()
+    for (let i = 0; i < bodies.length; i++) {
+      const key = cellKey(floorDiv(bodies[i].x, SUB), floorDiv(bodies[i].y, SUB))
       const list = cells.get(key)
       if (list) list.push(i)
       else cells.set(key, [i])
-    })
+    }
     let moved = false
     for (let i = 0; i < bodies.length; i++) {
       const a = bodies[i]
-      const [cx, cy] = cellOf(a)
+      const cx = floorDiv(a.x, SUB)
+      const cy = floorDiv(a.y, SUB)
       for (let dy = -1; dy <= 1; dy++) {
         for (let dx = -1; dx <= 1; dx++) {
-          for (const j of cells.get(`${cx + dx},${cy + dy}`) ?? []) {
+          const near = cells.get(cellKey(cx + dx, cy + dy))
+          if (!near) continue
+          for (const j of near) {
             if (j <= i) continue
             const b = bodies[j]
             if (a.fixed && b.fixed) continue

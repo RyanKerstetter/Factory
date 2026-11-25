@@ -39,6 +39,8 @@ export type BuildingView = {
   water?: number
   // A pedestal or an altar: what is on it, floating over it.
   shown?: ItemId
+  // A fire cooking leaves: it smokes.
+  smoking?: boolean
 }
 // A shape painted on the ground: polygons (tiles), in a colour, filled and outlined this strongly (0 to 1).
 export type GroundMark = { polygons: Array<Array<{ x: number; y: number }>>; color: number; fill: number; stroke: number }
@@ -194,6 +196,9 @@ export type DebugView = {
 export type WorldFrame = {
   // The land (undefined until the world's arrives).
   terrain: Terrain | undefined
+  // Whether the player has truesight: without it the far islands are under fog (see fog.ts), and nothing on them is in
+  // the frame.
+  fogLifted: boolean
   buildings: readonly BuildingView[]
   // The IDs of the buildings being taken away, drawn faded.
   removingIds: ReadonlySet<number>

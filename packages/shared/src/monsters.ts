@@ -2,8 +2,8 @@ import monstersData from '../../../data/monsters.json' with { type: 'json' }
 import { failIn, fieldsOf, numberField, onlyFields, secondsField, speedField, textField, tilesField, wholeField, type Fail, type Fields } from './data-check.ts'
 import { itemFromKey, type ItemId } from './items.ts'
 
-// The monsters, from data/monsters.json: the skeletons that keep the mountains' camps and guard the dungeon, and the
-// frost lich and what it calls up. They are not animals (they do not eat, breed or grow up: see animals.ts for those),
+// The monsters, from data/monsters.json: the skeletons that keep the mountains' camps and guard the dungeon, the
+// frost lich and what it calls up, the goblins that keep the meadow's camps and the mummies the desert's tombs, and the bees (see bees.ts). They are not animals (they do not eat, breed or grow up: see animals.ts for those),
 // and the server runs them in apps/server/src/monsters.ts, sending where they are with the players and what they are
 // (kind, health, what they are doing) whenever that changes.
 //
@@ -29,6 +29,11 @@ import { itemFromKey, type ItemId } from './items.ts'
 //     an arrow (`item`) at `speed` tiles a second for `damage`, which flies through other monsters; then it waits
 //     `cooldown` seconds. It aims where the player was `lead` seconds before, so one who keeps moving is missed.
 //   - "touch": it drifts after the nearest player and bursts against them for `damage`; it lasts `lifetime` seconds.
+//   - "melee" (a goblin): it walks up to the player and hits them for `damage` once it is within `reach` tiles of them
+//     (its size and theirs between), every `cooldown` seconds, knocking them back `knockback` tiles.
+//   - "sting" (a worker bee): it flies (over anything) after whoever angered its hive and stings them for `damage`
+//     once it is on them, every `cooldown` seconds; its `leash` is how far from its hive it chases.
+//   - "queen" (a queen bee): no attack; she flies off to find a new hive when hers is gone (see bees.ts).
 //   - "spells": it casts (the frost lich: see the server's frost-lich.ts). Every `castEvery` seconds it begins a spell,
 //     casting for `castTime` (the first `firstCast` seconds into the fight); a close one if more players are within
 //     `closeRange` tiles than not, else a far one. Each spell's numbers (distances in tiles, times in seconds, angles in
@@ -65,6 +70,9 @@ export type MonsterAttack =
   | { kind: 'blade'; swing: BladeSwing; charge: BladeCharge; recover: number; cooldown: number }
   | { kind: 'bow'; range: number; aim: number; lead: number; cooldown: number; speed: number; damage: number; item: ItemId }
   | { kind: 'touch'; damage: number; lifetime: number }
+  | { kind: 'melee'; reach: number; damage: number; cooldown: number; knockback: number }
+  | { kind: 'sting'; damage: number; cooldown: number }
+  | { kind: 'queen' }
   | ({ kind: 'spells' } & LichSpells)
 
 // The frost lich's spells, in units, ticks and radians (see "spells" above).
@@ -126,6 +134,9 @@ const ATTACK_FIELDS: Readonly<Record<MonsterAttack['kind'], readonly string[]>> 
   blade: ['swing', 'charge', 'recover', 'cooldown'],
   bow: ['range', 'aim', 'lead', 'cooldown', 'speed', 'damage', 'item'],
   touch: ['damage', 'lifetime'],
+  melee: ['reach', 'damage', 'cooldown', 'knockback'],
+  sting: ['damage', 'cooldown'],
+  queen: [],
   spells: ['castEvery', 'castTime', 'firstCast', 'closeRange', 'blizzard', 'wisps', 'icicles', 'shards', 'summon'],
 }
 
@@ -175,7 +186,7 @@ function parseMonsters(data: unknown): MonsterDef[] {
 
 function attackOf(a: Fields, fail: Fail): MonsterAttack {
   const kind = a.kind as MonsterAttack['kind']
-  if (!Object.hasOwn(ATTACK_FIELDS, kind)) fail('"attack.kind" must be "blade", "bow", "touch" or "spells"')
+  if (!Object.hasOwn(ATTACK_FIELDS, kind)) fail(`"attack.kind" must be one of ${Object.keys(ATTACK_FIELDS).join(', ')}`)
   onlyFields(a, ['kind', ...ATTACK_FIELDS[kind]], fail, '"attack": ')
   switch (kind) {
     case 'blade': {
@@ -222,6 +233,18 @@ function attackOf(a: Fields, fail: Fail): MonsterAttack {
       }
     case 'touch':
       return { kind, damage: numberField(a, 'damage', fail, 1), lifetime: secondsField(a, 'lifetime', fail) }
+    case 'melee':
+      return {
+        kind,
+        reach: tilesField(a, 'reach', fail),
+        damage: numberField(a, 'damage', fail, 1),
+        cooldown: secondsField(a, 'cooldown', fail),
+        knockback: tilesField(a, 'knockback', fail, 0),
+      }
+    case 'sting':
+      return { kind, damage: numberField(a, 'damage', fail, 1), cooldown: secondsField(a, 'cooldown', fail) }
+    case 'queen':
+      return { kind }
     case 'spells':
       return { kind, ...spellsOf(a, fail) }
   }
