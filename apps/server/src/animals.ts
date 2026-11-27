@@ -9,6 +9,7 @@ import {
   chunkOfTile,
   chunksAround,
   fenceBoxes,
+  wallBoxes,
   fenceMask,
   floorDiv,
   gateBoxes,
@@ -42,6 +43,8 @@ import {
   type AnimalDef,
   type AnimalInfo,
   type AnimalPosition,
+  type Hunt,
+  type Roll,
   type Entity,
   type FactoryWorld,
   type Inventory,
@@ -77,8 +80,8 @@ function onRope(animal: Pick<Animal, 'leader' | 'post'>): boolean {
 // - just hit: run from whoever hit it, for FLEE_TICKS (and a stunned one stands, and a knocked one slides);
 // - led on a rope: a slow, aimless wander, and the rope does the rest (see `pullRopes`);
 // - an adult that is well fed and ready: find a well-fed adult of the other sex and breed (a baby is born between them);
-// - not well fed and getting hungry (half of `hungryAt`): eat what it likes from a feed box nearby, which leaves it
-//   well fed for `wellFedMinutes`. Grass never makes an animal well fed: only a feed box does;
+// - not well fed and getting hungry (half of `hungryAt`): eat what it likes from a feed trough nearby, which leaves it
+//   well fed for `wellFedMinutes`. Grass never makes an animal well fed: only a feed trough does;
 // - hungry (`hungryAt` or more): go to the nearest tuft of grass within `grassRadius` tiles and graze it away;
 //   a little hungry (half of that): nibble a tuft only if one is right beside it;
 // - away from the others of its kind: go back to them (not one that lives alone, a spider);
@@ -92,7 +95,7 @@ const NIBBLE_RADIUS = 3
 // An animal that has just been hit runs from whoever hit it for FLEE_TICKS, at FLEE_PACE times its speed.
 const FLEE_TICKS = 3 * TPS
 const FLEE_DISTANCE = 7
-// How far an animal looks, in tiles: for others of its kind, a feed box, and a mate. It stays within HERD_SPREAD of
+// How far an animal looks, in tiles: for others of its kind, a feed trough, and a mate. It stays within HERD_SPREAD of
 // the middle of its herd.
 const HERD_RADIUS = 10
 const HERD_SPREAD = 3
@@ -169,7 +172,7 @@ export type Animal = {
   // While it is on a rope: which (`of`: who leads it or what it is tied to, so a new rope starts afresh), how fast the
   // rope is pulling it along (units a tick), and how far from a fence it is held (see ROPE_HELD).
   rope?: { of: string; vx: number; vy: number; reach: number }
-  // Whether it is still wild: spawned by itself, and never led, fed from a feed box or bred.
+  // Whether it is still wild: spawned by itself, and never led, fed from a feed trough or bred.
   wild: boolean
   goal: Goal
   decideAt: number
@@ -191,7 +194,14 @@ export type Animal = {
   ignoring?: { player: number; until: number }
   // A hostile one that was just hit: until when it backs off from its prey, not biting (its `recoil`).
   recoilUntil?: number
-  // Food it could not get to (a tuft through a fence, a feed box out of reach), let be until `until` (see `moveToward`).
+  // A roller (a scarab) curling up to roll (`curl`) or rolling (`roll`) at its prey: which way, from when until when,
+  // and how far it rolls (units), and whom it has hit on the way.
+  roll?: { k: 'curl' | 'roll'; at: number; until: number; angle: number; length: number; hit: Set<number> }
+  // When a roller stops chasing and rolls (see `planRoll`).
+  rollReadyAt?: number
+  // The tick of a hunter's last bite (for the pages to show it).
+  bitAt?: number
+  // Food it could not get to (a tuft through a fence, a feed trough out of reach), let be until `until` (see `moveToward`).
   shunned?: { id: number; until: number }
   // The way round something in its way (tile middles, in units, next first), what it leads to, and when it was found.
   path?: { steps: Array<{ x: number; y: number }>; toX: number; toY: number; at: number }
@@ -357,6 +367,8 @@ export class Animals extends CreatureSet<Animal> {
       milk: animal.milk,
       doing: this.doing(animal),
       ...(animal.target !== 0 ? { angry: true } : {}),
+      ...(animal.roll ? { act: { k: animal.roll.k, angle: Math.round(animal.roll.angle * 100) / 100, ticks: animal.roll.until - animal.roll.at, at: animal.roll.at } } : {}),
+      ...(animal.bitAt !== undefined ? { bit: animal.bitAt } : {}),
     }
   }
 
@@ -364,6 +376,7 @@ export class Animals extends CreatureSet<Animal> {
   private doing(animal: Animal): string {
     if (animal.stunnedUntil > this.tickNow) return 'stunned'
     if (animal.fleeUntil > this.tickNow) return 'running away'
+    if (animal.roll) return animal.roll.k === 'curl' ? 'curling up to roll' : 'rolling'
     if (animal.target !== 0) return 'hunting'
     if (animal.leader !== 0) return 'being led'
     if (animal.post !== 0) return 'tied up'
@@ -375,7 +388,7 @@ export class Animals extends CreatureSet<Animal> {
       case 'graze':
         return animal.goal.eating > 0 ? 'grazing' : 'going to grass'
       case 'feed':
-        return 'going to the feed box'
+        return 'going to the feed trough'
       case 'mate':
         return 'going to its mate'
       case 'hunt':
@@ -466,9 +479,11 @@ export class Animals extends CreatureSet<Animal> {
     const { tick } = context
     this.tickNow = tick
     this.open = (x, y) => isInsideWorld(x, y) && context.isGrown(chunkOfTile(x, y)) && !groundBlocks(context.terrain, x, y)
+    const stepped: Animal[] = []
     for (const animal of this.list()) {
       // Only where something is going on (see `isActive`): elsewhere it waits as it is, unless it is on a rope.
       if (!onRope(animal) && !context.isActive(chunkOfTile(tileOfUnits(animal.x), tileOfUnits(animal.y)))) continue
+      stepped.push(animal)
       animal.age++
       if (tick % animal.def.life.hungerEvery === 0) animal.hunger = Math.min(HUNGER_MAX, animal.hunger + 1)
       this.produce(context, animal)
@@ -479,6 +494,8 @@ export class Animals extends CreatureSet<Animal> {
       if (tick >= animal.decideAt) this.decide(context, animal)
       this.act(context, animal)
     }
+    // Ones of a kind crowding together spread apart a little (not one rolling).
+    this.unclump(stepped.filter((animal) => animal.roll?.k !== 'roll' && this.all.has(animal.id)), (animal) => this.blockedFor(animal, context))
     this.pullRopes(context)
     if (this.wild && tick - this.lastSpawn >= POPULATE_EVERY) {
       this.lastSpawn = tick
@@ -541,7 +558,7 @@ export class Animals extends CreatureSet<Animal> {
     // Running from a hit, hunting, or busy with something that is still going: carry on.
     if (animal.fleeUntil > tick || animal.target !== 0) return
     // On its way to food (not yet eating): it looks again, and goes for what it would pick now if that is something
-    // else (a feed box filled meanwhile, the grass it was after gone to another).
+    // else (a feed trough filled meanwhile, the grass it was after gone to another).
     if ((animal.goal.k === 'graze' && animal.goal.eating === 0) || animal.goal.k === 'feed') {
       const now = this.foodGoal(context, animal)
       const same = (goal: Goal): boolean =>
@@ -555,7 +572,7 @@ export class Animals extends CreatureSet<Animal> {
       return
     }
     const fed = animal.fedUntil > tick
-    // However many there are already: a farm can grow as big as its feed boxes keep it fed.
+    // However many there are already: a farm can grow as big as its feed troughs keep it fed.
     if (isAdult(animal) && fed && tick >= animal.breedReadyAt) {
       const partner = this.nearest(animal, MATE_RADIUS, (other) => this.canMate(animal, other, tick))
       if (partner) {
@@ -712,6 +729,18 @@ export class Animals extends CreatureSet<Animal> {
     return animal.ignoring !== undefined && animal.ignoring.player === playerId && tick < animal.ignoring.until
   }
 
+  // A player has been knocked out: every hunter after them stops, and goes back to what it was doing.
+  forgetPlayer(playerId: number): void {
+    for (const animal of this.all.values()) {
+      if (animal.target !== playerId) continue
+      animal.target = 0
+      animal.chase = undefined
+      animal.roll = undefined
+      animal.rollReadyAt = undefined
+      this.giveUp(animal)
+    }
+  }
+
   // A hunter that has come no nearer its prey and not bitten them for UNREACHABLE_TICKS gives up on them, and lets them
   // be for IGNORE_TICKS. Gives whether it gave up.
   private giveUpIfStuck(animal: Animal, prey: PlayerPosition, tick: number): boolean {
@@ -776,7 +805,7 @@ export class Animals extends CreatureSet<Animal> {
           this.giveUp(animal)
           return
         }
-        // A feed box is solid, so it is eaten from beside it.
+        // A feed trough is solid, so it is eaten from beside it.
         if (!this.moveToward(context, animal, goal.x, goal.y, 1, 0.6 * SUB + animal.def.halfSize)) return
         context.emit({ t: 'inv', id: feeder.id, item: food.item, delta: -1 })
         animal.wild = false
@@ -790,7 +819,14 @@ export class Animals extends CreatureSet<Animal> {
         const target = context.players.find((player) => player.id === animal.target)
         if (!hunt || !target) {
           animal.target = 0
+          animal.roll = undefined
+          animal.rollReadyAt = undefined
           this.giveUp(animal)
+          return
+        }
+        // Curled up to roll, or rolling: it carries on with that.
+        if (animal.roll && hunt.roll) {
+          this.rolling(context, animal, hunt, hunt.roll)
           return
         }
         // Chase, and bite when close enough; but not for ever at what it cannot get at (see UNREACHABLE_TICKS). A flanker
@@ -804,6 +840,15 @@ export class Animals extends CreatureSet<Animal> {
           this.pursue(context, animal, back.x, back.y, hunt.pace, 0.25 * SUB)
           animal.stuck = 0
           return
+        }
+        // A roller chases and bites like any hunter for a while, then rolls at its prey from where it is (see `roll` in
+        // its hunt).
+        if (hunt.roll) {
+          if (animal.rollReadyAt === undefined) this.planRoll(animal, hunt.roll, context.tick)
+          if (context.tick >= animal.rollReadyAt!) {
+            this.rollAt(context, animal, target.position, hunt.roll)
+            return
+          }
         }
         // Flanking only in the open: with something in the way, it finds its way to the prey first.
         if (hunt.flank && straightClear(animal, target.position.x, target.position.y, this.blockedFor(animal, context))) {
@@ -823,6 +868,7 @@ export class Animals extends CreatureSet<Animal> {
         animal.stuck = 0
         if (context.tick < animal.biteReadyAt) return
         animal.biteReadyAt = context.tick + hunt.cooldown
+        animal.bitAt = context.tick
         if (animal.chase) animal.chase.since = context.tick
         context.hurtPlayer(target.id, hunt.damage, { x: animal.x, y: animal.y }, BITE_KNOCKBACK)
         return
@@ -838,6 +884,54 @@ export class Animals extends CreatureSet<Animal> {
         return
       }
     }
+  }
+
+  // A roller whose chase is up (see `roll` in its `hunt`): from where it is, it curls up to roll at its prey, the way to
+  // them fixed as it starts, to roll on to where they are and its `past` beyond (its `distance` at most).
+  private rollAt(context: AnimalContext, animal: Animal, prey: PlayerPosition, roll: Roll): void {
+    const { tick } = context
+    const distance = Math.hypot(prey.x - animal.x, prey.y - animal.y)
+    animal.stuck = 0
+    animal.roll = { k: 'curl', at: tick, until: tick + roll.windup, angle: Math.atan2(prey.y - animal.y, prey.x - animal.x), length: Math.min(roll.distance, Math.round(distance + roll.past)), hit: new Set() }
+  }
+
+  // A roller curled up rolls once its windup is over; rolling, it goes on the way it set out (through whoever is on
+  // it, each hurt once and knocked on that way) until it has gone as far as it meant to or something stops it; then it
+  // chases and bites again, until its next roll.
+  private rolling(context: AnimalContext, animal: Animal, hunt: Hunt, roll: Roll): void {
+    const { tick } = context
+    const act = animal.roll!
+    animal.stuck = 0
+    if (act.k === 'curl') {
+      if (tick >= act.until) animal.roll = { k: 'roll', at: tick, until: tick + Math.ceil(act.length / Math.max(1, roll.speed)), angle: act.angle, length: act.length, hit: new Set() }
+      return
+    }
+    const from = { x: animal.x, y: animal.y }
+    const ax = Math.cos(act.angle)
+    const ay = Math.sin(act.angle)
+    Object.assign(animal, moveBox(animal, Math.round(ax * roll.speed), Math.round(ay * roll.speed), animal.def.halfSize, this.blockedFor(animal, context)))
+    const travelled = Math.hypot(animal.x - from.x, animal.y - from.y)
+    // Everyone it rolled over this tick (within its width of the stretch it went).
+    for (const player of context.players) {
+      if (act.hit.has(player.id)) continue
+      const dx = player.position.x - from.x
+      const dy = player.position.y - from.y
+      const along = Math.max(0, Math.min(travelled, dx * ax + dy * ay))
+      if (Math.hypot(dx - ax * along, dy - ay * along) > roll.width / 2 + PLAYER_HALF_SIZE) continue
+      act.hit.add(player.id)
+      if (animal.chase) animal.chase.since = tick
+      context.hurtPlayer(player.id, roll.damage, { x: player.position.x - Math.round(ax * SUB), y: player.position.y - Math.round(ay * SUB) }, BITE_KNOCKBACK)
+    }
+    if (tick < act.until && travelled >= roll.speed / 3) return
+    animal.roll = undefined
+    animal.biteReadyAt = tick + hunt.cooldown
+    this.planRoll(animal, roll, tick)
+  }
+
+  // A roller's next roll: how long it chases first, from `from` (anywhere from its `chaseMin` to its `chaseMax`, by
+  // chance, so its pack does not all roll at once).
+  private planRoll(animal: Animal, roll: Roll, from: number): void {
+    animal.rollReadyAt = from + roll.chaseMin + Math.round(this.rng.next() * (roll.chaseMax - roll.chaseMin))
   }
 
   // Where a flanker keeps round its prey: its pack (every one of its kind after the same player) spread round the prey
@@ -867,7 +961,7 @@ export class Animals extends CreatureSet<Animal> {
   // Goes towards a point like `moveToward`, but round what is in the way (see `followTo` in steering.ts). Gives whether
   // it is within `near` of the point.
   private pursue(context: AnimalContext, animal: Animal, x: number, y: number, pace: number, near: number): boolean {
-    return followTo(animal, x, y, near, this.blockedFor(animal, context), context.tick, (tx, ty, within) => this.moveToward(context, animal, tx, ty, pace, within))
+    return followTo(animal, x, y, near, this.blockedFor(animal, context), context.tick, (tx, ty, within) => this.moveToward(context, animal, tx, ty, pace, within), animal.def.halfSize)
   }
 
   private giveUp(animal: Animal): void {
@@ -895,7 +989,7 @@ export class Animals extends CreatureSet<Animal> {
     return false
   }
 
-  // What a hungry animal goes for, if anything. Well fed (from a feed box), nothing: it does not graze. Else a feed box
+  // What a hungry animal goes for, if anything. Well fed (from a feed trough), nothing: it does not graze. Else a feed trough
   // with something it eats, once it is getting hungry, wherever grass is (a chicken goes to its seed box, not the grass
   // through the fence); and with such a box in reach, it waits for that rather than eat grass (a farm's planted grass
   // is left to grow). With none: hungry, the nearest grass it can see, or, a little hungry, a tuft right beside it.
@@ -931,7 +1025,8 @@ export class Animals extends CreatureSet<Animal> {
         const entity = context.world.entityAt(x, y)
         if (!entity || !BUILDINGS[entity.kind].blocksAnimals) return false
         if (entity.kind === 'fence') return fenceBoxes(fenceMask(kindAt, x, y))
-        if (entity.kind === 'gate') return gateIsOpen(entity, players) ? !through : gateBoxes(fenceMask(kindAt, x, y))
+        if (entity.kind === 'wood-wall') return wallBoxes(fenceMask(kindAt, x, y))
+        if (entity.kind === 'gate' || entity.kind === 'wood-door') return gateIsOpen(entity, players) ? !through : gateBoxes(fenceMask(kindAt, x, y), entity.kind)
         // A solid building stands in the way with its own shape (a barrel's round, a tree's trunk).
         return boundsOf(entity.kind) ?? true
       }
@@ -944,7 +1039,8 @@ export class Animals extends CreatureSet<Animal> {
   // it cannot walk into.
   // Only those that are run (see `isActive`): the rest stand still, and so cannot be on top of each other.
   bodies(context: AnimalContext): Body[] {
-    const run = this.list().filter((animal) => onRope(animal) || context.isActive(chunkOfTile(tileOfUnits(animal.x), tileOfUnits(animal.y))))
+    // (One rolling goes through whoever is in its way.)
+    const run = this.list().filter((animal) => animal.roll?.k !== 'roll' && (onRope(animal) || context.isActive(chunkOfTile(tileOfUnits(animal.x), tileOfUnits(animal.y)))))
     return run.map((animal) => ({
       x: animal.x,
       y: animal.y,
@@ -1159,6 +1255,7 @@ export class Animals extends CreatureSet<Animal> {
         // Hurt, it goes for whoever hurt it, and calls the others of its kind near it (even one already on a chase);
         // but first it backs off, and does not bite again until its recoil is over (after any stun).
         if (by !== 0) this.rouse(animal, by, tick, true)
+        animal.roll = undefined
         const until = Math.max(tick, animal.stunnedUntil) + animal.def.hunt.recoil
         animal.recoilUntil = until
         animal.biteReadyAt = Math.max(animal.biteReadyAt, until)

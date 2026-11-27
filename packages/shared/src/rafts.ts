@@ -32,17 +32,17 @@ const OVERHANG = RAFT_HALF + STEP_OFF + STEP_GAP
 // goes no faster than RAFT_TOP_SPEED; the water slows it (RAFT_DRAG of its speed kept each tick, and RAFT_SPIN_DRAG of
 // its turning: so it does not spin on and on); and, run into the shore or another raft, it stops, bouncing back
 // RAFT_BOUNCE of its speed.
-export const ROW_PUSH = Math.round((1.3 * SUB) / TPS)
+export const ROW_PUSH = Math.round((2 * SUB) / TPS)
 export const SPIN_PUSH = 0.6
-export const RAFT_TOP_SPEED = Math.round((4 * SUB) / TPS)
-export const RAFT_DRAG = 0.975
+export const RAFT_TOP_SPEED = Math.round((6 * SUB) / TPS)
+export const RAFT_DRAG = 0.98
 export const RAFT_SPIN_DRAG = 0.94
-export const RAFT_BOUNCE = 0.2
+export const RAFT_BOUNCE = 0.15
 // Out in the deep sea (off the shelf: see `shelfWidthAt` in terrain.ts; where the sea is drawn dark), a raft is much
 // slower: a stroke pushes it only DEEP_ROW_SHARE as hard, it goes no faster than RAFT_DEEP_TOP_SPEED, and the water
 // slows it more (RAFT_DEEP_DRAG of its speed kept each tick).
 export const DEEP_ROW_SHARE = 0.3
-export const RAFT_DEEP_TOP_SPEED = Math.round((1.1 * SUB) / TPS)
+export const RAFT_DEEP_TOP_SPEED = Math.round((1.6 * SUB) / TPS)
 export const RAFT_DEEP_DRAG = 0.94
 
 // Where a raft is: its middle (units) and which way it is turned (radians, turning as a player's facing does).
@@ -106,6 +106,11 @@ export function raftFits(pose: RaftPose, isWater: (x: number, y: number) => bool
 // Where a raft put down on a tile goes: its middle on the tile's middle, square to the world.
 export function raftOnTile(x: number, y: number): RaftPose {
   return { x: x * SUB + SUB / 2, y: y * SUB + SUB / 2, angle: 0 }
+}
+
+// Where a raft put down at a point (units) goes: its middle there, square to the world.
+export function raftAt(x: number, y: number): RaftPose {
+  return { x: Math.round(x), y: Math.round(y), angle: 0 }
 }
 
 // A tick of keys for a player aboard a raft (at `pose`): they walk about its deck the way the keys point in the world

@@ -19,7 +19,7 @@ export const CommandSchema = z.discriminatedUnion('k', [
   z.object({ k: z.literal('slot'), from: slotRef, to: slotRef, count: int.min(1).max(100_000) }),
   z.object({ k: z.literal('drop'), from: slotRef, count: int.min(1).max(100_000), x: int, y: int }),
   z.object({ k: z.literal('punch'), id: int.min(1), slot: int.min(-1).max(255) }),
-  z.object({ k: z.literal('attack'), slot: int.min(-1).max(255), x: int, y: int, seen: int.min(0).optional(), charged: z.literal(1).optional() }),
+  z.object({ k: z.literal('attack'), slot: int.min(-1).max(255), x: int, y: int, seen: int.min(0).optional(), charged: z.literal(1).optional(), at: int.min(0).optional() }),
   z.object({ k: z.literal('charge'), slot: int.min(-1).max(255) }),
   z.object({ k: z.literal('craft'), recipe: int.min(1).max(1_000) }),
   z.object({ k: z.literal('work'), id: int.min(1), recipe: int.min(0).max(1_000) }),
@@ -32,8 +32,10 @@ export const CommandSchema = z.discriminatedUnion('k', [
   z.object({ k: z.literal('raftRope'), raft: int.min(1), slot: int.min(-1).max(255) }),
   z.object({ k: z.literal('tie'), fence: int.min(1), animal: int.min(1).optional(), raft: int.min(1).optional() }),
   z.object({ k: z.literal('untie'), fence: int.min(1) }),
-  z.object({ k: z.literal('place'), x: tile, y: tile, slot: int.min(0).max(255) }),
+  z.object({ k: z.literal('place'), x: tile, y: tile, slot: int.min(0).max(255), at: z.object({ x: int, y: int }).optional() }),
   z.object({ k: z.literal('pvp'), on: z.boolean() }),
+  z.object({ k: z.literal('items'), on: z.boolean() }),
+  z.object({ k: z.literal('give'), item: item.min(1), count: int.min(1).max(10_000) }),
   z.object({ k: z.literal('respawn'), at: z.enum(['spawn', 'bed']) }),
   z.object({ k: z.literal('eat'), slot: int.min(0).max(255) }),
   z.object({ k: z.literal('sleep'), id: int.min(1) }),
@@ -71,5 +73,5 @@ export const PingMessageSchema = z.object({ c: z.number().finite() })
 export const NewGameSchema = z.object({
   name: z.string().max(40),
   seed: z.string().max(40).optional(),
-  size: z.string().max(20).optional(),
+  radius: z.number().int().optional(),
 })

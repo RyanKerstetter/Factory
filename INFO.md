@@ -2,7 +2,7 @@
 
 A multiplayer sandbox survival game in the browser, built with TypeScript, three.js, Geckos (WebRTC) and Vite. For now it
 is the start of the game: players punch trees and bushes for what they drop and plant acorns, together in one world. The
-factory (miners, belts, extractors, chests) and ore deposits are built and simulated but put away for later.
+factory (miners, belts, extractors, chests) is built and simulated but put away for later (its ores are gone).
 
 ## Run it
 
@@ -69,9 +69,13 @@ any static host of `npm run build`'s output), and nobody else can join. It is no
     - `weapons.json`: every weapon's attack (damage, harvest, reach, arc or width, cooldown, windup, speed, ammo, and what it does held down: `charged`; see
       the comment at the top of `packages/shared/src/weapons.ts` for what each means). `hand` is bare hands.
     - `food.json`: how much each food heals (`heals`), or, for one that hurts to eat (the truesight flesh), how much
-      it hurts (`hurts`: it is not eaten if that would kill) and whether it gives truesight (`truesight`). Only what is
-      eaten is in it; what a fire cooks is in `stations.json`.
+      it hurts (`hurts`: it is not eaten if that would kill), whether it gives truesight (`truesight`), and how much
+      more health its eater has at most for good (`maxHealth`, the truesight flesh's 25). Only what is eaten is in it;
+      what a fire cooks is in `stations.json`.
     - `armor.json`: each piece's slot (head, body, feet), `warmth` and `defense`.
+  - `armor-sets.json`: the armour sets (`packages/shared/src/armor-sets.ts`): the `pieces` of each, and what wearing
+    them all gives: `attack` (more damage with every attack), `health` (more health at most) and `healOnHit` (health
+    back for every creature or player an attack hurts).
     A key there that is not an item, or a field that belongs in one of them left in `items.json`, stops the game at
     start-up with a message saying which.
   - `stations.json`: what the player makes by hand (`"player"`: the first tools, and the stump), and what the stump,
@@ -79,13 +83,13 @@ any static host of `npm run build`'s output), and nobody else can join. It is no
     campfire cooks, at what heat, for how long; `"oven"` is a station of its own, `{ "includes": ["fire"], "recipes":
     [...] }`: its own recipes (dough into bread) and everything a campfire cooks besides. For the rest: what each recipe takes, the
     tool it needs, what it makes, how long it takes (`seconds`), and its category in the list.
-  - `crops.json`: what grows in garden plots: its seed, how long it takes (in random ticks, about 11 seconds each), and
+  - `crops.json`: what grows in farmland: its seed, how long it takes (in random ticks, about 11 seconds each), and
     what breaking it when grown gives.
   - `animals.json`: the animals: their hp, armour, speed, size, how hard they pull on a rope, what they eat from a feed
     box, their herd size (or that one lives alone: `solitary`), what they drop, milk and eggs, the cobwebs a spider spins
-    (`webs`), and their stats (see "Animals").
-  - `monsters.json`: the monsters (skeletons, skeleton archers, the frost lich and its wisps, goblins, mummies, and bees
-    and their queens): their hp, armour, speed,
+    (`webs`), how a hostile one hunts (`hunt`, and a scarab's `roll`), and their stats (see "Animals").
+  - `monsters.json`: the monsters (skeletons, skeleton archers, the frost lich and its wisps, goblins, goblin archers
+    and shamans, mummies, dust elementals, and bees and their queens): their hp, armour, speed,
     size, how far they notice a player and chase one, their attack, and what they drop (see "Monsters"). The frost
     lich's attack is its spells: how often it casts, and each spell's radius, damage, timing and counts (see the comment
     at the top of `packages/shared/src/monsters.ts`).
@@ -97,14 +101,21 @@ any static host of `npm run build`'s output), and nobody else can join. It is no
     often they forage, how long they gather, how much honey a hive holds, how
     far a queen looks for a new home, and how far smoke reaches (see "Bees").
   - `drops.json`: what trees, bushes, rocks, grass, saplings and sprouts drop, and on the far islands clay, copper and
-    tin rocks, sand, cacti, sunflowers (and their seedlings) and cobwebs (each item `min` to `max`, and a
+    tin rocks, sand, cacti, sunflowers (and their seedlings) and cobwebs, and what keeps each camp (a skeletons' tent,
+    a goblins' lean-to, a mummies' tomb: leather) (each item `min` to `max`, and a
     `chance` in percent if it is not always), and how many punches knock a stick loose (`packages/shared/src/drops-data.ts`).
   - `world-gen.json`: how the world grows (`packages/shared/src/world-gen-data.ts`): how much grows (trees, bushes,
-    rocks, grass, flint), the cells the patches are laid out over, the ponds (how often, how big), the skeletons'
-    camps (where, how many skeletons and archers, how far they patrol, how soon one comes back) and the way into the
-    dungeon; what grows on the meadow (`meadow`: its rivers, clay, rocks and copper, sunflowers, grass and hives) and the
-    desert (`desert`: cacti, pockets of sand, tin), the goblins' camps (`goblinCamps`) and the mummies' tombs
-    (`tombs`). A save keeps the plant numbers it was made with; the rest changes old worlds' untouched ground too.
+    rocks, grass, flint), the cells the patches are laid out over, the ponds (how often, how big), where the skeletons'
+    camps grow (`camps`) and the way into the dungeon; what grows on the meadow (`meadow`: its rivers, clay,
+    sunflowers, grass and hives) and the desert (`desert`: cacti, pockets of sand), and where the goblins' camps
+    (`goblinCamps`) and the mummies' tombs (`tombs`) grow. A save keeps the plant numbers it was made with; the rest
+    changes old worlds' untouched ground too.
+  - `camps.json`: what keeps each kind of camp (`packages/shared/src/camps.ts`), by what keeps it (`skeleton-camp`,
+    `goblin-camp`, `tomb`): its `monsters` (each `kind` of monster, `min` to `max` of it, picked for each camp by
+    the seed and where it is; the first kind's stand round the camp and the others' between them), how soon one killed
+    comes back (`respawnSeconds`), how far round the fire they patrol (`patrolRadius`), and the `rocks` by it (their
+    `kind` and `count`, at most 8). Any monster in `monsters.json` can keep any camp. Its rocks grow with the world, so
+    changing them changes old worlds' untouched ground too.
 - `packages/shared` is everything the server and the client must agree on: the deterministic factory simulation
   (`src/sim/`), the items and buildings, inventories (`inventory.ts`, with the slot helpers the machines are built on:
   `countIn`, `takeIn`, `fitsIn`, `putIn`), the stations (`stations.ts`, `machines.ts`), weapons (`weapons.ts`), the
@@ -160,14 +171,18 @@ any static host of `npm run build`'s output), and nobody else can join. It is no
 
 The world is a chain of **biomes**, one per step of the game, each an **island** of its own in a sea that goes on
 every way (`packages/shared/src/terrain.ts`; the numbers are `islands` in `data/world-gen.json`): the forest, the
-mountains, the desert and the meadow. The mountains lie the way the seed picks from the forest; after them the chain
-curves round: the desert lies `TURN_DEGREES` (70°) round from the way the chain was going (from the forest to the
-mountains), to one side or the other (the seed's: `curveSide`), and the meadow as far round again from the way from
-the mountains to the desert, the same side. Each is as far from the one before (middle to middle) as the mountains are
-from the forest, and as big as the mountains (`radiusPercent` 95), so the crossings are a raft's, over the shallows. Each is a rough
+mountains, the meadow and the desert. The mountains lie the way the seed picks from the forest; after them the chain
+curves round: the meadow lies 70° round from the way the chain was going (from the forest to the mountains), to one
+side or the other (the seed's: `curveSide`), and the desert 45° round from the way from the mountains to the meadow,
+the same side (each biome's `turn` in `BIOMES`). The meadow is as far from the mountains (middle to middle) as the
+mountains are from the forest, so that crossing is a raft's, over the shallows; the desert is not over the sea but one
+land with the meadow (`joins` in `BIOMES`): its middle is their two radii less `JOIN_OVERLAP_PERCENT` (25%) from the
+meadow's, so they overlap well, and their coasts wander freely where they meet, so the noise shapes the land there and
+where the meadow gives way to the desert (each tile is the biome it is deeper inside). The meadow and the desert are as
+big as the mountains (`radiusPercent` 95). Each is a rough
 disc round a middle, its radius set by the world size (`WORLD_SIZES`) and its coast pushed in and out by noise, as
-ragged in every world (`bumpiness` 60: up to `MAX_BUMP_PERCENT` of the radius at 100). Each island lies a short way
-over the sea from the one before it: on the side facing its neighbour (within 30° of the line between their middles,
+ragged in every world (`bumpiness` 60: up to `MAX_BUMP_PERCENT` of the radius at 100). Each island (but the
+desert) lies a short way over the sea from the one before it: on the side facing its neighbour (within 30° of the line between their middles,
 easing off to 70°) its coast still wiggles and has bays, but reaches out at most `facingBump` tiles past its radius
 (`wanderAt`), and the islands are placed far enough apart (`gap` more than both of those) that the two coasts can
 never meet, however the noise falls. So the only way over is by raft: the narrowest crossing is usually 10 to 12
@@ -214,19 +229,19 @@ each, one every `SURF_PERIOD` seconds, a little sooner or later along the shore,
   −58°C at the far side, bent by `curve` so the cold is deep in; the first half or so is out of the snow; it is about
   −35°C, deadly, at the way into the dungeon).
 
-- **Desert** (the third island, under fog: see below): sand all over (`ground` "sand" in `BIOMES`; every tile of it
-  `isSandAt`), in drifts; **cacti**, **pockets of sand** (patches of sand to break) and the odd **tin rock**;
-  **spiders**; and the **mummies' tombs** (see "Monsters").
-- **Meadow** (the fourth, under fog too): a brighter grass, with flowers in it; grass, patches of
-  **sunflowers**, **beehives** (see "Bees"), small patches of rocks, a few of them **copper rocks**; and **rivers**
+- **Meadow** (the third island, under fog: see below): a brighter grass, with flowers in it; grass, patches of
+  **sunflowers**, **beehives** (see "Bees") and no rocks (its only stone is the goblins' camps' tin); and **rivers**
   (`rivers` of them, `riverWidth` wide), each from inland, a fifth to a third of the way out, winding down to the sea
   (whole numbers only, so every page has them where the server does: `layRivers` in `world-gen.ts`). A river is fresh
   water like a pond: nobody walks into it, nothing grows on it, a bucket fills there and a raft floats on it; they set
   off evenly round the island and start inland, so the land is one piece round their heads. **Clay** lies on some of the
-  tiles along their banks (`clayChance`). Cows live here, and the **goblins' camps** are here (see "Monsters"). Grass
-  grows back as in the forest.
+  tiles along their banks (`clayChance`). Cows live here, and the **goblins' camps** are here, with the meadow's only
+  **tin rocks** (see "Goblins' camps"). Grass grows back as in the forest.
+- **Desert** (the fourth, joined to the meadow, under fog too): sand all over (`ground` "sand" in `BIOMES`; every tile of it
+  `isSandAt`), in drifts; **cacti** and **pockets of sand** (patches of sand to break); **spiders** and **scarabs**; and the
+  **mummies' tombs**, with the desert's only **copper rocks** (see "Mummies' tombs").
 
-**The fog.** The desert and the meadow (`fogged` in `BIOMES`, `isFoggedAt`) are shrouded in fog until a player eats a
+**The fog.** The meadow and the desert (`fogged` in `BIOMES`, `isFoggedAt`) are shrouded in fog until a player eats a
 **truesight flesh** (an altar ritual: see Altar). Until then, for them: each island is under a wall of white fog
 standing over all of it and 9 tiles out to sea round it (`FOG_REACH` in `render3d/fog-depth.ts`), a few tiles high
 (`render3d/fog.ts`): four sheets of mist one over another, together thick enough that the island cannot be made out
@@ -263,30 +278,76 @@ every hit on you does the sum of your armour's defense less, but always at least
 through 10 armour does 5). The cold, and the frost lich's blizzard, go straight through armour. Made at the workbench:
 **leather armor** (defense 4) and **leather boots** (2), of leather and fiber, and the **wolf helmet** (4; leather,
 fiber and wolf fangs), which keeps you warmest of all: with the leather armor and boots it is enough to stay in the ice
-crypt without slowing. Worn, the leather armor is a tunic fitted close over the body, with low shoulder pads, sleeves
+crypt without slowing. The **bone armour** (a **bone helmet**, **bone chestplate** and **bone greaves**: defense 8, 10
+and 6; warmth 16, 10 and 6, 32 in all against the leather's 40) is made at the altar, each piece from bones, leather,
+a lich core and blood (see "Altar"). It keeps you going through the ice crypt (its −40°C leaves your body at about
+−8°C: cold and slowed, but never freezing), but not for long in the deepest mountains or a long fight with the lich.
+Worn, after its icons, the bones lead and the leather (dark, nearly grey) only holds them on: a horned beast's skull
+over a cap, the horns sweeping up and darkening to their points; a square ribcage right round the body (its ribs
+across the front, down the sides and round the back to the spine, a breastbone), collarbones, a shoulder blade over
+each shoulder with a row of bones along its top, a bone down the front of each upper arm and forearm, and a skirt of
+bone plates on a thin belt; and shaped boots (a round toe) whose leather goes on up round the whole shin to the knee,
+solid all round (wider than the leg, square as it is, so none of it shows through) with a darker rolled top, with a
+bone toecap, plates down the top of the foot and strips along its sides, and up each shin a bone plate with splints
+and a kneecap, strapped on.
+
+**Armour sets** (`data/armor-sets.json`, `packages/shared/src/armor-sets.ts`): wearing every piece of a set gives its
+bonus on top of what the pieces give by themselves:
+- **Leather** (the leather armor, leather boots and the wolf helmet): every attack does 3 more damage, whatever it is
+  made with.
+- **Bone** (the bone helmet, chestplate and greaves): 25 more health at most, and 2 health back every time an attack
+  of yours hurts a creature or a player (each one it hurts).
+
+**Health**: a player has `PLAYER_MAX_HEALTH` (100) at most, 25 more for good once they have eaten a truesight flesh
+(`maxHealth` in `food.json`), and more while they wear a set that gives it (`playerMaxHealth`); taking it off, any
+health over the new most is lost. Knocked out, a player wakes with all of it.
+
+Worn, the leather armor is a tunic fitted close over the body, with low shoulder pads, sleeves
 down the upper arms (which swing with them), a belt and a skirt of flaps over the tops of the legs; the caveman under it
 is lean and in proportion (long legs, a flat torso wider at the shoulders, a neck and a modest head), so armour does
 not make him bulky. Worn boots go on the feet and step with them.
 
 Being hurt makes a thud and a grunt (the `hurt` sound); others being hurt, a dull thump, from where they are.
 
+**Camps** (`tendCamps` in `apps/server/src/monsters.ts`): every camp is kept by a building that stands in the world
+(`isCampKind` in `buildings.ts`): a skeletons' **tent**, a goblins' **lean-to**, a mummies' **tomb**. It takes its
+tile and stands in the way. The seed grows one in the middle of each camp (`grownCamps` in `world-gen.ts`), with the
+camp's rocks two tiles out to its sides and back (`campRockSpots`, `CAMP_ROCKS`; nothing else grows round it) and the
+rest of the camp drawn round it (a fire two tiles in front, which its monsters keep to and patrol round, and bones,
+stakes or fallen blocks). While it stands, its monsters come back `respawnSeconds` after one is killed (only while
+nobody is watching), and as they do, its broken rocks come back too, on their own spots. **Break it** (a tent or a
+lean-to with an axe, a tomb with a pickaxe; `hp` in `buildings.json`) and it drops leather (`drops.json`), and the
+camp is gone: its monsters still standing stay, but none comes back, and nor do its rocks. The map marks each camp
+where its building stands (as the seed grew it, or as it is now on ground you have loaded). **What keeps each kind of
+camp, and how soon they come back, is `data/camps.json`** (`CAMPS` in `camps.ts`): its monsters, each kind `min` to
+`max` of it; `respawnSeconds` (150 s for all three); `patrolRadius`; and its `rocks` (kind and count). Now: a
+skeletons' camp 3 skeletons and 1 or 2 skeleton archers, with 2 rocks; a goblins' camp 1 to 3 goblins, a goblin archer
+and a goblin shaman, with 3 tin rocks; a tomb 3 or 4 mummies and a dust elemental, with 3 copper rocks.
+
 **Goblins' camps** (`goblinCampSites` in `world-gen.ts`, `goblinCamps` in `data/world-gen.json`): on the meadow, one
-in some of its `cell` squares, well clear of the sea and of its rivers (none within `clearing` + 1 of the fire), kept
-like the skeletons' (below): a ring of stones round a fire
-burnt down to ash, a lean-to of patched hides, sharpened stakes and gnawed bones (`goblinCamp` in `models.ts`), each
-kept by `goblinsMin` to `goblinsMax` goblins who patrol within `patrolRadius` and come back `respawnSeconds` after
-one is killed, only while nobody is watching.
+in some of its `cell` squares, well clear of the sea and with no water (a river, the sea) within `clearing` + 1 of
+the lean-to: a lean-to of patched hides, a fire burnt down to ash, sharpened stakes and gnawed bones (`goblinCamp` in
+`models.ts`), each kept by goblins, **goblin archers** and **goblin shamans** (see "Monsters"), with **tin rocks** by
+the lean-to (the meadow's only tin), as `data/camps.json` has it.
 
 **Mummies' tombs** (`tombSites` in `world-gen.ts`, `tombs` in `data/world-gen.json`): in the desert, found and kept
 just as the goblins' camps are: a squat sandstone tomb on a plinth, a dark doorway between two pillars under a lintel,
-and fallen blocks in the sand round it (`tomb` in `models.ts`), each kept by `mummiesMin` to `mummiesMax` mummies.
+and fallen blocks in the sand round it (`tomb` in `models.ts`), each kept by mummies and **dust elementals** with
+them (see "Monsters"), with **copper rocks** by it (the desert's only copper), as `data/camps.json` has it.
 
 **Skeletons' camps** (`campSites` in `terrain.ts`, `tendCamps` in `apps/server/src/monsters.ts`): a few in the
-mountains, where the air is from `CAMP_WARMEST` down to `CAMP_COLDEST`: a dead fire, a tent and bones, each kept by
-4 to 5 skeletons, 1 or 2 of them skeleton archers (see "Monsters"; the numbers are `camps` in `data/world-gen.json`).
+mountains, where the air is from `CAMP_WARMEST` down to `CAMP_COLDEST`: a tent, a dead fire, bones and a couple of
+rocks, each kept by skeletons and skeleton archers (see "Monsters"; how many is `data/camps.json`). A **skeleton camp** can also be made at the altar, and a **goblin camp** and a
+**mummy camp** are items too (no recipe yet: from the item spawner); each is put down only in its own land (a skeleton
+camp in the mountains, a goblin camp on the meadow, a mummy camp, its tomb, in the desert: `CAMP_BIOME`; elsewhere
+"A camp only goes in its own land"), and is kept just the same, by its own monsters, with its own rocks. Their icons
+are `icons/buildings/camps/`.
 They **patrol**: each walks slowly to a spot within `patrolRadius` (11 tiles) of the fire, stands a while, and picks
 another, the one furthest from where the others are and are going, so they spread out round the camp rather than
-clump. Alert one and the whole camp comes, wherever each is. One that is killed comes back `respawnSeconds` (150 s)
+clump. A spot is only one it can walk to in a straight line from the fire with its whole body clear of everything
+on the way (not just its middle: `straightClear` in `steering.ts` sweeps its width), and the same goes for any
+creature deciding it can walk straight somewhere, so none catches on the corner of a tent or a rock and turns to and
+fro there, or stands stuck short of where it is going. Alert one and the whole camp comes, wherever each is. One that is killed comes back `respawnSeconds` (150 s)
 later, but only once a player is within `CAMP_ACTIVE` tiles of the camp and none within `CAMP_UNSEEN`, so they never
 appear in front of you.
 
@@ -319,17 +380,18 @@ friend is in now.
   about or stuns it): you move round it, dodging what it casts. Every `CAST_EVERY` (3.2 s) it casts a spell: for
   `CAST_TICKS` (a second) it raises its glowing staff, which tells you the spell: **held high overhead for icicles**, **levelled at you for
   shards** (it faces you as it casts), lifted a little for the rest (`STAFF_HIGH`, `STAFF_LEVEL` and the rest in
-  `three-view.ts`) (nothing is drawn on the ground round it: a blizzard's reach and where called-up
-  archers will come are), and then the spell goes off. As it
+  `three-view.ts`) (nothing is drawn round it; a blizzard's snow gathering as far as it will blow, and a ring where
+  called-up archers will come, show those), and then the spell goes off. As it
   starts, it picks by where the players are: if more are within `closeRange` (5.5 tiles) of it than further off
   (a tie either way, at random), one of its close spells, else one of its far ones:
-  - **close**: a **blizzard**, a whirl of cold wind out to the close range for 4 seconds (it shows where as the cast
-    comes), hurting everyone in it 8 every half second, armour or not; or **frozen wisps**, 4 waves of them over 6 seconds,
+  - **close**: a **blizzard**, a whirl of driven snow out to the close range for 4 seconds (its snow gathers there as
+    the cast comes), hurting everyone in it 8 every half second, armour or not; or **frozen wisps**, 4 waves of them over 6 seconds,
     each wave one wisp for every player at once (so 4 for each player in all), on a ring halfway out to the wall (anywhere else in the hall if no spot there will do),
     never within 5 tiles of a player: each drifts after the nearest player, slower than you run, pushing the other
     wisps away rather than bunching up, and bursts against them (26), and is gone after 15 seconds;
-  - **far**: **icicles** falling from the ceiling where each player stands (and 4 more near), a blue ring
-    showing where each will land just under a second before (40 each); or a **shotgun** of 6 ice shards fanned at each
+  - **far**: **icicles** falling from the ceiling where each player stands (and 4 more near), cold mist gathering
+    on the ground where each will land, as far as it hurts, just under a second before (40 each), and frost flowing
+    out over that ground as it shatters; or a **shotgun** of 6 ice shards fanned at each
     player (18 each);
   - and now and then (a quarter of its casts), instead, it **calls up skeleton archers**: 3 for one
     player, and 2 more for each player after the first (5 for two, 7 for three), round the edge of the hall, set on the players at once (a purple ring shows where as the cast comes). It
@@ -339,6 +401,11 @@ friend is in now.
   get a degree colder every `BOSS_COLD_EVERY` (6 s), so a slow fight freezes you. Kill it and the door opens, and its
   chest (full of `LOOT`) with it; until then the chest is "guarded". If everyone in its rooms dies or gets out, after
   `GIVE_UP_AFTER` (3 s) the door opens and the lich is whole again.
+- **What the lich leaves**: one lich core, for anyone; and for every player who hurt it in the fight (even one who
+  fell before it did), one of its `rewards` (`monsters.json`: the bone longbow, Permafrost or the skewer, picked at
+  random for each), lying where it fell and **bound** to that player: nobody else can pick it up, and it never goes
+  away by itself (`bound` in `game-room.ts`, kept in the save). If the copy is cleared away before they come back for
+  it, it is put down just outside the way in, for them.
 
 The stairs out (where you came in) take you back to just outside the arch, and so do the stairs at the top of the
 lich's hall, set into the wall beside its chest (`X` in the layout, `hallExit`; the chest stands against that wall), so nobody has to walk all the way back: they are sealed
@@ -348,8 +415,11 @@ comment over it; `bossHall` makes the hall): edit it to change the dungeon. Copi
 31,000 tiles out each way), further than anyone could sail; nothing can be built or broken in them, and none of it is saved (a player saved inside
 one comes back outside the arch).
 
-A world's size is kept in its save (`terrain`); a world saved before biomes gets the default (`DEFAULT_TERRAIN`), and
-grows differently from then on. (Older saves also kept a bumpiness, which is now dropped: every world is as bumpy.)
+A world's size is kept in its save as a radius (`terrain: { radius }`, the radius of a biome at 100 percent, in tiles),
+not as the name of a preset, so changing the presets (`WORLD_SIZES`) never changes a world already made. Older saves
+kept the preset's name (`terrain: { size }`); they are read as the radius it stood for then (`LEGACY_SIZE_RADIUS`:
+Small 70, Medium 110, Large 160, Extra large 220), and a world saved before biomes, with none, as Medium was then (110:
+`savedTerrain`). Saved again, they keep the radius. (Older saves also kept a bumpiness, which is now dropped: every world is as bumpy.)
 
 ## Playing
 
@@ -359,7 +429,7 @@ The keys are the defaults; every key can be changed in **Esc → Settings → Co
 | --- | --- |
 | W A S D (or arrows) | Walk |
 | Left click (hold) | Attack with what the picked slot holds, towards the mouse (see "Fighting"); held over grown crops, picks them all as fast as you sweep |
-| Right click | Use, whatever you hold (it never attacks): open or toggle a chest, station, gate or feed box; sleep in a sleeping bag; put down what you hold; hang a hide on a drying rack; lead or milk an animal with a rope or bucket; use a bucket on a pond, barrel or plot, or empty it on bare ground |
+| Right click | Use, whatever you hold (it never attacks): open or toggle a chest, station, gate or feed trough; sleep in a sleeping bag; put down what you hold; hang a hide on a drying rack; lead or milk an animal with a rope or bucket; use a bucket on a pond, barrel or plot, or empty it on bare ground |
 | Ctrl + right click | A target dummy is picked back up (with no room for it, nothing). Anything else: as a plain right click (`quickUse` in `game.ts`) |
 | Q | Put away what you hold (no slot picked: bare hands); again to go back to the slot you were on |
 | F | Eat from the food slot (to the right of the hotbar): food gives back health (its `heals` in `food.json`, more for better food), once every `EAT_COOLDOWN_TICKS` (5 s); the slot is grey while you cannot eat, its colour coming back as the cooldown runs down. A truesight flesh hurts instead (99), so it is only eaten with more health than that (at full health: else "Eating that now would kill you"), and lifts the fog over the far islands |
@@ -367,7 +437,7 @@ The keys are the defaults; every key can be changed in **Esc → Settings → Co
 | 1 – 9 | Pick a hotbar slot |
 | E | Your inventory |
 | Tab (hold) | Who is playing: everyone in the world by name (the host and you marked), under the world's name and code. A line at the top left, under the world's name, says when someone joins or leaves |
-| M | The map: the world as far as you have explored it (within `map.reveal` tiles of where you have been, 12, in `data/world-gen.json`; kept in this browser, for each world and name, a 64-tile square at a time, so it goes on as far as you sail), with everyone on it, and the trees, bushes, rocks and what players have built drawn on it as little pictures (`GLYPHS` in `map-view.ts`; as they are now where the page has the ground loaded, else as the seed grew them); drag it with the left button to look around (a double click brings it back to you); scroll the mouse wheel over it, or press its + and − buttons, to zoom in and out (from a quarter to four times its size, about the mouse; kept until the page is closed); nothing to make first |
+| M | The map: the world as far as you have explored it (whatever a 16:9 screen zoomed all the way out shows round where you have been, ±15 tiles across and ±10 north and south: `groundSpan` in `camera.ts`, so what you see on screen is on the map; kept in this browser, for each world and name, a 64-tile square at a time, so it goes on as far as you sail), with everyone on it, and the trees, bushes, rocks and what players have built drawn on it as little pictures (`GLYPHS` in `map-view.ts`; as they are now where the page has the ground loaded, else as the seed grew them); drag it with the left button to look around (a double click brings it back to you); scroll the mouse wheel over it, or press its + and − buttons, to zoom in and out (from a quarter to four times its size, about the mouse; kept until the page is closed); nothing to make first |
 | Mouse wheel | The hotbar slot: down for the next, up for the one before, wrapping round (from bare hands, from the slot held before) |
 | Ctrl + mouse wheel | Zoom (a trackpad pinch too) |
 | Esc | Close panels, open the menu (Settings, Respawn, invite link, leave), or go back from the settings |
@@ -385,15 +455,17 @@ The keys are the defaults; every key can be changed in **Esc → Settings → Co
   rustle.
 - **Rock** (in the mountains): cannot be broken by hand; only a **pickaxe** breaks it (`maxHp` / 2 hits). When it is
   gone it drops 2–4 stone and 1–2 flint. Rocks lie in groups and are solid.
-- **On the meadow and in the desert**: **copper rocks** and **tin rocks** (rocks with nuggets of the metal showing in
-  them) and **clay** break only to a pickaxe, for copper nuggets, tin nuggets and clay (no use yet); a **pocket of sand**
+- **On the meadow and in the desert**: **copper rocks** (by the mummies' tombs) and **tin rocks** (by the goblins' camps:
+  rocks with nuggets of the metal showing in them) and **clay** (grey lumps, the grey of its icon) break only to a pickaxe, for copper nuggets, tin nuggets and clay (no use yet); a **pocket of sand**
   breaks to anything, fists too, for sand; a **cactus** (solid, a ribbed green column with arms and spines) breaks to
-  anything for a cactus, which is put down again (right click) only on sand: the desert, or a beach ("A cactus only
-  grows on sand"); a **sunflower** (as tall as a player, its head turned to the camera) breaks at a hit for its seeds
-  (1 to 3); a **sunflower seed** is planted straight in the ground, no garden plot, where grass would grow (not on sand
+  anything for 2 to 3 cactus (`drops.json`), which is put down again (right click) only on sand: the desert, or a
+  beach ("A cactus only grows on sand"), as a **young cactus** that grows over `CACTUS_STAGES` random ticks (8, about
+  a minute and a half) into a cactus, looking a little bigger as it goes (a round nub, a short fat column, then a taller
+  one with an arm budding); punched before that, it comes back up as one cactus (`dug`); a **sunflower** (as tall as a player, its head turned to the camera) breaks at a hit for its seeds
+  (1 to 3); a **sunflower seed** is planted straight in the ground, no farmland, where grass would grow (not on sand
   or the mountains), as a **seedling** that grows over `SEEDLING_STAGES` random ticks (about a minute) into a
-  sunflower; dug up before that, the seed comes back. A **cobweb** (spun by a spider, strung between two twigs) breaks at
-  a hit for string.
+  sunflower; dug up before that, the seed comes back. A **cobweb** (spun by a spider, strung between two twigs) slows
+  you down walking through it, like a bush, and breaks at a hit for string.
 - **Flint** also lies in the forest from the start, a piece here and there: hit it (with anything) to knock it loose,
   then pick it up. It is drawn as a few sharp flakes of dark flint lying on their sides on the ground. It is a "loose item" (`loose` in `buildings.ts`).
 - **Grass** grows in clumps, and spreads back slowly where it has been eaten (a tuft every `GRASS_SPREAD_TICKS`, 15 s,
@@ -421,7 +493,7 @@ The keys are the defaults; every key can be changed in **Esc → Settings → Co
   its four input slots, two by two (`STATION_LAYOUT`), an arrow that fills as it works, and its output slot, with your
   inventory under it and its recipes to the right (every panel has its recipes on the right). No slot of any station
   or machine has a label. While it works, a small line at the foot of its panel says what it is making ("Crafting
-  planks"; every machine has one: "Cooking raw steak", "Making tannin", "Drying hide"). A station recipe's
+  planks"; every machine has one: "Cooking raw meat", "Making tannin", "Drying hide"). A station recipe's
   input can be any item of a kind (`"#cooked meat": 1`, by a tag in `items.json`): Craft puts in whichever of it you
   have.
   Pick one and press **Craft**: the tool it needs goes into the tool slot from your inventory (a different tool there
@@ -439,7 +511,22 @@ The keys are the defaults; every key can be changed in **Esc → Settings → Co
   left in it is drawn stuck in the stump. Idle, the line at the foot of its panel says "Not crafting" (a fire "Not
   cooking", a barrel "Not making anything", a rack "Not drying"). What it makes is `"stump"` in
   `data/stations.json`.
-- **Fences and gates** (planks and rope, at the stump): fences join the fences and gates beside them (I, L, T and X shapes) and stop
+- **Carpenter’s bench** (10 planks, at the stump): a station like the stump and the workbench (pick a recipe, press
+  **Craft**, it works while you stay at it), and the only place fences, gates, wooden walls and doors, wooden and stone
+  floors, and furniture are made. It includes no other station. **Furniture**: a **table** (4 planks), a **low table** (3
+  planks), a **round table** (4 planks) and a **chair** (2 planks), put down like buildings; all stand in the way.
+- **Stone floors** (stone, at the carpenter’s bench: four from 1) are floors like the wooden ones, of flagstones, and come up only
+  to a pickaxe.
+- **Wooden walls, doors and floors** (planks, at the carpenter’s bench: a wall from 2, a door from 3, four floors from 1): walls
+  are three quarters of a tile thick, of upright boards, and join the walls and doors beside them (not fences) as fences do, and stop
+  players and animals. A door works as a gate does, in a wall: it opens by itself for a player, and a right click keeps it open
+  or shut. A floor lies under whatever stands on its tile (a tile has one floor, and one thing on it: see `Chunk`), so
+  anything can be put down on it, and items on the ground lie on it. Floors side by side meet at the tile's edge; on a side
+  with no floor beside it, a floor is drawn reaching an eighth of a tile past its tile, so it covers the ground beside
+  a wall; it covers a tuft of grass laid over it (the tuft
+  is gone), but not anything else that grows or was found there, and nothing grows up through it. An axe swing takes
+  up what stands on a floor first, and the floor once its tile is clear.
+- **Fences and gates** (planks and rope, at the carpenter’s bench): fences join the fences and gates beside them (I, L, T and X shapes) and stop
   players and animals, but only where the post and rails are drawn (`fences.ts`), so you can walk close round them. A
   gate opens by itself while a player is within `GATE_OPEN_RADIUS` of it. Right click it to open it and keep it open,
   or shut it and keep it shut; a gate shut by hand opens by itself again once a player walks over it. Animals only get
@@ -452,7 +539,7 @@ The keys are the defaults; every key can be changed in **Esc → Settings → Co
     however it is rowed), and the fence does not give. Right click the fence again to untie it, the rope back in your
     things. A right click anywhere else after the fence ties nothing. Animals and rafts stay tied when the game is
     saved; if the fence is taken down, the rope falls off (`tie` and `untie` in the server's `commands.ts`).
-- **Garden plot** (workbench): right click it with a seed to plant it. The crop grows on the plot's random ticks; hit it
+- **Farmland** (workbench): right click it with a seed to plant it. The crop grows on the plot's random ticks; hit it
   when it is grown for the harvest and 1–3 seeds back, which leaves the plot as it was. A crop still growing can only
   be dug up (for its seed back) with a tool, not fists. Harvesting is your attack: whatever your punch or swing covers
   is harvested, so a swing along a row takes several. The soil is dark when watered and pales as it dries. It costs 3
@@ -461,12 +548,12 @@ The keys are the defaults; every key can be changed in **Esc → Settings → Co
   taller each time, from a few shoots to a dense, golden stand of heavy heads: always in three tidy rows along the
   plot's furrows, the plants evenly spaced and all of a height, the ripe heads all nodding the same way. The debug view (F3)
   shows a plot's growth and how long its water lasts when you hover over it.
-- **Breaking what you put down** (everything: fences, gates, the stump, plots, feed boxes, the workbench, campfire,
+- **Breaking what you put down** (everything: fences, gates, the stump, plots, feed troughs, the workbench, campfire,
   barrel, drying rack and chests) takes an axe: a fist does nothing. It comes back as its item, with whatever was in
   it. Anything that is hit (what you put down, and trees, bushes and rocks too) and left alone for 6 seconds heals back, a point every third of a second
   (`HEAL_DELAY_TICKS`, `HEAL_EVERY_TICKS` in `game-room.ts`), and its health bar goes once it is whole.
 - **Chest** (8 planks, workbench): somewhere to keep things.
-- **Feed box** (planks): animals nearby eat what they like from it (cows: wheat or hay; chickens: any seed), which
+- **Feed trough** (planks): animals nearby eat what they like from it (cows: wheat or hay; chickens: any seed), which
   leaves them well fed for 90 seconds.
 - **Rope** (3 fiber, by hand, or quicker at a stump or workbench): the first tools are bound with it. Right click an animal with it to lead it. A led animal wanders slowly. The rope is a
   **spring**: slack up to `LEAD_LENGTH` (3 tiles), and past it it pulls you and the animal towards each other, as hard
@@ -532,7 +619,7 @@ The keys are the defaults; every key can be changed in **Esc → Settings → Co
   laid in courses that cover it all over, an arched dark mouth framed by stones at the front, and a short chimney on
   top.
 - **Drying rack** (workbench): dries one hide at a time into a dried hide, in two minutes cold, as fast again for every
-  100° from a campfire beside it (`"rack"` in `data/stations.json`). It has no panel: it works like a garden plot.
+  100° from a campfire beside it (`"rack"` in `data/stations.json`). It has no panel: it works like farmland.
   Right click it with a hide to hang the hide on it (only while nothing is on it), and hit the dried hide to get it
   back: it falls off, and the rack stays, unhurt (`rackRefusal` in `machines.ts`, `hit` in the server's
   `commands.ts`). While the hide is still drying, a hit is as on anything put down (an axe takes it down, with the hide).
@@ -546,7 +633,8 @@ The keys are the defaults; every key can be changed in **Esc → Settings → Co
   over it, bobbing and spinning (drawn as its icon, a flat picture that turns: `item-pictures.ts`).
 - **Altar** (workbench: 20 stone, 10 essence, 8 bone and a lich core): after `icons/buildings/altar.png`: a slab of dark
   stone set with bone, an empty stone basin, and two great curved bone horns hooking in over it, streaked with blood. The
-  lich core is what the frost lich drops, and all it drops. It has one slot too, floating over it like a pedestal's.
+  lich core is what the frost lich drops (one), besides the weapon it leaves each who fought it. It has one slot too,
+  floating over it like a pedestal's.
   - **Rituals** (`packages/shared/src/altar.ts`; `"altar"` in `data/stations.json`: `inputs`, `liquids` by name and
     buckets, `output`, `count`, `seconds`). The altar draws on the pedestals and barrels in the 5 × 5 square on it
     (`ALTAR_REACH`): its panel lists its rituals, each ingredient counted on the pedestals round it and each liquid in
@@ -558,8 +646,11 @@ The keys are the defaults; every key can be changed in **Esc → Settings → Co
     core**, from 4 fangs, 4 leather, 8 essence, 8 bones, 4 charcoal, 4 breakfast sandwiches, 4 compost, 8 feathers and
     8 buckets of blood, in 15 seconds; a **worker skeleton**, from a lich core, 20 bones, 20 essence, a pickaxe, an axe,
     a knife and 8 buckets of blood, in 15 seconds; **essence**, one from a loaf of bread, in 5 seconds; and a **truesight
-    flesh**, from a lich core, 20 essence, 20 bones, 20 raw steak, 20 raw chicken and 16 buckets of blood (two barrels
-    full), in 15 seconds (see "The fog").
+    flesh**, from a lich core, 20 essence, 20 bones, 20 raw meat, 20 raw chicken and 16 buckets of blood (two barrels
+    full), in 15 seconds (see "The fog"); a **skeleton camp**, from 12 leather, a lich core, 30 essence and 20 bones (see
+    "Camps"); and the bone armour, each piece from a lich core and bones, leather and blood: a **bone helmet** (15
+    bones, 4 leather, 4 buckets of blood), a **bone chestplate** (25, 8, 8) and **bone greaves** (20, 6, 6); all in 15
+    seconds.
   - **How it looks** (`ritual-timeline.ts`, `render3d/ritual-effects.ts`): a ring of light marks its reach on the
     ground. Each pedestal in turn, round the altar clockwise from the north, sends its item to it: a white beam with
     sparks running along it, the item lifted off and drawn along to circle over the altar, spinning (until its turn it
@@ -570,13 +661,14 @@ The keys are the defaults; every key can be changed in **Esc → Settings → Co
     flash, a shockwave over the ground, sparks thrown out and a pillar of light (the altar's `glow`, ALTAR_GLOW_TICKS),
     and what it made floats over the altar.
 - **Waystone** (workbench: a lich core, 10 stone and 15 essence; `packages/shared/src/waystones.ts`): after
-  `icons/buildings/waystone.png`, a tall blue-grey stone with a rounded top on a dark plinth, runes cut down its face,
-  and a row of dark sockets up each edge of its face, with a keystone socket at the top. Right click it for its panel:
+  `icons/buildings/waystone.png`, a squat block of blue-grey stone with a flat top, narrowing a little as it rises, on a
+  stepped base, and three marks cut in its face right of its middle: two bars and a small square (the keystone) above them. Right click it for its panel (from within
+  `WAYSTONE_REACH`, 3 tiles, of it; it closes once you are further):
   a box to name it (like a chest's), and every other waystone in the world, by name (or where it is, unnamed), how far
   and which way. The server keeps the list and sends it to every page (`waystones` in the log), since a page only
-  knows the chunks near it. Click one to go there (the `warp` command): the stone charges for `WARP_SECONDS` (3),
-  and you cannot move the while (your page sends no movement and the server plays none). Its lights come on a pair at
-  a time from the bottom, the keystone last (`warpLightAt`), with a chime as each does; motes of light rise round you
+  knows the chunks near it. Click one to go there (the `warp` command; the panel closes): the stone charges for `WARP_SECONDS` (3),
+  and you cannot move the while (your page sends no movement and the server plays none). Its marks light up one at a
+  time from the bottom, the keystone last (`warpLightAt`), with a chime as each does; motes of light rise round you
   in a tightening spiral, a ring closes in under you, and a column of light swallows you. Then you are put down in front
   of the other stone (or beside it, if that is blocked: `ARRIVAL_SPOTS`), with a flash, a pillar of light and sparks
   where you left and where you arrive. Knocked more than a tile away while it charges (or with either stone broken),
@@ -661,7 +753,7 @@ The keys are the defaults; every key can be changed in **Esc → Settings → Co
     one or the other, and only fresh water waters a plot or makes tannin.
   - **Dough**: four flour and a bucket of water mix into a dough every 10 seconds, in an open barrel, no heat needed.
     Bake it in an oven for bread (20 health).
-  - **Blood**: any raw meat (steak, chicken: `#meat`) in a sealed barrel kept at 200° (a campfire beside it) turns into a
+  - **Blood**: any raw meat (meat, chicken: `#meat`) in a sealed barrel kept at 200° (a campfire beside it) turns into a
     bucket of blood every 30 seconds, one for each piece of meat. It is a liquid like the rest: draw it off with an empty
     bucket for a bucket of blood. It is made from solids alone (`liquidOut` in the recipe: `count` buckets of it each
     time), so only in a barrel with no other liquid in it (or blood already), and not past full.
@@ -724,31 +816,53 @@ you hold (it is for using things). Every attack puts every weapon on one cooldow
   (45%). The page tells the server when the button went down (the `charge` command), and the server only lets a charged
   attack through that long after. Fists and tools with no charged attack keep attacking while the button is held, as
   before.
+- **The frost lich's weapons** (one left for each player who hurt it: see "The dungeon"): the **bone longbow**, a bow
+  (arrows) that hits harder and further than the bow, drawn and charged the same way; the **skewer**, a bone spear
+  that thrusts like the flint spear, and charged **dashes** you `range` tiles (3) the way you aim, through whatever is
+  in the way (you are not stopped by creatures as you go), hurting everything along it: held, you crouch low with it
+  levelled at your side (as a skeleton gathers to charge), and you lean hard into the dash; and **Permafrost**, a staff
+  (`"cast"` in `weapons.json`) whose attack shoots an **icicle** the way you aim (it uses nothing up, and nothing
+  lands), and charged calls an **ice spear** down from high above onto the spot you aim at (`"blast"`: at most 10
+  tiles off), which lands a second later (a ring on the ground fills as it comes) and hurts everything within
+  `radius` of it, harder.
 - **A thrown spear** flies its range and sticks in the ground where it comes down (or in whoever it hits, then the
   ground there), standing there as something to knock loose: hit it with anything and it drops, to be picked up. Where
   it cannot stand (on something, in water) it lies on the ground, or sinks.
-- **Melee attacks step you forward** (all but a punch, and the tools, knife, axe and pickaxe, which you use standing:
-  `"steps": false` in `weapons.json`) a little over `LUNGE_TICKS`, further the slower the attack: `LUNGE_PER_SECOND`
-  (1.4) tiles for each second of its cooldown (`lungeDistance` in `weapons.ts`: a knife about 0.4 tiles, a club about
-  0.8, a club's charged slam 1.4), whatever keys you hold, so backing off while swinging is cut short; a dash runs you its length over `DASH_TICKS`. These steps
+- **Melee attacks step you forward** their weapon's `lunge` (tiles, in `weapons.json`: 0 for fists and the tools, which
+  you use standing; 0.46 for the club and the spears, 0.84 for a club's charged slam) over `LUNGE_TICKS`, whatever
+  keys you hold, so backing off while swinging is cut short; a dash runs you its length over `DASH_TICKS`. A step
+  forward stops short of walking you into the reach of anything that hits on contact with no windup (a mummy's blow,
+  the bite of a wolf or scarab after you: `lungeRoom` in `game.ts`, 0.1 tiles short), so a lunge never puts you in
+  the way of a free hit; an enemy winding up an attack you hit into is yours to dodge. A dash is not cut short.
+- **Every attack has a `windup`** in `weapons.json` (seconds; a charged attack's in its `charged`): how long after the
+  button it lands (or flies). The bow's, the sling's and the staff's draw their shot; the melee weapons' are 0 (at once). These steps
   go in the movement input itself (a "push", `withPush` in `movement.ts`), so the page and the server move you exactly
   the same; the server only lets a player push so far in a while (`PUSH_ALLOWANCE`, refilling at `PUSH_REFILL` a
   second, in `game-room.ts`), so a page cannot fly about.
+- **An attack comes before its step.** Movement inputs and commands travel separately (inputs numbered, a tick each,
+  played one a tick from a queue; commands sent reliably, run on the first tick after they arrive), so on their own an
+  attack could be made before, during or after the lunge it takes. An attack therefore carries `at`, the number of the
+  page's last input when it was made: the server makes it just after playing that input, and plays none of that
+  player's later inputs (the step forward) until it has (`inputReached` and `attackWaiting` in `game-room.ts`). So
+  a hit is always made from where you stood when you clicked, then you step. One whose input never comes is made
+  anyway, `ATTACK_INPUT_WAIT_TICKS` (10) late.
 - **A moment's grace after a hit**: once something hurts you, nothing hurts you again for `HURT_GRACE_TICKS` (half a
   second), so you cannot be hit over and over at once; you flicker while it lasts. The cold still bites through it.
 - **Hitting a creature** knocks it back a little (`HIT_KNOCKBACK`, 0.45 tiles) and stuns it for a moment
-  (`HIT_STUN_TICKS`, a quarter of a second), after taking off its damage less its armour (`armor` in `animals.json` and
+  (`HIT_STUN_TICKS`, 0.3 seconds, time to back off), after taking off its damage less its armour (`armor` in `animals.json` and
   `monsters.json`; always at least 1). Creatures hit flash red, call out, show the damage they took as a rising number,
   and animals run from whoever hit them. One killed shows the killing blow's number too, keels over, and shrinks away
   into its drops (which show once it has fallen).
-- Hover over an item for what it is good for: a weapon's damage, food's healing, armour's warmth and defense.
+- Hover over an item for what it is good for: a weapon's damage, food's healing, armour's warmth and defense, and the
+  set a piece of armour is part of (its name, its pieces and its bonus). The tooltip stays while keys are held (walking
+  with the inventory open), and goes only once what it was over is gone.
 - Attacks on creatures are judged against where you **saw** them: the page draws them a little in the past, so each
   attack says which tick it was drawing them at, and the server checks it against where they were then (up to
   `MAX_REWIND_TICKS`, half a second, back; `nearAt` in `apps/server/src/animals.ts` and `monsters.ts`). Arrows and stones
   fly on the server as they are, so they are not judged this way. A creature only flashes once the server says it was
   hurt.
 - **Health** (100, `PLAYER_MAX_HEALTH`) is the top edge of the hotbar, with your body's temperature beside it (see "The
-  cold"). Eat to get it back (F): cooked steak 40, cooked chicken 30, a fried egg 16 (an egg fried on a campfire at 150°), raw steak 10, raw chicken, berries and eggs 6
+  cold"). Eat to get it back (F): cooked meat 40, cooked chicken 30, a fried egg 16 (an egg fried on a campfire at 150°), raw meat 10, raw chicken, berries and eggs 6
   (`heals` in `food.json`). Messages show above the hotbar. A player knocked back by a hit is carried over a few ticks
   (`KNOCKBACK_TICKS` in `game-room.ts`), quick but smooth.
 - A **sleeping bag** (3 leather, at the stump) is put down like a building; right-click it to sleep in it, and you
@@ -762,6 +876,10 @@ you hold (it is for using things). Every attack puts every weapon on one cooldow
   creatures. A player hit flashes red with the damage rising off them, and one knocked out (no health left) wakes up
   at the spawn with all their health. The **host** (the player who made the game: the first to join it, kept in its
   save) can turn it off or on in **Esc → Settings → Game**; it is on to start with.
+- **Item spawning** (for testing): the host can turn it on in **Esc → Settings → Game** (off to start with; kept in the
+  save). While it is on, every player's inventory has a **Spawn items** panel at its left: every item in the game, by
+  kind, with a search box; a click takes as many as the amount box says (Shift + click, a whole stack), as many as fit
+  (the `give` command, refused while it is off).
 
 ### Monsters
 
@@ -798,10 +916,37 @@ Chasing and finding a way round walls is shared with the animals (`apps/server/s
   tall, wrapped in yellowed linen, eyes glowing dimly, arms held out in front. Their attack is the goblins' plain one
   (`"melee"`), but they are slow (2.6 tiles a second, well under a player's 6) and tough, and hit harder (20, a little
   more knockback, every 1.5 seconds). They drop nothing yet.
+- **Goblin archers** (40 hp, armour 1) and **goblin shamans** (45 hp, armour 1) keep the goblins' camps with them: an
+  archer shoots arrows as a skeleton archer does (a bow held out, an arrow nocked while it aims). A shaman (in a ragged
+  hood and a bone mask, a crooked staff topped with a green stone that blazes while it aims) lobs a **hex** (`"lob"`):
+  a glowing green ball thrown up and over at where you stand, which bursts where it lands (poison billowing out over
+  the ground as far as it hurts: 18 to everyone within 1.1 tiles). It comes down `base` (0.6 s) plus a second for every `speed` (7) tiles away it is,
+  so even close by there is time to step out of the way. It is heard cast (a rising warble) and bursting (a thump and a
+  crackle).
 - **Goblins** (50 hp, armour 2: `"goblin"` in `monsters.json`) keep camps on the meadow (see "Goblins' camps"): small
-  and green, big-eared, red-eyed, a crude club in the fist. For now their attack is a plain one (`"melee"`): one goes
-  for a player like a skeleton, walks up to them and hits them (12, and a little knockback) whenever it is within its
-  `reach` of them, every `cooldown`, with no wind-up. They drop nothing yet.
+  and green, big-eared, red-eyed, a crude stone-tipped spear in the fist (`"spear"`). Close in they **jab**, quick and
+  with little to warn of it (its `windup`, 0.12 s, the spear drawn back a touch, then thrust out), **lunging** in as
+  they do, up to `lunge` (0.6 tiles) but never into you: `damage` to whoever is in a narrow strip (`JAB_WIDTH`, half a
+  tile) its `reach` out in front from there, so it reaches further than the spear alone. Nothing stops a jab once it
+  has started: winding up, a goblin is not knocked back or stunned by your hits. A red streak shows the strip it struck.
+  Or they **throw** their spear (`throw`): each time a goblin is ready to attack it picks which, a throw `chance` of
+  the time (0.3: 30% throws, 70% jabs) and sticks to it until done. A throw is from anywhere within `range` (7 tiles)
+  where it can see you: it draws back (`windup`) and throws at where you were a moment before (14), keeping its own,
+  then waits its throw's `cooldown` (1.5 s) before its next attack. They drop nothing yet.
+- **Mummies** hit with no windup (`windup` 0 in their `"melee"`: any monster's plain blow can have one), with no mark
+  drawn for it (a walk-up blow has none), but seen: its arms flick up and chop down as it lurches into it. Now and then they **slam** (`slam` in their attack): every `cooldown`
+  (6 s; the first that long into a fight), with you within `ahead` + `radius` (0.9 + 1 tiles), a mummy raises both
+  arms over its head (`windup`, 0.7 s, the way to you fixed as it starts; nothing stops it), then brings them down on
+  the ground `ahead` in front of it: everyone within `radius` of there takes `damage` (65) and is knocked back
+  `knockback` (1.2 tiles), with a thud and a red ring on the ground where it came down.
+- **Red marks**: an enemy's attack that lands shows in red what it covered, for a moment: a skeleton's swing and
+  dash, a goblin's jab, a mummy's slam, a scarab's roll (not a mummy's plain blow, or a scarab's bite) (`enemySwishes` in `game.ts`; the server tells the pages of
+  each blow, `struck` in `MonsterInfo`). A `lead` of 0 in any attack aims at where you are, not where you were.
+- **Dust elementals** (70 hp, armour 2: `"dust-elemental"`) keep the mummies' tombs with them: a whirling column of
+  sand and grit with two amber eyes, floating, whirling faster as it gathers a **twister** (`"twister"`). Within 8
+  tiles it looses one at where you were a moment before: a funnel of dust 0.8 tiles across that blows through
+  everything (it is wind) and through you (14, once), and on for `linger` (a second) past where it was aimed before it
+  dies away. They drop nothing yet.
 - **Bees** (`"bee"` and `"queen-bee"`) are monsters too, so they are drawn, hit and sting like one, but what they do is
   their colonies' (see "Bees", `apps/server/src/bees.ts`): they fly, over anything, and are not bodies.
 
@@ -840,8 +985,8 @@ or in a chunk a player has built in: a bee box keeps working while you are away)
 
 Animals wander in herds, keeping near others of their kind, and graze. **Each island keeps its own population** of each
 kind that lives there (`biomes` in `animals.json`: chickens and deer in the forest, wolves in the mountains, cows on
-the meadow, spiders in the desert): `population`, so many for every 10,000 tiles of the biome
-(chickens 4, deer 3, wolves 3.5: on a medium world about 15 chickens, 11 deer and 12 wolves). A new world is stocked
+the meadow, spiders and scarabs in the desert): `population`, so many for every 10,000 tiles of the biome
+(chickens 4, deer 3, wolves 3.5: on a large world about 15 chickens, 11 deer and 12 wolves). A new world is stocked
 to that from the start (`Animals.populate`). Then every 30 seconds (`POPULATE_EVERY`), each biome a player is on is
 counted, and each kind with fewer wild ones there than it should have gets a herd half the time (`POPULATE_CHANCE`),
 the kind furthest short first, somewhere on the biome's open ground at least 40 tiles (`SPAWN_AWAY`) from every
@@ -850,14 +995,14 @@ and none is ever let go.
 
 **Animals are only run where something is going on** (`isActive` in the server's `animals.ts`): within
 `ACTIVE_RADIUS` chunks of a player (one more than the chunks a page is shown, so none is seen standing still), or in a
-chunk with something built in it (anything not `natural`: a fence, a feed box, a chest, a campfire; worked out every
+chunk with something built in it (anything not `natural`: a fence, a feed trough, a chest, a campfire; worked out every
 2 seconds, `builtChunks` in `game-room.ts`), so a farm goes on while its players are away. Everywhere else they wait
 as they are (they do not get hungry, grow up or wander) until someone comes back. One on a rope is always run. How fast they get hungry, grow, breed and so on is each kind's `life` and `stats` in
 `data/animals.json`; the rest is at the top of `apps/server/src/animals.ts`. Animals have armour too (`armor`):
-chickens and deer none, cows 1, wolves 3.
+chickens and deer none, cows 1, wolves 3, scarabs 4.
 
 - **Deer** are skittish (`temper`): one runs from any player within `fleeRadius` tiles, or that hurts it, at
-  `fleePace` times its speed (faster than a player runs), and its herd runs with it. Hunt them with a bow or sling. They eat berries from a feed box, which is how they are bred. They drop meat (raw steak) and hides.
+  `fleePace` times its speed (faster than a player runs), and its herd runs with it. Hunt them with a bow or sling. They eat berries from a feed trough, which is how they are bred. They drop meat (raw meat) and hides.
   A deer is heavy on a rope (`mass`): it keeps running from you, and drags you along rather than being led.
   Running, it looks ahead for where the land runs out (`fleeTo`): straight away from you if it can, else turned aside
   a sixteenth of a turn at a time either way, taking the way that leaves it furthest from you, so it runs along the
@@ -867,16 +1012,19 @@ chickens and deer none, cows 1, wolves 3.
 - **Spiders** (30 hp) live in the desert, each **alone** (`solitary`: one turns up at a time, its sex by chance, and it
   never goes back to others of its kind). Now and then (`webs`: about every 40 seconds) a spider spins a **cobweb** on a
   free tile within 3 tiles of it, while fewer than 5 (`most`) of the cobwebs it has spun still stand, wherever it has
-  wandered since (it keeps them, in the save too): only once one is broken does it spin another. They eat **meat** (`#meat`) from a feed box, which
+  wandered since (it keeps them, in the save too): only once one is broken does it spin another. Cartoonish, like the
+  rest: a huge striped abdomen, a small head with two dark eyes (and four little ones) and fangs, and thick legs arched high, knobbed at the
+  knee. It walks on its eight
+  legs, every other one stepping together (`gaitCrawler` in `three-view.ts`, which a scarab's six use too). They eat **meat** (`#meat`) from a feed trough, which
   tames them (no longer wild) and, as for any animal, two well-fed adults of each sex breed. They drop nothing yet.
-- **Wolves** (70 hp, armour 3, a bite of 12) are hostile and territorial (`hunt` in `animals.json`): a wolf leaves a player alone until they come
+- **Wolves** (70 hp, armour 3, a bite of 12; each bite seen as a lunge, the head dipped, `poseBite` in three-view, with no mark) are hostile and territorial (`hunt` in `animals.json`): a wolf leaves a player alone until they come
   within `aggroRadius` tiles or hurt it, and then it goes for them, and so does every wolf of its pack within
   `packRadius` tiles. They chase at `pace` times their speed (faster than a player: you cannot outrun them), bite for `damage`
   every `cooldown` seconds from close up (their size and yours, and `reach` between), and **never give up** once they
   have gone for you, however far you get (they stop only if you leave the game; or are killed), so long as they can get
   at you: a wolf that has come no nearer you (by half a tile) and not bitten you for 8 seconds (`UNREACHABLE_TICKS`:
   you are over a fence or water) gives up, and leaves you alone for 30 seconds (`IGNORE_TICKS`) unless you hurt it. So
-  penned wolves go back to eating from their feed box and breeding while you stand by. With `flank`, a pack does not run straight in: they spread round you
+  penned wolves go back to eating from their feed trough and breeding while you stand by. With `flank`, a pack does not run straight in: they spread round you
   `FLANK_RING` tiles out, at least `FLANK_SPREAD` apart, and dart in to bite from their side, falling back between bites
   (`flankPlace` in `animals.ts`). Fences keep them out. **Hit one and it backs off**: out to that ring round you, on
   its own side, and it does not bite again for its `recoil` (1.2 s, in its `hunt`; counted from the end of the hit's
@@ -884,36 +1032,60 @@ chickens and deer none, cows 1, wolves 3.
   wander where they like, but each belongs to a **pack** (`pack`, saved; a pup is its mother's), keeps together with
   its own, and **keeps away from other packs**: with a wolf of another pack within half of `territory` (18 tiles), it
   walks off away from it. No new pack turns up within `territory` (36 tiles) of another pack's wolves. So penned with a
-  feed box of meat, they eat and breed like any animal.
+  feed trough of meat, they eat and breed like any animal.
+- **Scarabs** (45 hp, armour 4) live in the desert in **packs** (3 to 5), hostile like wolves (`hunt` in
+  `animals.json`): one gets mad at a player who comes within `aggroRadius` (5 tiles), or hurts it, and its whole pack
+  within `packRadius` comes with it. They chase you and **bite** like wolves (`damage` 8 within `reach`, every
+  `cooldown`, 1.2 s; a lunge with its head dipped, nothing drawn for it) for a while: `chaseMin` to `chaseMax` (3 to
+  7 s), picked by chance at the start of a chase and after each roll, so a pack does not all roll at once. Then, from
+  wherever it is, a scarab **rolls** (`roll` in their `hunt`): it curls up (`windup`, a quarter of a second: its legs
+  drawn in, rearing back and shaking, with a dry clicking), the way to you fixed as it starts, then rolls that way in a
+  straight line, tumbling over and over, at `speed` (13 tiles a second), on to where you were and `past` (3 tiles)
+  beyond, never more than `distance` (9 tiles), or until something stops it: straight through whoever is on its line
+  (`width`, 0.6 tiles; the roll's `damage`, 16, each once, knocked on the way it rolls), a rumble and a red streak
+  along it. Then it chases and bites again. They chase at `pace`, a little slower than you run. Hit, it stops curling
+  up or rolling and backs off for its `recoil` (its roll then comes as soon as that is over, if it was due). They eat **cactus** from a feed trough, which tames them (no longer wild) and, as for any animal, a
+  well-fed pair breeds; like wolves, penned ones still go for you. A cartoonish beetle with a huge, high, shining dome of
+  a back split down the middle and swelling round and full behind, a small head with a toothed scoop and dark eyes,
+  clubbed feelers and six stout legs knobbed at the knee: a male dark green-black with a horn curving up off
+  his head (a great one) and a short one on his thorax, a female bronze-brown and hornless. They drop nothing yet.
 - **Noticing.** A hostile animal only notices a player it can see (a dungeon's walls hide you), within its
   `aggroRadius`.
+- **Unclumping.** Animals and monsters of the same kind that come closer together than a body's length (their
+  `size`) push each other apart a little, harder the closer they are, so a pack or a camp spreads out rather than
+  standing in one heap (`unclump` in `animals.json` and `monsters.json`: tiles a second, right on top of each other;
+  0 for none; `unclump` in the server's `creatures.ts`). Different kinds do not push each other this way. Not while
+  a skeleton dashes or a scarab rolls; and one just hit (stunned) is not pushed, the other moving off it instead, so
+  one knocked back into another is not shoved back onto you. The frost lich and its wisps have 0 (wisps keep apart their own way).
 - **Pathfinding.** A hunter whose straight way to you is blocked (a wall, a fence, a tree) finds a way round over the
   tiles near it (`findPath` in `steering.ts`, shared with the monsters), never cutting corners; wolves only flank in
   the open.
-- **Male and female** look different at a glance: a bull is dark and long-horned, a cow pied with an udder; a rooster
+- **Male and female** look different at a glance: a bull is dark, with long horns sweeping out and then forward and
+  up (smooth, tapering, pale and darkening to their points: `cowHorn` in `models.ts`), a cow pied with an udder and
+  shorter horns curving up; a rooster
   has a tall comb and a dark sweeping tail, a hen is brown with a small comb; a buck has antlers; a male wolf is bigger
-  and darker with a heavy black mane.
+  and darker with a heavy black mane; a male scarab is horned.
 - **Hunger.** It fills from 0 to 100% over `hungerMinutes`. At `hungryAt` or more an animal goes for the nearest tuft
   of grass within `grassRadius` tiles and eats it (taking `grassFills` off its hunger); at half of `hungryAt` it only
-  nibbles grass right beside it. Not well fed and at half of `hungryAt`, it goes to a feed box with food it likes
+  nibbles grass right beside it. Not well fed and at half of `hungryAt`, it goes to a feed trough with food it likes
   first, however near the grass is (a chicken goes to its seed box, not the grass through the fence); with such a box
   in reach (`FEEDER_RADIUS`, 10 tiles) it never grazes, and while well fed it does not eat at all, so a farm's
   planted grass is left to grow. On its way to
   food it looks again every second or two, and goes for what it would pick now (a box filled meanwhile); food it could
-  not get to (it got stuck: grass through a fence) it lets be for 20 s (`SHUN_TICKS`, `foodGoal` in `animals.ts`). Grass never makes it well fed; a feed box does, for `wellFedMinutes`.
+  not get to (it got stuck: grass through a fence) it lets be for 20 s (`SHUN_TICKS`, `foodGoal` in `animals.ts`). Grass never makes it well fed; a feed trough does, for `wellFedMinutes`.
 
 - **Stats and genetics.** Every animal is male or female and has stats: a cow its meat, milk and growth time; a
   chicken its meat, egg lay time and growth time. A wild one gets each stat's base give or take its spread
   (`animals.json`).
-- **Breeding.** Two adults of a kind, one of each sex, both well fed (from a feed box), not bred in the last
+- **Breeding.** Two adults of a kind, one of each sex, both well fed (from a feed trough), not bred in the last
   `breedCooldownMinutes`, and within 8 tiles of each other, go to each other and have a baby, however many of the kind
   are about already (a farm grows as big as you keep it fed). Breeding uses up being well fed. The baby's stats are the average of its parents', give or take a little.
   It is drawn small and grows up over its growth time.
 - **Products.** A hen lays an egg on the ground every egg lay time. A cow builds up milk (one every `milkMinutes`, up to
   her milk stat); right click her holding an empty bucket to milk her: it becomes a bucket of milk, one bucket
   a click, and she keeps the rest of her milk for the next.
-- **Food and gates.** A hungry animal goes for a feed box with something it eats over grass it can see. It only goes through an open gate to get to food, or on a rope; wandering, it stays on its side.
-- **Killing.** A grown animal drops about its meat stat in meat (steak or raw chicken) and its hide or feathers; a
+- **Food and gates.** A hungry animal goes for a feed trough with something it eats over grass it can see. It only goes through an open gate to get to food, or on a rope; wandering, it stays on its side.
+- **Killing.** A grown animal drops about its meat stat in meat (meat or raw chicken) and its hide or feathers; a
   baby drops nothing.
 - **Debug view (F3):** hover over an animal to see what it is doing, its sex, age, hp, hunger (and where it counts as
   hungry), whether it is well fed, who leads it, and its stats against its kind's wild range.
@@ -954,7 +1126,7 @@ not the hotbar, and no further: nothing new goes in).
 
 Solid things stand in the way with their own shape, not their whole tile (`BUILDING_BOUNDS` in `buildings.ts`): a
 tree's trunk, a barrel's round, a drying rack's frame from post to post (nobody walks through it). Each is one of a few
-standard sizes (`FOOTPRINT`: `block` for the stations, fires, chests, feed boxes, wells and rocks; `small` for a
+standard sizes (`FOOTPRINT`: `block` for the stations, fires, chests, feed troughs, wells and rocks; `small` for a
 barrel; `trunk`; `frame`), never a size of its own, so two things side by side line up exactly and leave no small lip
 to catch on; a new building picks the nearest one and its model is fitted to it. And a player walking straight into
 the very edge of something (within `CORNER_SLIP`, a quarter of a tile, of its corner) slips round it instead of
@@ -978,15 +1150,16 @@ it has, flint per 1000 tiles, and the clearing round the spawn); a game can be g
 `plantGeneration` option. Nothing grows within five tiles of the spawn. A player inside something solid (a tree
 that has just grown where they stand) is pushed out to the nearest place they fit.
 
-**Put away for later:** ore deposits are off (`ORE_DEPOSITS` in `world-gen.ts`), and nothing in the game builds the
-factory's buildings any more. The simulation, the server's `build`/`remove` commands and their tests are all still
+**Put away for later:** the factory's ores are gone (no ground has ore: `oreAt` in `world-gen.ts`; a miner digs
+whatever it is made with, once a `MINE_TICKS`), and nothing in the game builds the factory's buildings any more. The simulation, the server's `build`/`remove` commands and their tests are all still
 there, ready to be given back to the player.
 
 ## Art
 
 The world's models are built in code (`apps/client/src/render3d/models.ts`; there are no model files yet). The pictures
 under `res/` are the items' icons, shown in the inventory, the hotbar and the recipe lists, and for items lying on the
-ground: each item's is its `icon` in `data/items.json` (or `icons/items/<key>.png`, an ore's `icons/ores/<key>.png`).
+ground: each item's is its `icon` in `data/items.json` (or `icons/items/<key>.png`). What only flies (an icicle, a hex:
+category `projectile`) is never had, and is not in the item spawner.
 **To replace one, save a PNG at its path.** The game uses the file wherever there is one and draws a stand-in where
 there is not (a gem in the item's colour, or a little picture for a few); no code changes (`apps/client/src/ui/icons.ts`).
 The dev server picks a new file up on reload (a hosted build needs `npm run build`). Square pixel art at 32 or 64 pixels
@@ -1000,7 +1173,8 @@ broken (`break-rock`), the attacks (`attack-jab`, `attack-swing`, `attack-thrust
 a bow is drawn or a sling whirled), a charged attack ready to let go (`charge-ready`) and let go (`attack-spin`,
 `attack-slam`, `attack-dash`), a skeleton raising its sword (`monster-raise`) and crouching to charge
 (`monster-charge`), a creature hurt (`animal-cow`, `animal-chicken`, `animal-deer`, `animal-wolf`,
-`animal-skeleton`, `animal-spider` (a hiss), `animal-goblin` (a squeal), `animal-mummy` (a groan), `animal-bee` (a buzz), `hit-animal`), being hurt yourself (`hurt`), the lich casting (`cast`) and its blizzard
+`animal-skeleton`, `animal-spider` (a hiss), `animal-scarab` (a knock on its shell), `animal-goblin` (a squeal), `animal-mummy` (a groan), `animal-bee` (a buzz), `hit-animal`), a scarab curling up
+(`animal-curl`) and rolling (`animal-roll`), being hurt yourself (`hurt`), the lich casting (`cast`) and its blizzard
 (`blizzard`), a spike trap set off (`trap-click`) and its spikes coming up (`trap-spikes`), planting (`plant`), picking
 an item up (`pickup`), pushing through a bush (`rustle`), eating (`eat`), sleeping (`sleep`), crafting (`craft-one` for
 a click, `craft-some` for shift, `craft-all` for ctrl, and `craft-fail` when it cannot be done: nothing to make it from,
@@ -1042,7 +1216,7 @@ positions are ordinary state replication.
 (`apps/server/src/animals.ts`). Where the ones in a player's chunks are goes with the players' positions in each state
 message (`n`), and pages draw them a little in the past like other players; what each one is (`AnimalInfo`: kind, sex,
 stats, growth, hp, hunger, who leads it) goes on the log whenever it changes (`animal` / `animal-` events). What they do
-to the world (grazing a tuft, eating from a feed box, laying an egg) is logged as world events like a command's.
+to the world (grazing a tuft, eating from a feed trough, laying an egg) is logged as world events like a command's.
 **Monsters** are the same, with their own events (`monster` / `monster-`) and positions (`m`). A rope
 pulls the player on the server (the spring: `ropeForce`, `ropeStep`); the page pulls its own predicted player the same
 way, towards where it reckons the animal is now (`TETHER_AHEAD` ticks past the newest position sent, going on as it
@@ -1248,7 +1422,7 @@ several times longer than a fast one, so every number should be a small fraction
 ### What keeps it light
 
 - **Only what works is stepped.** A chunk steps only the buildings that do something every tick on their own (those
-  with a step in `STEPS` in `sim/entity.ts`, and garden plots); trees, rocks and fences, nearly all of a world, only
+  with a step in `STEPS` in `sim/entity.ts`, and farmland); trees, rocks and fences, nearly all of a world, only
   change when something is done to them or on a random tick. Animals and monsters are run only in chunks near a
   player or where something has been built.
 - **Find things by kind, not by looking at everything.** `world.ofKind('altar')` gives every altar in ID order, and

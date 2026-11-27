@@ -5,12 +5,14 @@ import {
   BUILDINGS,
   chunkOfTile,
   countOf,
+  DASH_TICKS,
   dungeonBlocks,
   floorDiv,
   inArea,
   flightTicks,
   PLAYER_HALF_SIZE,
   removeItems,
+  setBonus,
   SPIN_TICKS,
   strikeSpot,
   SUB,
@@ -41,7 +43,7 @@ import type { Creatures } from './creatures.ts'
 // in the middle of its own attack, and a boss, is not knocked back: see monsters.ts); something shot knocks it back
 // SHOT_KNOCKBACK.
 export const HIT_KNOCKBACK = Math.round(0.45 * SUB)
-export const HIT_STUN_TICKS = Math.round(0.25 * TPS)
+export const HIT_STUN_TICKS = Math.round(0.3 * TPS)
 const SHOT_KNOCKBACK = Math.round(0.3 * SUB)
 // How close to a creature's middle (plus its size) something in flight has to come to hit it, in units.
 const HIT_MARGIN = SUB / 6
@@ -66,17 +68,27 @@ type Projectile = {
   // A monster's (an archer's arrow, the frost lich's spells): it hurts any player, whether players can hurt each other
   // or not, and passes through creatures.
   hostile?: boolean
-  // Something that falls where it is (an icicle): when its time is up it hurts every player within `radius` units.
+  // Something that falls where it is (an icicle): when its time is up it hurts every player within `radius` units (a
+  // monster's), or every creature (and, with players hurting each other, every other player) there (a player's: a
+  // staff's charged blast).
   blast?: { radius: number }
   // A thrown weapon (a spear): wherever it stops, it sticks in the ground, as this item, to be knocked loose again.
   sticks?: ItemId
+  // A twister (a dust elemental's): it goes through everything solid (it is wind) and through players, hurting each one
+  // it reaches once (those in `blown`), `width` units across, until its time is up.
+  twister?: { width: number; blown: Set<number> }
+  // Something lobbed up and over (a goblin shaman's hex): from a point to a point (units) over `total` ticks, `peak`
+  // units up at the top of its arc; it bursts (its `blast`) where it comes down.
+  lob?: { fromX: number; fromY: number; toX: number; toY: number; total: number; peak: number }
 }
 
 // A hit still to come of a player's attack (the second turn of a spin): at tick `at`, from where its player is then.
+// (Its `damage` has the player's set bonus in it already.)
 type Later = { at: number; owner: number; area: AttackArea; facing: number; damage: number; weapon: Weapon; tool: ToolKind | undefined }
 
-// A shot being wound up (the bow being drawn, the sling going round): it flies at `at`, from where its player is then.
-type Winding = { at: number; owner: number; item: ItemId; angle: number; speed: number; damage: number; lands: ItemId; ttl: number }
+// A shot being wound up (the bow being drawn, the sling going round, a spear drawn back to throw): it flies at `at`, from
+// where its player is then (a thrown weapon sticking where it stops).
+type Winding = { at: number; owner: number; item: ItemId; angle: number; speed: number; damage: number; lands: ItemId; ttl: number; sticks?: ItemId }
 
 // What flying things need from the room on a tick.
 export type CombatContext = {
@@ -106,7 +118,12 @@ export type PlayerTargets = {
   everyone: (point: PlayerPosition, reach: number) => Array<{ id: number; x: number; y: number }>
   // Where a player is now (undefined if they have gone).
   position: (id: number) => PlayerPosition | undefined
+  // A player's attack hurt a creature or another player (for a set that heals them for it: see armor-sets.ts).
+  dealt?: (id: number) => void
 }
+
+// How many ticks after a dash a player still goes through creatures (see GameRoom.separateBodies).
+export const DASH_THROUGH_TICKS = DASH_TICKS + 2
 
 export class Combat {
   private readonly flying = new Map<number, Projectile>()
@@ -136,6 +153,8 @@ export class Combat {
       if (player.chargeFrom === undefined || tick - player.chargeFrom + COOLDOWN_GRACE_TICKS < charged.charge) return { ok: false, why: 'tooSoon' }
     }
     player.chargeFrom = undefined
+    // A set of armour worn whole can make every attack hit harder (see armor-sets.ts).
+    const extra = setBonus(player.inventory).attack
     const origin = { ...player.position }
     const facing = command.x === origin.x && command.y === origin.y ? 0 : angleTo(origin, command)
     // Creatures are judged where the player saw them (see Animals.nearAt), never later than the tick before this one,
@@ -150,13 +169,47 @@ export class Combat {
       // so it flies at once, harder.
       const lands = weapon.ammo
       if (charged) {
-        this.launch(origin, facing, weapon.ammo, charged.speed, charged.damage, lands, player.id, { ttl: flightTicks(charged.range, charged.speed) })
-        player.attackReadyAt = tick + charged.cooldown
+        const ttl = flightTicks(charged.range, charged.speed)
+        if (charged.windup > 0) this.winding.push({ at: tick + charged.windup, owner: player.id, item: weapon.ammo, angle: facing, speed: charged.speed, damage: charged.damage + extra, lands, ttl })
+        else this.launch(origin, facing, weapon.ammo, charged.speed, charged.damage + extra, lands, player.id, { ttl })
+        player.attackReadyAt = tick + charged.windup + charged.cooldown
       } else {
         const ttl = flightTicks(weapon.range, weapon.speed)
-        this.winding.push({ at: tick + weapon.windup, owner: player.id, item: weapon.ammo, angle: facing, speed: weapon.speed, damage: weapon.damage, lands, ttl })
+        this.winding.push({ at: tick + weapon.windup, owner: player.id, item: weapon.ammo, angle: facing, speed: weapon.speed, damage: weapon.damage + extra, lands, ttl })
         player.attackReadyAt = tick + weapon.windup + weapon.cooldown
       }
+      return { ok: true, moved: 0 }
+    }
+
+    if (charged?.kind === 'blast') {
+      // An icicle comes down on the spot aimed at (no further off than its range), and shatters there when its delay is
+      // up, hurting everything round it.
+      const reach = Math.min(charged.range, Math.hypot(command.x - origin.x, command.y - origin.y))
+      const x = Math.round(origin.x + Math.cos(facing) * reach)
+      const y = Math.round(origin.y + Math.sin(facing) * reach)
+      const id = this.nextId++
+      this.flying.set(id, {
+        id,
+        owner: player.id,
+        item: charged.projectile ?? 0,
+        x,
+        y,
+        vx: 0,
+        vy: 0,
+        ttl: Math.max(1, charged.windup + (charged.delay ?? 1)),
+        damage: Math.max(1, Math.round(charged.damage + extra)),
+        lands: 0,
+        blast: { radius: charged.radius ?? SUB },
+      })
+      player.attackReadyAt = tick + charged.windup + charged.cooldown
+      return { ok: true, moved: 0 }
+    }
+
+    if (weapon.basic === 'cast') {
+      // A staff: what it casts flies once the windup is over, using nothing up and leaving nothing where it comes down.
+      const ttl = flightTicks(weapon.range, weapon.speed)
+      this.winding.push({ at: tick + weapon.windup, owner: player.id, item: weapon.projectile ?? 0, angle: facing, speed: weapon.speed, damage: weapon.damage + extra, lands: 0, ttl })
+      player.attackReadyAt = tick + weapon.windup + weapon.cooldown
       return { ok: true, moved: 0 }
     }
 
@@ -165,22 +218,29 @@ export class Combat {
       const held = player.inventory.slots[command.slot]
       const item = held.item
       takeFromSlot(player.inventory, command.slot, 1)
-      this.launch(origin, facing, item, charged.speed, charged.damage, 0, player.id, { ttl: flightTicks(charged.range, charged.speed), sticks: item })
-      player.attackReadyAt = tick + charged.cooldown
+      const ttl = flightTicks(charged.range, charged.speed)
+      if (charged.windup > 0) this.winding.push({ at: tick + charged.windup, owner: player.id, item, angle: facing, speed: charged.speed, damage: charged.damage + extra, lands: 0, ttl, sticks: item })
+      else this.launch(origin, facing, item, charged.speed, charged.damage + extra, 0, player.id, { ttl, sticks: item })
+      player.attackReadyAt = tick + charged.windup + charged.cooldown
       return { ok: true, moved: 0 }
     }
 
     const area = charged?.area ?? basicArea(weapon)!
-    const damage = charged?.damage ?? weapon.damage
+    const damage = (charged?.damage ?? weapon.damage) + extra
     const tool = toolIn(player.inventory, command.slot)
-    const moved = this.strike(context, area, origin, facing, damage, seen, weapon, tool)
+    // A dash runs the player through whatever is in the way (see GameRoom.separateBodies).
+    if (charged?.kind === 'dash') player.dashingUntil = tick + (charged.windup ?? 0) + DASH_THROUGH_TICKS
+    // It lands after its windup (at once, without one): from where the player is then.
+    const windup = charged ? charged.windup : weapon.windup
+    const moved = windup > 0 ? 0 : this.strike(context, area, origin, facing, damage, seen, weapon, tool)
+    if (windup > 0) this.later.push({ at: tick + windup, owner: player.id, area, facing, damage, weapon, tool })
     // An oar's stroke also pushes the raft its player is aboard the way it is aimed.
     if (weapon.basic === 'row' && !charged) context.rafts?.row(facing)
     // A spin goes round again: each later turn hits from where the player is then.
     for (let turn = 1; turn < (charged?.hits ?? 1); turn++) {
-      this.later.push({ at: tick + turn * SPIN_TICKS, owner: player.id, area, facing, damage, weapon, tool })
+      this.later.push({ at: tick + windup + turn * SPIN_TICKS, owner: player.id, area, facing, damage, weapon, tool })
     }
-    player.attackReadyAt = tick + (charged?.cooldown ?? weapon.cooldown)
+    player.attackReadyAt = tick + windup + (charged?.cooldown ?? weapon.cooldown)
     return { ok: true, moved }
   }
 
@@ -203,11 +263,15 @@ export class Combat {
     const from = area.kind === 'circle' ? strikeSpot(origin, facing, area.distance) : origin
     for (const creatures of this.creatures) {
       for (const spot of creatures.nearAt(origin, reach, seen)) {
-        if (inArea(area, origin, facing, spot, spot.halfSize)) moved += this.hurt(context, creatures, spot.id, damage, from)
+        if (!inArea(area, origin, facing, spot, spot.halfSize)) continue
+        moved += this.hurt(context, creatures, spot.id, damage, from)
+        this.players?.dealt?.(context.player.id)
       }
     }
     for (const other of this.players?.near(origin, reach, seen, context.player.id) ?? []) {
-      if (inArea(area, origin, facing, other, PLAYER_HALF_SIZE)) this.players!.hurt(other.id, damage, from, 0)
+      if (!inArea(area, origin, facing, other, PLAYER_HALF_SIZE)) continue
+      this.players!.hurt(other.id, damage, from, 0)
+      this.players!.dealt?.(context.player.id)
     }
     for (const target of tilesHitBy(this.world, area, origin, facing)) {
       // A target dummy shows the hit it took (what it would do to a creature), and never breaks.
@@ -261,6 +325,21 @@ export class Combat {
     this.flying.set(id, { id, owner: 0, item, x, y, vx: Math.round(Math.cos(angle) * speed), vy: Math.round(Math.sin(angle) * speed), ttl, damage, lands: 0, hostile: true })
   }
 
+  // A twister from a point along `angle` at `speed` units a tick for `ttl` ticks, `width` units across: it blows
+  // through everything, hurting each player it reaches once.
+  twister(item: ItemId, x: number, y: number, angle: number, speed: number, damage: number, ttl: number, width: number): void {
+    const id = this.nextId++
+    this.flying.set(id, { id, owner: 0, item, x, y, vx: Math.round(Math.cos(angle) * speed), vy: Math.round(Math.sin(angle) * speed), ttl, damage, lands: 0, hostile: true, twister: { width, blown: new Set() } })
+  }
+
+  // Something lobbed from one point to another (units) over `ticks` ticks, `peak` units up at the top of its arc: where
+  // it comes down it bursts, hurting every player within `radius` units (a goblin shaman's hex).
+  lob(item: ItemId, fromX: number, fromY: number, toX: number, toY: number, ticks: number, peak: number, radius: number, damage: number): void {
+    const id = this.nextId++
+    const total = Math.max(1, ticks)
+    this.flying.set(id, { id, owner: 0, item, x: fromX, y: fromY, vx: 0, vy: 0, ttl: total, damage, lands: 0, hostile: true, blast: { radius }, lob: { fromX, fromY, toX, toY, total, peak } })
+  }
+
   // An icicle falling on a point (units): `ttl` ticks after this (while pages show it falling, and where), it shatters,
   // hurting every player within `radius` units.
   icicle(item: ItemId, x: number, y: number, ttl: number, radius: number, damage: number): void {
@@ -285,12 +364,52 @@ export class Combat {
     this.winding = this.winding.filter((shot) => shot.at > context.tick)
     for (const shot of due) {
       const from = this.players?.position(shot.owner)
-      if (from) this.launch(from, shot.angle, shot.item, shot.speed, shot.damage, shot.lands, shot.owner, { ttl: shot.ttl })
+      if (from) this.launch(from, shot.angle, shot.item, shot.speed, shot.damage, shot.lands, shot.owner, { ttl: shot.ttl, ...(shot.sticks ? { sticks: shot.sticks } : {}) })
     }
     for (const shot of [...this.flying.values()].sort((a, b) => a.id - b.id)) {
+      // Lobbed: along the ground from where it was thrown to where it comes down (over everything), bursting there.
+      if (shot.lob) {
+        const lob = shot.lob
+        shot.ttl--
+        const done = (lob.total - shot.ttl) / lob.total
+        shot.x = Math.round(lob.fromX + (lob.toX - lob.fromX) * done)
+        shot.y = Math.round(lob.fromY + (lob.toY - lob.fromY) * done)
+        if (shot.ttl > 0) continue
+        for (const player of this.players?.everyone(shot, shot.blast?.radius ?? 0) ?? []) this.players!.hurt(player.id, shot.damage, shot, SHOT_KNOCKBACK)
+        this.end(context, shot)
+        continue
+      }
+      // A twister: on through everything, hurting each player it reaches once, until its time is up.
+      if (shot.twister) {
+        const blown = shot.twister.blown
+        shot.x += shot.vx
+        shot.y += shot.vy
+        for (const player of this.players?.everyone(shot, shot.twister.width / 2) ?? []) {
+          if (blown.has(player.id)) continue
+          blown.add(player.id)
+          this.players!.hurt(player.id, shot.damage, { x: shot.x - shot.vx, y: shot.y - shot.vy }, SHOT_KNOCKBACK)
+        }
+        if (--shot.ttl <= 0) this.end(context, shot)
+        continue
+      }
       if (shot.blast) {
         if (--shot.ttl > 0) continue
-        for (const player of this.players?.everyone(shot, shot.blast.radius) ?? []) this.players!.hurt(player.id, shot.damage, shot, SHOT_KNOCKBACK)
+        if (shot.hostile) {
+          for (const player of this.players?.everyone(shot, shot.blast.radius) ?? []) this.players!.hurt(player.id, shot.damage, shot, SHOT_KNOCKBACK)
+        } else {
+          // A player's: every creature round it, and every other player (with players hurting each other).
+          for (const creatures of this.creatures) {
+            for (const target of creatures.nearAt(shot, shot.blast.radius)) {
+              const drops = creatures.damage(target.id, shot.damage, shot, context.tick, { knockback: SHOT_KNOCKBACK, stun: HIT_STUN_TICKS }, shot.owner)
+              if (drops) context.dropRound({ x: target.x, y: target.y }, target.id, drops)
+              this.players?.dealt?.(shot.owner)
+            }
+          }
+          for (const other of this.players?.near(shot, shot.blast.radius, undefined, shot.owner) ?? []) {
+            this.players!.hurt(other.id, shot.damage, shot, SHOT_KNOCKBACK)
+            this.players!.dealt?.(shot.owner)
+          }
+        }
         this.end(context, shot)
         continue
       }
@@ -314,6 +433,7 @@ export class Combat {
         const struck = shot.hostile ? this.players?.everyone(shot, HIT_MARGIN)[0] : this.players?.near(shot, HIT_MARGIN, undefined, shot.owner)[0]
         if (struck) {
           this.players!.hurt(struck.id, shot.damage, from, SHOT_KNOCKBACK)
+          if (!shot.hostile) this.players!.dealt?.(shot.owner)
           this.end(context, shot)
           this.stickIn(context, shot)
           done = true
@@ -325,6 +445,7 @@ export class Combat {
           if (!target) continue
           const drops = creatures.damage(target.id, shot.damage, from, context.tick, { knockback: SHOT_KNOCKBACK, stun: HIT_STUN_TICKS }, shot.owner)
           if (drops) context.dropRound({ x: target.x, y: target.y }, target.id, drops)
+          this.players?.dealt?.(shot.owner)
           this.end(context, shot)
           this.stickIn(context, shot)
           done = true
@@ -357,12 +478,19 @@ export class Combat {
     this.ended.set(shot.id, { shot, until: context.tick + ENDED_TICKS })
   }
 
-  // What is in flight over some chunks, and what stopped there lately: [id, item, x, y, stopped (1) or not (0)].
-  inChunks(chunks: ReadonlySet<number>, tick: number): Array<[number, number, number, number, number]> {
-    const found: Array<[number, number, number, number, number]> = []
+  // What is in flight over some chunks, and what stopped there lately: [id, item, x, y, stopped (1) or not (0)], and
+  // for something lobbed still in the air, how high it is (units).
+  inChunks(chunks: ReadonlySet<number>, tick: number): Array<[number, number, number, number, number] | [number, number, number, number, number, number]> {
+    const found: Array<[number, number, number, number, number] | [number, number, number, number, number, number]> = []
     for (const [id, ended] of this.ended) if (tick > ended.until) this.ended.delete(id)
     const near = (shot: Projectile): boolean => chunks.has(chunkOfTile(floorDiv(shot.x, SUB), floorDiv(shot.y, SUB)))
-    for (const shot of this.flying.values()) if (near(shot)) found.push([shot.id, shot.item, shot.x, shot.y, 0])
+    for (const shot of this.flying.values()) {
+      if (!near(shot)) continue
+      if (shot.lob) {
+        const done = (shot.lob.total - shot.ttl) / shot.lob.total
+        found.push([shot.id, shot.item, shot.x, shot.y, 0, Math.round(4 * shot.lob.peak * done * (1 - done))])
+      } else found.push([shot.id, shot.item, shot.x, shot.y, 0])
+    }
     for (const { shot } of this.ended.values()) if (near(shot)) found.push([shot.id, shot.item, shot.x, shot.y, 1])
     return found
   }

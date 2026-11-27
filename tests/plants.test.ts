@@ -95,7 +95,8 @@ test('the forest grows trees, bushes, grass and flint and no rocks; the mountain
   for (const [cx, cy] of mountainChunks(terrain)) {
     for (const plant of plantsInChunk(terrain, cx, cy)) if (biomeAt(terrain, plant.x, plant.y)?.key === 'mountain') mountain.add(plant.kind)
   }
-  assert.deepEqual([...mountain], ['rock'])
+  // (And the skeletons' camps' tents, by their rocks.)
+  assert.ok(mountain.has('rock') && [...mountain].every((kind) => kind === 'rock' || kind === 'skeleton-camp'), [...mountain].join())
   let flint = 0
   for (const [cx, cy] of mountainChunks(terrain)) {
     for (const piece of flintInChunk(terrain, cx, cy)) if (biomeAt(terrain, Math.floor(piece.x / SUB), Math.floor(piece.y / SUB))?.key !== 'forest') flint++

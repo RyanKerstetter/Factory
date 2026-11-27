@@ -72,13 +72,13 @@ test('a wolf finds its way round a wall to a player behind it, rather than getti
 test('penned wolves that go for a player outside the fence give up when they cannot get at them, and go back to eating and breeding', () => {
   const { room, client } = arena('PEN')
   const wolf = animalDef('wolf')
-  // A pen of fences round two wolves and a feed box of meat.
+  // A pen of fences round two wolves and a feed trough of meat.
   let id = 70_000
   for (let y = -4; y <= 4; y++) {
     for (let x = 4; x <= 12; x++) if (x === 4 || x === 12 || y === -4 || y === 4) room.world.addEntity(createEntity(id++, 'fence', x, y, 0, NO_ITEM))
   }
   const feeder = createEntity(id++, 'feeder', 8, 0, 0, NO_ITEM)
-  ;(feeder as { inv: { slots: Array<{ item: number; count: number }> } }).inv.slots[0] = { item: itemId('steak'), count: 10 }
+  ;(feeder as { inv: { slots: Array<{ item: number; count: number }> } }).inv.slots[0] = { item: itemId('meat'), count: 10 }
   room.world.addEntity(feeder)
   const pair = [room.animals!.spawn(wolf, center(6, -2).x, center(6, -2).y, { sex: 'f' }), room.animals!.spawn(wolf, center(10, 2).x, center(10, 2).y, { sex: 'm' })]
   for (const one of pair) {
@@ -143,8 +143,8 @@ test('pressing Craft while the workbench makes something else does not stop it',
 test('the food slot takes only food, fills with more of what it holds, and is eaten from on a cooldown', () => {
   const inventory = playerInventory()
   assert.equal(inventory.slots[FOOD_SLOT].only, 'food')
-  inventory.slots[FOOD_SLOT] = { ...inventory.slots[FOOD_SLOT], item: itemId('cooked-steak'), count: 1 }
-  addItems(inventory, itemId('cooked-steak'), 3)
+  inventory.slots[FOOD_SLOT] = { ...inventory.slots[FOOD_SLOT], item: itemId('cooked-meat'), count: 1 }
+  addItems(inventory, itemId('cooked-meat'), 3)
   assert.equal(inventory.slots[FOOD_SLOT].count, 4, 'more steak goes onto it')
   addItems(inventory, itemId('berries'), 3)
   assert.equal(inventory.slots[FOOD_SLOT].count, 4, 'other food does not')

@@ -1,12 +1,12 @@
 {
   "berries": { "heals": 6 },
-  "steak": { "heals": 10 },
+  "meat": { "heals": 10 },
   "raw-chicken": { "heals": 6 },
   "egg": { "heals": 15 },
-  "cooked-steak": { "heals": 25 },
+  "cooked-meat": { "heals": 25 },
   "cooked-chicken": { "heals": 20 },
   "fried-egg": { "heals": 16 },
   "bread": { "heals": 20 },
   "breakfast-sandwich": { "heals": 50 },
-  "truesight-flesh": { "hurts": 99, "truesight": true }
+  "truesight-flesh": { "hurts": 99, "truesight": true, "maxHealth": 25 }
 }

@@ -15,13 +15,14 @@ export type BuildingView = {
   lane?: readonly LaneItemView[]
   // How far a sapling has grown.
   stage?: number
-  // A fence or gate: which of its neighbours it joins up with (FENCE_N, FENCE_E, FENCE_S, FENCE_W added together).
+  // A fence or gate (or wooden wall or door): which of its neighbours it joins up with (FENCE_N, FENCE_E, FENCE_S, FENCE_W
+  // added together). A wooden floor: which of its neighbours have a floor too.
   connect?: number
   // A fence with an animal or a raft tied to it.
   tied?: boolean
   // A gate: whether it is open (a player is going through it).
   open?: boolean
-  // A garden plot: how far what grows in it has got, as one of the 3D models' stages (see cropStage in game.ts), if
+  // Farmland: how far what grows in it has got, as one of the 3D models' stages (see cropStage in game.ts), if
   // anything grows in it.
   cropStage?: number
   // A campfire or an oven: whether it is burning.
@@ -35,8 +36,10 @@ export type BuildingView = {
   barrel?: { sealed: boolean; liquid: string; fill: number; composting: boolean }
   // A drying rack: nothing on it, a hide drying, or a dried hide waiting to be taken.
   rack?: 'empty' | 'drying' | 'done'
-  // A garden plot: how watered it is, 0 to 100.
+  // Farmland: how watered it is, 0 to 100.
   water?: number
+  // A feed trough: how full of food it is, 0 (empty) to 1 (every slot a full stack).
+  feed?: number
   // A pedestal or an altar: what is on it, floating over it.
   shown?: ItemId
   // A fire cooking leaves: it smokes.
@@ -53,11 +56,17 @@ export type AttackView = {
   // the swing): a sweep round the player `arc` wide from `inner` to `outer` tiles out (a swing), a straight streak
   // `outer` long and `width` wide (a jab or thrust), or a ring `outer` across, `distance` ahead (a strike or slam).
   swishes: Swish[]
-  // `fall`: for an icicle, how far it has fallen, 0 (high above) to 1 (landing).
-  shots: Array<{ id: number; item: number; x: number; y: number; angle: number; fall?: number }>
+  // `fall`: for an icicle, how far it has fallen, 0 (high above) to 1 (landing); `lift`: for something lobbed up and
+  // over (a goblin shaman's hex), how high it is (tiles).
+  shots: Array<{ id: number; item: number; x: number; y: number; angle: number; fall?: number; lift?: number }>
   sparks: Array<{ x: number; y: number; age: number; color: number }>
   numbers: Array<{ x: number; y: number; text: string; age: number }>
+  // Soft clouds (see clouds.ts): frost, poison, a blizzard's snow.
+  puffs: PuffView[]
 }
+// A soft puff of a cloud, round and fading out to its edge, facing the screen: where it is (tiles; `height` over the
+// ground), how big across (tiles), its colour, and how strong (0 to 1).
+export type PuffView = { x: number; y: number; height: number; size: number; color: number; alpha: number }
 // An animal, in tiles. `size` is how big a grown one of its kind is drawn; `leader` is where the player leading it on a
 // rope is; `hurt` while it has just been hit.
 export type AnimalView = {
@@ -78,6 +87,10 @@ export type AnimalView = {
   // One just killed, falling over: how far through it is, 0 to 1.
   dying?: number
   leader?: { x: number; y: number }
+  // A scarab curling up to roll, or rolling, `progress` 0 to 1 of the way through.
+  act?: { k: 'curl' | 'roll'; progress: number }
+  // A hunter biting (a wolf, a scarab), 0 to 1 of the way through its lunge.
+  bite?: number
 }
 
 // A monster (see monsters.ts), in tiles: which way it faces, whether it has just been hurt or is after a player, how far
@@ -93,7 +106,9 @@ export type MonsterView = {
   hurt: boolean
   angry: boolean
   dying?: number
-  act?: { k: 'swing' | 'charge' | 'dash' | 'aim' | 'cast'; progress: number; spell?: LichSpell }
+  // (`thrust` and `hurl`: a goblin's jab and throw going, just after its windup; `smash`: a mummy's arms coming down
+  // in its slam; `swipe`: a mummy's plain blow.)
+  act?: { k: 'swing' | 'charge' | 'dash' | 'aim' | 'cast' | 'jab' | 'throw' | 'slam' | 'thrust' | 'hurl' | 'smash' | 'swipe'; progress: number; spell?: LichSpell }
 }
 
 // A spike trap of the dungeon, in world tiles: the floor it covers, the wall its spikes come out of (and which way),
@@ -130,12 +145,14 @@ export type PlayerView = {
 // - draw: a bow drawn, the string pulled back; whirl: a sling whirled once round over the head;
 // - release: a shot let go;
 // - charge: a weapon raised back, being charged (the attack button held down), shaking once it is ready (`progress` 1);
+// - brace: a dash being charged, crouched low and leaning in, the weapon levelled low at the side (as a skeleton
+//   gathers to charge); lunge: the dash, leaning hard into it, the weapon straight out in front;
 // - spin: arm out, turning round and round, `turns` times;
 // - row: an oar reached out the way it is aimed, dipped in, and pulled back in towards the player.
 export type PlayerPose =
   | { kind: 'swing'; progress: number; arc: number }
   | { kind: 'spin'; progress: number; turns: number }
-  | { kind: 'thrust' | 'strike' | 'draw' | 'whirl' | 'release' | 'charge' | 'row'; progress: number }
+  | { kind: 'thrust' | 'strike' | 'draw' | 'whirl' | 'release' | 'charge' | 'brace' | 'lunge' | 'row'; progress: number }
 
 // A raft (see rafts.ts): its middle, in tiles, and which way it is turned (radians, as a player's facing).
 // A raft, in tiles; `rope`: where the rope on its post runs to (the hand of the player leading it, or the fence it is

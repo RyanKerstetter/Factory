@@ -67,7 +67,7 @@ function showMenu(message?: string, isError = false): void {
   const menu = createMenuView(app, { name: readName(), code, ...(message ? { message, isError } : {}) }, {
     onCreate: async (name, worldName, seed, terrain) => {
       if (!worldName.trim()) return menu.setMessage('Give the world a name.', true)
-      const body = { name: worldName.trim(), ...(seed.trim() ? { seed: seed.trim() } : {}), size: terrain.size }
+      const body = { name: worldName.trim(), ...(seed.trim() ? { seed: seed.trim() } : {}), radius: terrain.radius }
       await enterFromServer(name, 'Making a world…', '/api/games', { method: 'POST', body: JSON.stringify(body) })
     },
     onLoad: (name, worldCode) => enterFromServer(name, 'Loading the world…', `/api/saves/${encodeURIComponent(worldCode)}/load`, { method: 'POST' }),

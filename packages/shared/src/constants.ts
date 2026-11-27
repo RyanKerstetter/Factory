@@ -32,7 +32,7 @@ export const BELT_SIDE_ENTRY = BELT_LENGTH / 2
 // Inventories.
 export const STACK_SIZE = 50
 export const MINER_SLOTS = 1
-export const CHEST_SLOTS = 16
+export const CHEST_SLOTS = 23
 // The longest name a chest (or a waystone) can be given.
 export const CHEST_NAME_LENGTH = 24
 export const FEEDER_SLOTS = 6
@@ -60,6 +60,9 @@ export const SAPLING_STAGES = 4
 export const SPROUT_STAGES = 9
 // A sunflower seedling grows into a sunflower over this many random ticks (about a minute).
 export const SEEDLING_STAGES = 6
+// A young cactus (planted from a cactus, on sand) grows into a cactus over this many random ticks (about a minute and a
+// half).
+export const CACTUS_STAGES = 8
 
 // A rope (leading an animal or a raft, or tying one to a fence) is a spring: slack up to LEAD_LENGTH, and past it it pulls
 // both its ends towards each other, ROPE_PULL for each unit it is stretched (see `ropeForce` in animals.ts). Each end

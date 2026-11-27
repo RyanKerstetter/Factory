@@ -2,9 +2,10 @@ import type { BuildingKind } from './buildings.ts'
 import { GATE_OPEN_RADIUS, SUB } from './constants.ts'
 import type { Box } from './movement.ts'
 
-// Fences and gates. A fence joins up with the fences and gates beside it (north, east, south, west), and what is solid of
-// it is only its post and the rails out towards those it joins, so walking along a fence or round its end is tight to
-// what is drawn. A gate is a rail right across its tile while it is shut.
+// Fences and gates, and wooden walls and doors, which work alike. A fence joins up with the fences and gates beside it
+// (north, east, south, west), and what is solid of it is only its post and the rails out towards those it joins, so
+// walking along a fence or round its end is tight to what is drawn. A gate is a rail right across its tile while it is
+// shut. A wooden wall joins the walls and doors beside it the same way, thicker; a door is a gate in a wall.
 
 // Which sides a fence joins, added together.
 export const FENCE_N = 1
@@ -16,13 +17,24 @@ export function joinsFences(kind: BuildingKind | undefined): boolean {
   return kind === 'fence' || kind === 'gate'
 }
 
-// Which sides the fence or gate on a tile joins, from what is on the tiles round it.
+export function joinsWalls(kind: BuildingKind | undefined): boolean {
+  return kind === 'wood-wall' || kind === 'wood-door'
+}
+
+// What opens to let players through: a gate, or a wooden door.
+export function isGateKind(kind: BuildingKind | undefined): kind is 'gate' | 'wood-door' {
+  return kind === 'gate' || kind === 'wood-door'
+}
+
+// Which sides the fence or gate (or wooden wall or door) on a tile joins, from what is on the tiles round it: fences
+// and gates join each other, and walls and doors each other.
 export function fenceMask(kindAt: (x: number, y: number) => BuildingKind | undefined, x: number, y: number): number {
+  const joins = joinsWalls(kindAt(x, y)) ? joinsWalls : joinsFences
   return (
-    (joinsFences(kindAt(x, y - 1)) ? FENCE_N : 0) |
-    (joinsFences(kindAt(x + 1, y)) ? FENCE_E : 0) |
-    (joinsFences(kindAt(x, y + 1)) ? FENCE_S : 0) |
-    (joinsFences(kindAt(x - 1, y)) ? FENCE_W : 0)
+    (joins(kindAt(x, y - 1)) ? FENCE_N : 0) |
+    (joins(kindAt(x + 1, y)) ? FENCE_E : 0) |
+    (joins(kindAt(x, y + 1)) ? FENCE_S : 0) |
+    (joins(kindAt(x - 1, y)) ? FENCE_W : 0)
   )
 }
 
@@ -50,6 +62,21 @@ export function fenceBoxes(mask: number): readonly Box[] {
   return FENCE_BOXES[mask & 15]
 }
 
+// A wooden wall: the same, in its own band, three quarters of a tile thick, as thick as it is drawn (see `woodWall` in
+// the 3D models; a floor beside it reaches over the eighth of a tile left on each side).
+const WALL_LOW = 4
+const WALL_HIGH = 28
+const WALL_BOXES: ReadonlyArray<readonly Box[]> = Array.from({ length: 16 }, (_, mask) => [
+  box(WALL_LOW, WALL_LOW, WALL_HIGH, WALL_HIGH),
+  ...(mask & FENCE_N ? [box(WALL_LOW, 0, WALL_HIGH, WALL_LOW)] : []),
+  ...(mask & FENCE_E ? [box(WALL_HIGH, WALL_LOW, 32, WALL_HIGH)] : []),
+  ...(mask & FENCE_S ? [box(WALL_LOW, WALL_HIGH, WALL_HIGH, 32)] : []),
+  ...(mask & FENCE_W ? [box(0, WALL_LOW, WALL_LOW, WALL_HIGH)] : []),
+])
+export function wallBoxes(mask: number): readonly Box[] {
+  return WALL_BOXES[mask & 15]
+}
+
 // Whether a gate runs east to west: unless it only joins fences to the north or south.
 export function gateRunsAcross(mask: number): boolean {
   return (mask & (FENCE_E | FENCE_W)) !== 0 || (mask & (FENCE_N | FENCE_S)) === 0
@@ -58,8 +85,12 @@ export function gateRunsAcross(mask: number): boolean {
 const GATE_ACROSS: readonly Box[] = [box(0, BAND_LOW, 32, BAND_HIGH)]
 const GATE_DOWN: readonly Box[] = [box(BAND_LOW, 0, BAND_HIGH, 32)]
 
-// What of a shut gate is solid (to animals: players walk through gates).
-export function gateBoxes(mask: number): readonly Box[] {
+const DOOR_ACROSS: readonly Box[] = [box(0, WALL_LOW, 32, WALL_HIGH)]
+const DOOR_DOWN: readonly Box[] = [box(WALL_LOW, 0, WALL_HIGH, 32)]
+
+// What of a shut gate (or wooden door) is solid (to animals: players walk through them).
+export function gateBoxes(mask: number, kind: 'gate' | 'wood-door' = 'gate'): readonly Box[] {
+  if (kind === 'wood-door') return gateRunsAcross(mask) ? DOOR_ACROSS : DOOR_DOWN
   return gateRunsAcross(mask) ? GATE_ACROSS : GATE_DOWN
 }
 

@@ -10,7 +10,6 @@ import {
   HP_FROM_DATA,
   itemId,
   KEY_RIGHT,
-  LIQUIDS,
   STATION_LAYOUT,
   STATION_RECIPES,
   SUB,
@@ -109,16 +108,10 @@ test('a tool Craft put in a station goes back to the player when they leave it; 
   }
 })
 
-test('the altar turns bread into essence, and makes a worker skeleton, which can be put down', () => {
+test('the altar turns bread into essence, and a worker skeleton can be put down', () => {
   const essence = ALTAR_RECIPES.find((recipe) => recipe.output === itemId('essence'))!
   assert.deepEqual(essence.inputs, [[itemId('bread'), 1]])
   assert.deepEqual(essence.liquids, [])
-  const worker = ALTAR_RECIPES.find((recipe) => recipe.output === itemId('worker-skeleton'))!
-  assert.deepEqual(
-    new Map(worker.inputs.map(([match, count]) => [match, count])),
-    new Map([['lich-core', 1], ['bone', 20], ['essence', 20], ['pickaxe', 1], ['axe', 1], ['knife', 1]].map(([key, count]) => [itemId(key as string), count])),
-  )
-  assert.deepEqual(worker.liquids, [[LIQUIDS.indexOf('blood'), 8]])
 
   const { room: made, client } = room('BREAD', { altar: 1, pedestal: 1, bread: 1, 'worker-skeleton': 1 })
   const spot = tileOf(client)
@@ -198,4 +191,21 @@ test('an altar does its ritual again while the pedestals hold what it takes, sta
   const bare = made.world.entity(pedestal.id)
   assert.ok(bare && 'inv' in bare && bare.inv.slots[0].count === 0)
   assert.deepEqual(differingChunks(made, client), [])
+})
+
+test('a player travels by a waystone only from within WAYSTONE_REACH (3 tiles) of it', () => {
+  const { room: made, client } = room('WAYREACH', { waystone: 2 })
+  const spot = tileOf(client)
+  const first = place(made, client, 0, spot.x + 2, spot.y)
+  const second = place(made, client, 0, spot.x - 3, spot.y + 2)
+  // Five tiles off: out of reach.
+  client.player.position = { x: (first.x + 5) * SUB + SUB / 2, y: first.y * SUB + SUB / 2 }
+  client.command({ k: 'warp', id: first.id, to: second.id })
+  run(made, [client], 3)
+  assert.equal(client.results.at(-1)?.why, 'reach')
+  // Two tiles off: it charges.
+  client.player.position = { x: (first.x + 2) * SUB + SUB / 2, y: first.y * SUB + SUB / 2 }
+  client.command({ k: 'warp', id: first.id, to: second.id })
+  run(made, [client], 3)
+  assert.equal(client.results.at(-1)?.ok, true)
 })

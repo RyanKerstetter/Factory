@@ -1,5 +1,8 @@
 {
   "leather-armor": { "slot": "body", "warmth": 12, "defense": 5 },
   "leather-boots": { "slot": "feet", "warmth": 6, "defense": 3 },
-  "wolf-helmet": { "slot": "head", "warmth": 22, "defense": 7 }
+  "wolf-helmet": { "slot": "head", "warmth": 22, "defense": 7 },
+  "bone-helmet": { "slot": "head", "warmth": 16, "defense": 10 },
+  "bone-chestplate": { "slot": "body", "warmth": 10, "defense": 12 },
+  "bone-greaves": { "slot": "feet", "warmth": 6, "defense": 8 }
 }

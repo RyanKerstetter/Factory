@@ -59,7 +59,7 @@ function entitiesOf(room: GameRoom, kind: string): Entity[] {
 // A room with no wild animals turning up, a player at the spawn, and what was asked for in its inventory.
 // With `plants: false`, the ground is bare (nothing in the way).
 function farm(code: string, items: Record<string, number> = {}, options: { animals?: boolean; plants?: boolean } = {}): { room: GameRoom; client: TestClient } {
-  const room = new GameRoom(code, 11, { dropsOnGround: false, wildAnimals: false, animals: options.animals ?? true, plants: options.plants ?? true })
+  const room = new GameRoom(code, 11, { dropsOnGround: false, wildAnimals: false, animals: options.animals ?? true, plants: options.plants ?? true, terrain: { radius: 110 } })
   const client = new TestClient(room, 'Farmer')
   run(room, [client], 5)
   Object.entries(items).forEach(([key, count], slot) => (client.player.inventory.slots[slot] = { item: itemId(key), count }))
@@ -91,8 +91,8 @@ test('grass grows in clumps; pulled up by hand it sometimes gives a wheat seed, 
   assert.deepEqual(differingChunks(room, client), [])
 })
 
-test('a seed sown in a garden plot grows, and breaking it when grown gives the crop and more seeds; the plot stays', () => {
-  const { room, client } = farm('PLOT', { 'garden-plot': 1, 'wheat-seed': 2 })
+test('a seed sown in farmland grows, and breaking it when grown gives the crop and more seeds; the plot stays', () => {
+  const { room, client } = farm('PLOT', { 'farmland': 1, 'wheat-seed': 2 })
   const wheat = CROPS.find((crop) => crop.key === 'wheat')!
   client.command({ k: 'place', x: 2, y: 2, slot: 0 })
   run(room, [client], 5)
@@ -126,7 +126,7 @@ test('a seed sown in a garden plot grows, and breaking it when grown gives the c
     run(room, [client], PUNCH_COOLDOWN_TICKS)
   }
   assert.equal(room.world.entity(plot.id), undefined, `${hits} hits with an axe`)
-  assert.equal(countOf(client.player.inventory, itemId('garden-plot')), 1)
+  assert.equal(countOf(client.player.inventory, itemId('farmland')), 1)
   assert.deepEqual(differingChunks(room, client), [])
 })
 
@@ -200,7 +200,7 @@ test('a hungry animal finds grass and grazes it away', () => {
 })
 
 test('well-fed animals of both sexes breed; the baby gets about the average of their stats and grows up', () => {
-  const { room, client } = farm('BREED', { 'feed-box': 1, wheat: 10 })
+  const { room, client } = farm('BREED', { 'feed-trough': 1, wheat: 10 })
   client.command({ k: 'place', x: 2, y: 2, slot: 0 })
   run(room, [client], 5)
   const feeder = room.world.entityAt(2, 2)!
@@ -222,7 +222,7 @@ test('well-fed animals of both sexes breed; the baby gets about the average of t
   assert.ok(!isAdult(baby), 'it is a baby')
   assert.ok(baby.stats[meat] >= 3.7 && baby.stats[meat] <= 4.3, `its meat stat ${baby.stats[meat]} is about the average of 6 and 2`)
   const fed = room.world.entity(feeder.id)
-  assert.ok(fed?.kind === 'feeder' && countOf(fed.inv, itemId('wheat')) === 8, 'each parent ate from the feed box')
+  assert.ok(fed?.kind === 'feeder' && countOf(fed.inv, itemId('wheat')) === 8, 'each parent ate from the feed trough')
   assert.ok(client.animals.get(baby.id), 'the page was told about it')
   run(room, [client], baby.stats[growth] * TPS + 30)
   assert.ok(isAdult(baby), 'it grew up')
@@ -554,8 +554,8 @@ test('a station swaps in the tool its recipe needs: with a knife in the stump, p
   assert.equal(countOf(client.player.inventory, itemId('knife')), 1, 'the knife back with the player')
   run(room, [client], planks.ticks + 5)
   assert.ok(inv.slots[2].item === itemId('plank') || (room.world.entity(stump.id) as typeof stump & { inv: typeof inv }).inv.slots[2].item === itemId('plank'), 'planks, not a spear')
-  // The workbench and the club come from the stump now; the workbench, campfire and sleeping bag are not made by hand.
-  for (const key of ['workbench', 'campfire', 'sleeping-bag', 'club']) assert.ok(STATION_RECIPES.stump.some((recipe) => recipe.output === itemId(key)), `${key} at the stump`)
+  // The workbench, campfire and club come from the stump; the workbench, campfire and sleeping bag are not made by hand.
+  for (const key of ['workbench', 'campfire', 'club']) assert.ok(STATION_RECIPES.stump.some((recipe) => recipe.output === itemId(key)), `${key} at the stump`)
   for (const key of ['workbench', 'campfire', 'sleeping-bag']) assert.ok(!RECIPES.some((recipe) => recipe.output === itemId(key)), `${key} not by hand`)
 })
 
@@ -605,7 +605,7 @@ test('animals far from every player wait as they are, but those on a farm (by so
   const before = { x: cow.x, y: cow.y, age: cow.age }
   run(room, [client], 5 * TPS)
   assert.deepEqual({ x: cow.x, y: cow.y, age: cow.age }, before, 'it waits')
-  // A feed box put down by it (as a farm would have): it goes on.
+  // A feed trough put down by it (as a farm would have): it goes on.
   room.world.addEntity(createEntity(88_001, 'feeder', far.x + 3, far.y, 0, 0))
   run(room, [client], 3 * TPS)
   assert.ok(cow.age > before.age, 'now it is run')
@@ -667,7 +667,7 @@ test('pulled grass gives grass seed too, which plants grass; planted by a pen, i
 })
 
 test('a hungry chicken goes to its seed box over grass nearer to it, and does not stay stuck on grass it cannot get to', () => {
-  const { room, client } = farm('COOP', { 'feed-box': 1, 'wheat-seed': 10 }, { plants: false })
+  const { room, client } = farm('COOP', { 'feed-trough': 1, 'wheat-seed': 10 }, { plants: false })
   client.command({ k: 'place', x: 6, y: 0, slot: 0 })
   run(room, [client], 3)
   const box = room.world.entityAt(6, 0)!
@@ -713,8 +713,8 @@ test('grass seed, berries and acorns are not planted on sand or the mountains, a
   assert.equal(room.world.entityAt(lawn.x, lawn.y)?.kind, 'grass')
 })
 
-test('a well-fed animal does not graze, and with a feed box of its food in reach a hungry one goes to that, not the grass planted beside it', () => {
-  const { room, client } = farm('FEDCOOP', { 'feed-box': 1, 'wheat-seed': 10 }, { plants: false })
+test('a well-fed animal does not graze, and with a feed trough of its food in reach a hungry one goes to that, not the grass planted beside it', () => {
+  const { room, client } = farm('FEDCOOP', { 'feed-trough': 1, 'wheat-seed': 10 }, { plants: false })
   client.command({ k: 'place', x: 6, y: 0, slot: 0 })
   run(room, [client], 3)
   const box = room.world.entityAt(6, 0)!

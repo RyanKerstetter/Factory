@@ -46,7 +46,7 @@ function arena(code: string): { room: GameRoom; client: TestClient } {
 
 // A small world with the dungeon in it, and a player taken into a copy (its slot).
 function inDungeon(code: string, name = 'Delver'): { room: GameRoom; client: TestClient; slot: number } {
-  const room = new GameRoom(code, 7, { terrain: { size: 'small' } })
+  const room = new GameRoom(code, 7, { terrain: { radius: 70 } })
   const client = new TestClient(room, name)
   const entrance = dungeonEntrance(room.terrain)!
   client.player.position = center(entrance.x, entrance.y)
@@ -77,7 +77,7 @@ test('monsters are not animals: none is in animals.json, and they have no breedi
     for (const field of ['life', 'stats', 'herd', 'foods', 'grazes', 'temper', 'population']) assert.equal(def[field], undefined, `${kind} has no ${field}`)
     assert.ok(!ANIMALS.some((animal) => animal.kind === kind), `${kind} is not an animal`)
   }
-  assert.deepEqual(MONSTERS.map((def) => def.kind).sort(), ['bee', 'frost-lich', 'frost-wisp', 'goblin', 'mummy', 'queen-bee', 'skeleton', 'skeleton-archer'])
+  assert.deepEqual(MONSTERS.map((def) => def.kind).sort(), ['bee', 'dust-elemental', 'frost-lich', 'frost-wisp', 'goblin', 'goblin-archer', 'goblin-shaman', 'mummy', 'queen-bee', 'skeleton', 'skeleton-archer'])
 })
 
 test('close in, a skeleton winds up a swing (the pages are told which way), is not knocked back while it does, swings, and stands a moment before going again', () => {
@@ -265,21 +265,25 @@ test('a swing reaches through a wall (only what flies is stopped by one)', () =>
 })
 
 test('skeleton camps keep four or five, one or two of them archers; they patrol round the camp, all come when one is alerted, drop bones and essence, and come back a while after they are killed', () => {
-  const room = new GameRoom('BONES', 7, { terrain: { size: 'small' } })
+  const room = new GameRoom('BONES', 7, { terrain: { radius: 70 } })
   const client = new TestClient(room, 'Raider')
   const camps = campSites(room.terrain)
   assert.ok(camps.length > 0, 'the mountains have camps')
   const camp = camps[0]
   assert.ok(biomeAt(room.terrain, camp.x, camp.y)?.key === 'mountain')
+  // The camp is kept by its tent, on its middle.
+  const tent = room.world.entityAt(camp.x, camp.y)!
+  assert.equal(tent.kind, 'skeleton-camp')
   // Near enough for the camp to matter, but out of sight of it.
   client.player.position = center(camp.x + 24, camp.y)
   run(room, [client], 2 * TPS)
-  const guards = (): Monster[] => room.monsters!.list().filter((monster) => monster.post?.camp === 0)
+  const guards = (): Monster[] => room.monsters!.list().filter((monster) => monster.post?.camp === tent.id)
   const first = guards()
   assert.ok(first.length >= 4 && first.length <= 5, `the camp is kept (${first.length})`)
   const archers = first.filter((guard) => guard.def.kind === 'skeleton-archer').length
   assert.ok(archers >= 1 && archers <= 2, `one or two archers (${archers})`)
-  const middle = center(camp.x, camp.y)
+  // Round the fire, two tiles in front of the tent.
+  const middle = center(camp.x, camp.y + 2)
   const from = (guard: Monster): number => Math.hypot(guard.x - middle.x, guard.y - middle.y) / SUB
   assert.ok(first.every((guard) => from(guard) < 6), 'round the fire at first')
   // Left alone, they walk about the camp, further out than where they started, and keep within their patrol.
@@ -297,7 +301,7 @@ test('skeleton camps keep four or five, one or two of them archers; they patrol 
   const plain = first.find((guard) => guard.def.kind === 'skeleton')!
   const drops = room.monsters!.damage(plain.id, 1_000_000, client.player.position, room.tick, { knockback: 0, stun: 0 }, client.player.id)!
   assert.deepEqual(drops.map(([key]) => key).sort(), ['bone', 'essence'])
-  killAll(room, (monster) => monster.post?.camp === 0)
+  killAll(room, (monster) => monster.post?.camp === tent.id)
   run(room, [client], 2 * TPS)
   assert.equal(guards().length, 0, 'not back at once')
   run(room, [client], 150 * TPS)

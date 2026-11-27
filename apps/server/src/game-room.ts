@@ -17,7 +17,9 @@ import {
   type Entity,
   type EntityState,
   dropToState,
+  playerMaxHealth,
   PLAYER_MAX_HEALTH,
+  setBonus,
   GATE_AUTO,
   hpOf,
   TPS,
@@ -77,6 +79,7 @@ import {
   BODY_NORMAL,
   COLD_DAMAGE,
   COLD_DAMAGE_EVERY,
+  savedTerrain,
   terrainOf,
   type Terrain,
   type TerrainSettings,
@@ -109,7 +112,7 @@ import {
   dungeonBlocks,
   type ItemId,
   SUB,
-  raftOnTile,
+  raftAt,
   PLAYER_REACH,
   RAFT_HALF,
   takeFromSlot,
@@ -218,13 +221,20 @@ export type ServerPlayer = {
   // Where they were when it started, to call it off if they are knocked away.
   warpFrom?: PlayerPosition
   // Whether they have eaten a truesight flesh: the fog over the far islands is lifted for them (without it they cannot
-  // set foot there: see `solidFor`).
+  // set foot there: see `solidFor`). It also gives them more health for good (see `playerMaxHealth`).
   truesight?: boolean
+  // Until when they go through creatures, dashing (see combat.ts and `separateBodies`).
+  dashingUntil?: number
+  // The most health they could have on the last tick (see `playerMaxHealth`).
+  mostHealth?: number
 }
 
 // How far a player may push themselves (lunging, dashing) in a while, in units (more than a knife's dash, and a lunge
 // at every attack), so a page cannot send pushes to fly about.
 const PUSH_ALLOWANCE = 5 * SUB
+// An attack waits for the input it was made at (its `at`) to be played, but no longer than this many ticks past its own
+// tick (an input lost for good, or a page sending nonsense).
+const ATTACK_INPUT_WAIT_TICKS = 10
 // How near a player a raft is told to their page, in units.
 const RAFTS_SENT_WITHIN = 48 * SUB
 // Units a second.
@@ -384,9 +394,16 @@ export class GameRoom {
   // when they come back.
   private readonly savedPlayers = new Map<string, PlayerSave>()
   // The host: the first player to join the game (whoever made it), who can change its settings. And whether players
-  // can hurt each other (on unless the host turns it off).
+  // can hurt each other (on unless the host turns it off), and whether every player can take any item out of nothing,
+  // for testing (off unless the host turns it on: the `give` command).
   private host: string | undefined
   private pvp = true
+  private itemSpawning = false
+  // Items on the ground only one player can pick up (by drop ID: that player's name, lower case), what the frost lich
+  // leaves each who fought it. They never go away by themselves. And every player's name by the IDs they have had, so
+  // one who has left can still be given one.
+  private readonly bound = new Map<number, string>()
+  private readonly namesById = new Map<number, string>()
   // Where every player was over the last few ticks, so an attack is judged against where its player saw the others
   // (as for creatures: see creatures.ts).
   private readonly playersPast = new PositionHistory()
@@ -408,6 +425,12 @@ export class GameRoom {
       near: (point, reach, seen, except) => this.playersNear(point, reach, seen, except),
       hurt: (id, damage, from, knockback) => this.hurtPlayer(id, damage, from, knockback),
       position: (id) => this.players.get(id)?.position,
+      // A set that heals its wearer for every hurt they do (see armor-sets.ts).
+      dealt: (id) => {
+        const player = this.players.get(id)
+        const heal = player ? setBonus(player.inventory).healOnHit : 0
+        if (player && heal > 0) player.health = Math.min(playerMaxHealth(player.inventory, player.truesight), player.health + heal)
+      },
       everyone: (point, reach) =>
         [...this.players.values()]
           .filter((player) => Math.hypot(player.position.x - point.x, player.position.y - point.y) <= reach + PLAYER_HALF_SIZE)
@@ -467,7 +490,6 @@ export class GameRoom {
     if (saved) {
       this.savedPlayers.delete(name.toLowerCase())
       player.position = { x: saved.x, y: saved.y }
-      player.health = saved.health > 0 ? Math.min(saved.health, PLAYER_MAX_HEALTH) : PLAYER_MAX_HEALTH
       if (saved.bed) player.bed = { x: saved.bed[0], y: saved.bed[1] }
       // Back on the raft they were aboard, where it is now. If it is gone (or where they were is somewhere nobody can
       // stand: the sea, rock), they wake at their sleeping bag, or the spawn, rather than stuck out there.
@@ -483,8 +505,11 @@ export class GameRoom {
         if (item && i < player.inventory.slots.length) Object.assign(player.inventory.slots[i], { item: item.id, count: slot![1] })
       })
       if (saved.truesight) player.truesight = true
+      const most = playerMaxHealth(player.inventory, player.truesight)
+      player.health = saved.health > 0 ? Math.min(saved.health, most) : most
     }
     this.players.set(player.id, player)
+    this.namesById.set(player.id, name.toLowerCase())
     // What everyone already here holds and wears (theirs goes to everyone on the next tick).
     for (const other of this.players.values()) if (other !== player) player.outbox.push({ k: 'gear', id: other.id, ...gearOf(other) })
     this.host ??= name
@@ -595,6 +620,9 @@ export class GameRoom {
       const plays = Math.min(player.inputs.length, catchUp ? MAX_INPUTS_PER_TICK : 1)
       const speed = coldSpeedPercent(bodyTenths(player.body))
       for (let i = 0; i < plays; i++) {
+        // An attack made at an input already played waits to be made before any later input is: the step forward it
+        // takes the player comes after it (see `attackWaiting`).
+        if (this.attackWaiting(player, tick)) break
         const [seq, sent] = player.inputs.shift()!
         // A push beyond what the player may still push themselves is not played.
         const push = pushOf(sent)
@@ -647,13 +675,21 @@ export class GameRoom {
     for (const player of players) this.pickUp(player, tick)
     if (tick % HASH_INTERVAL === 0) {
       for (const drop of this.world.allDrops()) {
-        if (drop.born !== NATURAL_DROP_BORN && tick - drop.born > DROP_LIFETIME_TICKS) this.logWorldEvent({ t: 'drop-', id: drop.id }, tick)
+        if (drop.born !== NATURAL_DROP_BORN && tick - drop.born > DROP_LIFETIME_TICKS && !this.bound.has(drop.id)) this.logWorldEvent({ t: 'drop-', id: drop.id }, tick)
       }
+      for (const id of [...this.bound.keys()]) if (!this.world.drop(id)) this.bound.delete(id)
+    }
+    // Never more health than they can have, once they can have less (armour that gave more taken off).
+    for (const player of players) {
+      const most = playerMaxHealth(player.inventory, player.truesight)
+      if (player.mostHealth !== undefined && most < player.mostHealth) player.health = Math.min(player.health, most)
+      player.mostHealth = most
     }
 
-    // 2. Commands.
-    const due = this.commands.filter((queued) => queued.tick <= tick)
-    this.commands = this.commands.filter((queued) => queued.tick > tick)
+    // 2. Commands. An attack made at an input (its `at`) waits until that input has been played (see `inputReached`).
+    const ready = (queued: QueuedCommand): boolean => queued.tick <= tick && this.inputReached(queued, tick)
+    const due = this.commands.filter(ready)
+    this.commands = this.commands.filter((queued) => !ready(queued))
     due.sort((a, b) => a.tick - b.tick || a.playerId - b.playerId || a.seq - b.seq)
     for (const queued of due) this.run(queued, tick)
 
@@ -686,7 +722,7 @@ export class GameRoom {
       stick: (item, x, y) => {
         const tx = tileOfUnits(x)
         const ty = tileOfUnits(y)
-        const free = this.grown.has(chunkOfTile(tx, ty)) && !this.world.entityAt(tx, ty) && !waterAt(this.terrain, tx, ty) && !dungeonBlocks(tx, ty)
+        const free = this.grown.has(chunkOfTile(tx, ty)) && !this.world.entityAt(tx, ty) && !this.world.floorAt(tx, ty) && !waterAt(this.terrain, tx, ty) && !dungeonBlocks(tx, ty)
         if (free) this.logWorldEvent({ t: 'add', e: entityToState(createEntity(this.nextEntity++, 'loose', tx, ty, 0, item)) }, tick)
         else dropAt(item, 1, x, y)
       },
@@ -774,6 +810,20 @@ export class GameRoom {
     }
   }
 
+  // Whether a command made at one of its player's inputs (an attack's `at`) can be run: that input has been played, or
+  // it has waited ATTACK_INPUT_WAIT_TICKS for it. Any other command can.
+  private inputReached(queued: QueuedCommand, tick: number): boolean {
+    if (queued.command.k !== 'attack' || queued.command.at === undefined) return true
+    const player = this.players.get(queued.playerId)
+    return !player || player.lastPlayedInput >= queued.command.at || tick >= queued.tick + ATTACK_INPUT_WAIT_TICKS
+  }
+
+  // Whether the player has an attack to be made this tick at an input already played, so no later input is played
+  // before it.
+  private attackWaiting(player: ServerPlayer, tick: number): boolean {
+    return this.commands.some((queued) => queued.playerId === player.id && queued.tick <= tick && queued.command.k === 'attack' && queued.command.at !== undefined && player.lastPlayedInput >= queued.command.at)
+  }
+
   private run(queued: QueuedCommand, tick: number): void {
     const player = this.players.get(queued.playerId)
     if (!player) return
@@ -799,10 +849,11 @@ export class GameRoom {
       return
     }
     // The room's own settings, which only the host can change.
-    if (queued.command.k === 'pvp') {
+    if (queued.command.k === 'pvp' || queued.command.k === 'items') {
       const isHost = player.name.toLowerCase() === this.host?.toLowerCase()
       if (isHost) {
-        this.pvp = queued.command.on
+        if (queued.command.k === 'pvp') this.pvp = queued.command.on
+        else this.itemSpawning = queued.command.on
         this.sendRoom()
       }
       player.outbox.push(isHost ? { k: 'result', tick, seq: queued.seq, ok: true } : { k: 'result', tick, seq: queued.seq, ok: false, why: 'notHost' })
@@ -898,6 +949,7 @@ export class GameRoom {
       nextEntityId: () => this.nextEntity++,
       monsters: this.monsters,
       growChunk: (chunk) => this.growPlants(chunk),
+      isBound: (drop) => this.bound.has(drop),
       combat: this.combat,
       hurtPlayer: (id, damage, from, knockback, pierce) => this.hurtPlayer(id, damage, from, knockback, pierce),
       dropRound: (middle, salt, drops) => giveDrops({ ...this.commandContext(tick), drops: this.dropping() }, middle, salt, drops),
@@ -946,7 +998,7 @@ export class GameRoom {
     if (stock) this.animals?.populate(this.animalContext(this.tick), true)
   }
 
-  // The chunks where something has been built (anything not `natural`: a fence, a feed box, a chest), so their animals
+  // The chunks where something has been built (anything not `natural`: a fence, a feed trough, a chest), so their animals
   // are run while nobody is near (a farm goes on while its players are away: see `isActive`). Worked out again every
   // BUILT_EVERY ticks.
   private builtChunks(tick: number): ReadonlySet<number> {
@@ -966,7 +1018,8 @@ export class GameRoom {
 
   // Every player, animal and monster as a body, and those on top of each other pushed apart (see bodies.ts).
   private separateBodies(players: readonly ServerPlayer[], animalContext: AnimalContext, monsterContext: MonsterContext): void {
-    const bodies: Body[] = players.filter((player) => !player.aboard).map((player) => ({
+    // (A player dashing goes straight through: see combat.ts.)
+    const bodies: Body[] = players.filter((player) => !player.aboard && (player.dashingUntil ?? 0) <= this.tick).map((player) => ({
       x: player.position.x,
       y: player.position.y,
       half: PLAYER_HALF_SIZE,
@@ -1144,7 +1197,7 @@ export class GameRoom {
     this.healing = false
   }
 
-  // A gate shut by hand goes back to opening by itself once a player walks over it.
+  // A gate (or a wooden door) shut by hand goes back to opening by itself once a player walks over it.
   private resetGates(players: readonly ServerPlayer[], tick: number): void {
     for (const player of players) {
       const tileX = tileOfUnits(player.position.x)
@@ -1152,8 +1205,9 @@ export class GameRoom {
       for (let y = tileY - 1; y <= tileY + 1; y++) {
         for (let x = tileX - 1; x <= tileX + 1; x++) {
           const gate = this.world.entityAt(x, y)
-          if (gate?.kind !== 'gate' || gate.mode !== GATE_SHUT || !playerOverlapsTile(player.position, x, y)) continue
-          this.logWorldEvent({ t: 'set', e: { id: gate.id, kind: 'gate', x, y, dir: gate.dir, hp: gate.hp, mode: GATE_AUTO } }, tick)
+          // A gate or a wooden door.
+          if ((gate?.kind !== 'gate' && gate?.kind !== 'wood-door') || gate.mode !== GATE_SHUT || !playerOverlapsTile(player.position, x, y)) continue
+          this.logWorldEvent({ t: 'set', e: { id: gate.id, kind: gate.kind, x, y, dir: gate.dir, hp: gate.hp, mode: GATE_AUTO } }, tick)
         }
       }
     }
@@ -1202,6 +1256,8 @@ export class GameRoom {
       players,
       ...(this.host ? { host: this.host } : {}),
       pvp: this.pvp,
+      ...(this.itemSpawning ? { itemSpawning: true } : {}),
+      ...(this.bound.size > 0 ? { bound: [...this.bound].filter(([id]) => this.world.drop(id)).sort((a, b) => a[0] - b[0]) } : {}),
     }
   }
 
@@ -1212,7 +1268,7 @@ export class GameRoom {
       ...options,
       name: save.name,
       ...(save.generation ? { plantGeneration: save.generation } : {}),
-      ...(save.terrain ? { terrain: save.terrain } : {}),
+      terrain: savedTerrain(save.terrain),
       wholeWorld: false,
     })
     room.loadSave(save)
@@ -1277,6 +1333,8 @@ export class GameRoom {
     const remap = itemRemap(save.items)
     if (save.host) this.host = save.host
     if (save.pvp !== undefined) this.pvp = save.pvp
+    if (save.itemSpawning) this.itemSpawning = true
+    for (const [id, name] of save.bound ?? []) this.bound.set(id, name)
     this.tick = save.tick
     this.nextEntity = save.next.entity
     this.nextLink = save.next.link
@@ -1340,6 +1398,7 @@ export class GameRoom {
       ...(this.dropsOnGround ? { drops: this.dropping() } : {}),
       ...(this.animals ? { animals: this.animals } : {}),
       combat: this.combat,
+      itemSpawning: this.itemSpawning,
       players: () => [...this.players.values()].map((other) => other.position),
       onWork: (id) => this.working.add(id),
       onToolLent: (station, item) => this.lentTools.set(station, { player: player.id, item }),
@@ -1359,9 +1418,10 @@ export class GameRoom {
       },
       guarded: (id) => this.dungeons.guarded(id, this.monsters),
       rafts: {
-        // Put down on the tile, on the rope of the player who put it down (see Rafts.tow), so they can pull it in.
+        // Put down with its middle at the point (units), on the rope of the player who put it down (see Rafts.tow), so
+        // they can pull it in.
         place: (x, y) => {
-          const pose = raftOnTile(x, y)
+          const pose = raftAt(x, y)
           if (!this.rafts.fits(pose, this.isWater)) return false
           this.rafts.add(pose).leader = player.id
           return true
@@ -1502,8 +1562,15 @@ export class GameRoom {
   }
 
   // How what is knocked loose lands on the ground: the IDs it takes, and what it cannot be thrown through.
-  private dropping(): { nextId: () => number; solid: IsSolid } {
-    return { nextId: () => this.nextDrop++, solid: this.solid }
+  private dropping(): { nextId: () => number; solid: IsSolid; bind: (drop: number, player: number) => void } {
+    return {
+      nextId: () => this.nextDrop++,
+      solid: this.solid,
+      bind: (drop, player) => {
+        const name = this.namesById.get(player)
+        if (name !== undefined) this.bound.set(drop, name)
+      },
+    }
   }
 
   // Whether a chunk is where something is going on, on a tick: near a player, or where a player has built something
@@ -1557,8 +1624,11 @@ export class GameRoom {
       solidForPlayers: this.solid,
       hurtPlayer: (id, damage, from, knockback) => this.hurtPlayer(id, damage, from, knockback),
       shoot: (item, x, y, angle, speed, damage, ttl) => this.combat.hostileShot(item, x, y, angle, speed, damage, ttl),
+      lob: (item, x, y, toX, toY, ticks, peak, radius, damage) => this.combat.lob(item, x, y, toX, toY, ticks, peak, radius, damage),
+      twister: (item, x, y, angle, speed, damage, ttl, width) => this.combat.twister(item, x, y, angle, speed, damage, ttl, width),
       // Where a player was `ago` ticks back (as far back as is remembered), or is now.
       playerWas: (id, ago) => this.playersPast.at(this.tick - ago)?.get(id) ?? this.players.get(id)?.position,
+      addRock: (kind, x, y) => this.logWorldEvent({ t: 'add', e: entityToState(createEntity(this.nextEntity++, kind, x, y, 0, NO_ITEM)) }, tick),
     }
   }
 
@@ -1637,7 +1707,8 @@ export class GameRoom {
         x = cx * CHUNK_SIZE + this.rng.nextInt(CHUNK_SIZE)
         y = cy * CHUNK_SIZE + this.rng.nextInt(CHUNK_SIZE)
       }
-      if (!isInsideWorld(x, y) || chunkOfTile(x, y) !== chunk || this.world.entityAt(x, y) || waterAt(this.terrain, x, y)) continue
+      // Nothing grows up through a floor.
+      if (!isInsideWorld(x, y) || chunkOfTile(x, y) !== chunk || this.world.entityAt(x, y) || this.world.floorAt(x, y) || waterAt(this.terrain, x, y)) continue
       // Never onto sand, or the mountains' rock and snow, however it came to be there.
       if (!canGrowAt(this.terrain, x, y)) continue
       if (!tended) {
@@ -1668,7 +1739,7 @@ export class GameRoom {
   }
 
   // A player picks up every item on the ground within PICKUP_RADIUS that has lain there PICKUP_DELAY_TICKS, as much of
-  // it as fits; what does not fit stays where it is.
+  // it as fits (but not one bound to someone else: see `bound`); what does not fit stays where it is.
   private pickUp(player: ServerPlayer, tick: number): void {
     const { x, y } = player.position
     let changed = false
@@ -1676,6 +1747,9 @@ export class GameRoom {
       for (const drop of this.world.dropsInChunk(chunk)) {
         if (tick - drop.born < PICKUP_DELAY_TICKS) continue
         if ((drop.x - x) ** 2 + (drop.y - y) ** 2 > PICKUP_RADIUS * PICKUP_RADIUS) continue
+        // One left for someone else is theirs alone.
+        const owner = this.bound.get(drop.id)
+        if (owner !== undefined && owner !== player.name.toLowerCase()) continue
         const taken = addItems(player.inventory, drop.item, drop.count)
         if (taken === 0) continue
         changed = true
@@ -1713,7 +1787,7 @@ export class GameRoom {
   }
 
   private sendRoom(): void {
-    for (const player of this.players.values()) player.outbox.push({ k: 'room', host: this.host ?? '', pvp: this.pvp })
+    for (const player of this.players.values()) player.outbox.push({ k: 'room', host: this.host ?? '', pvp: this.pvp, items: this.itemSpawning })
   }
 
   // ---- players hurting each other
@@ -1748,11 +1822,13 @@ export class GameRoom {
     player.health -= amount
     const died = player.health <= 0
     if (died) {
-      player.health = PLAYER_MAX_HEALTH
+      player.health = playerMaxHealth(player.inventory, player.truesight)
       player.body = BODY_NORMAL
       player.slide = undefined
       player.aboard = undefined
       player.position = this.wakingPlace(player)
+      // The wolves that got them leave off the chase.
+      this.animals?.forgetPlayer(id)
     } else if (knockback > 0) {
       const dx = player.position.x - from.x
       const dy = player.position.y - from.y

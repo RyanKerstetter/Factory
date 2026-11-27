@@ -32,6 +32,7 @@ import {
   waterAt,
   type Entity,
   type FeederEntity,
+  WORLD_SIZES,
   type WorldSize,
 } from '../packages/shared/src/index.ts'
 import { applyWorldEvent } from '../packages/shared/src/sim/world-events.ts'
@@ -80,7 +81,7 @@ const scenarios: Record<string, () => void> = {
   worldgen() {
     for (const size of ['medium', 'huge'] as WorldSize[]) {
       const samples: number[] = []
-      for (let i = 0; i < 3; i++) samples.push(time(() => new GameRoom(`GEN${i}`, 1000 + i, { terrain: { size } })))
+      for (let i = 0; i < 3; i++) samples.push(time(() => new GameRoom(`GEN${i}`, 1000 + i, { terrain: { radius: WORLD_SIZES[size].radius } })))
       summarise(`worldgen ${size}`, 'ms', samples)
     }
   },
@@ -102,7 +103,7 @@ const scenarios: Record<string, () => void> = {
     })
     runTicks('explore (4 players, 4 islands)', room, clients, 600, 120)
   },
-  // A big farm: 200 cows penned by feed boxes, near a player.
+  // A big farm: 200 cows penned by feed troughs, near a player.
   farm() {
     const room = new GameRoom('FARM', 11, { plants: false, animals: true, wildAnimals: false })
     const client = new TestClient(room, 'Farmer')

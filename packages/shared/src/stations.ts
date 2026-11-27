@@ -13,7 +13,7 @@ import { PLAYER_CRAFT_SPEED, RECIPES } from './recipes.ts'
 //
 // A new station is a kind here (STATION_KINDS, STATION_LAYOUT), its recipes in stations.json, and a building that is
 // one (see BUILDINGS and entity.ts).
-export const STATION_KINDS = ['stump', 'workbench'] as const
+export const STATION_KINDS = ['stump', 'workbench', 'carpenter'] as const
 export type StationKind = (typeof STATION_KINDS)[number]
 
 export function isStationKind(kind: string): kind is StationKind {
@@ -32,6 +32,10 @@ export type StationRecipe = {
   count: number
   // How long one takes, in ticks.
   ticks: number
+  // How far up the stations it first comes: 0 made by hand, then one more for each station that includes another (the
+  // stump 1, the workbench 2). A station's book shows what it has from the smaller stations first, and what is new at
+  // it last.
+  level: number
 }
 
 // Which slot of each station is which: its tool slot, the slots it works from (four, shown two by two: room for a
@@ -41,6 +45,7 @@ export type StationLayout = { tool: number; inputs: readonly number[]; output: n
 export const STATION_LAYOUT: Readonly<Record<StationKind, StationLayout>> = {
   stump: { tool: 0, inputs: [1, 3, 4, 5], output: 2, slots: 6 },
   workbench: { tool: 4, inputs: [0, 1, 2, 5], output: 3, slots: 6 },
+  carpenter: { tool: 0, inputs: [1, 2, 3, 4], output: 5, slots: 6 },
 }
 
 export const STATION_RECIPES: Readonly<Record<StationKind, readonly StationRecipe[]>> = parseStations(stationsData)
@@ -49,7 +54,8 @@ export const STATION_RECIPES: Readonly<Record<StationKind, readonly StationRecip
 // recipes, and everything the stations it includes make too (each recipe it has no recipe of its own for the same
 // output of), after its own, so a bigger station can always do what a smaller one does: the stump includes "player"
 // (what is made by hand, see recipes.ts), and the workbench includes the stump (and so the player's too). Includes can
-// chain, but not go round in a circle.
+// chain, but not go round in a circle. The carpenter's bench includes nothing: it makes what is built of planks and
+// stone (fences, walls, doors, floors) and furniture, and those are made nowhere else.
 //
 // `speed` is how quick a station is at what it gets from others: a recipe it declares itself takes its own `seconds`,
 // but one it includes takes `seconds` × the speed of the station that declared it ÷ its own speed. The player is 1, the
@@ -58,9 +64,9 @@ export const STATION_RECIPES: Readonly<Record<StationKind, readonly StationRecip
 type Includable = StationKind | 'player'
 function parseStations(data: unknown): Record<StationKind, StationRecipe[]> {
   if (typeof data !== 'object' || data === null) throw new Error('data/stations.json must be an object of stations.')
-  const own: Record<StationKind, StationRecipe[]> = { stump: [], workbench: [] }
-  const includes: Record<StationKind, Includable[]> = { stump: [], workbench: [] }
-  const speed: Record<Includable, number> = { player: PLAYER_CRAFT_SPEED, stump: 1, workbench: 1 }
+  const own: Record<StationKind, StationRecipe[]> = { stump: [], workbench: [], carpenter: [] }
+  const includes: Record<StationKind, Includable[]> = { stump: [], workbench: [], carpenter: [] }
+  const speed: Record<Includable, number> = { player: PLAYER_CRAFT_SPEED, stump: 1, workbench: 1, carpenter: 1 }
   for (const [station, entry] of Object.entries(data)) {
     // The player's recipes are read in recipes.ts; the fires' (the campfire's and the oven's), the barrel's and the
     // drying rack's in machines.ts; the altar's in altar.ts.
@@ -80,15 +86,18 @@ function parseStations(data: unknown): Record<StationKind, StationRecipe[]> {
     own[kind] = (shaped.recipes as unknown[]).map((raw, index) => parseRecipe(kind, raw, index))
   }
   // The player's recipes as a station's.
-  const player: StationRecipe[] = RECIPES.map((recipe, index) => ({ index, category: recipe.category, inputs: recipe.inputs, output: recipe.output, count: recipe.count, ticks: recipe.ticks }))
+  const player: StationRecipe[] = RECIPES.map((recipe, index) => ({ index, category: recipe.category, inputs: recipe.inputs, output: recipe.output, count: recipe.count, ticks: recipe.ticks, level: 0 }))
   // A station's recipes, each taking as long as it takes there.
   const resolve = (kind: Includable, seen: readonly Includable[]): StationRecipe[] => {
     if (seen.includes(kind)) throw new Error(`data/stations.json: "includes" goes round in a circle through ${kind}`)
     if (kind === 'player') return player
-    const list = [...own[kind]]
+    const included = includes[kind].map((other) => [other, resolve(other, [...seen, kind])] as const)
+    // Its own recipes come one level above the highest of what it includes.
+    const level = 1 + Math.max(-1, ...included.flatMap(([, recipes]) => recipes.map((recipe) => recipe.level)))
+    const list = own[kind].map((recipe) => ({ ...recipe, level }))
     const room = STATION_LAYOUT[kind].inputs.length
-    for (const other of includes[kind]) {
-      for (const recipe of resolve(other, [...seen, kind])) {
+    for (const [other, recipes] of included) {
+      for (const recipe of recipes) {
         if (list.some((mine) => mine.output === recipe.output)) continue
         if (recipe.inputs.length > room) throw new Error(`data/stations.json: ${kind} includes ${other}, but a recipe of it takes more kinds of input than ${kind} has slots`)
         const ticks = Math.max(1, Math.round((recipe.ticks * speed[other]) / speed[kind]))
@@ -97,7 +106,7 @@ function parseStations(data: unknown): Record<StationKind, StationRecipe[]> {
     }
     return list
   }
-  return { stump: resolve('stump', []), workbench: resolve('workbench', []) }
+  return { stump: resolve('stump', []), workbench: resolve('workbench', []), carpenter: resolve('carpenter', []) }
 }
 
 function parseRecipe(station: StationKind, entry: unknown, index: number): StationRecipe {
@@ -118,6 +127,8 @@ function parseRecipe(station: StationKind, entry: unknown, index: number): Stati
     output: itemFromKey(raw.output, fail),
     count: wholeField(raw, 'count', fail, 1, 1),
     ticks: secondsField(raw, 'seconds', fail),
+    // Set once it is known what the station includes (see parseStations).
+    level: 0,
   }
 }
 
@@ -125,7 +136,7 @@ function parseRecipe(station: StationKind, entry: unknown, index: number): Stati
 // and "any of a kind" ("#cooked meat") as one kind of it only, so they fit the station's few input slots (a breakfast
 // sandwich takes all four: steak and chicken both would leave no room for the egg). That kind is the one already in
 // the station, if the player has some of it; else the one the player has most of. Each as [item, how many for one]
-// (still the "#tag", if the player has none of it).
+// (still the "#tag", if the player has none of it). Only the player's ordinary slots count (see `ordinary`).
 export function oneKindEach(
   kind: StationKind,
   station: Inventory,
@@ -135,7 +146,7 @@ export function oneKindEach(
   return inputs.map(([match, need]) => {
     if (typeof match !== 'string') return [match, need] as const
     const there = STATION_LAYOUT[kind].inputs.map((slot) => station.slots[slot]).find((slot) => slot && slot.count > 0 && matches(match, slot.item))
-    const mine = inventoryTotals(player).filter(({ item }) => matches(match, item))
+    const mine = inventoryTotals(ordinary(player)).filter(({ item }) => matches(match, item))
     const kept = there ? mine.find(({ item }) => item === there.item) : undefined
     const most = mine.reduce<{ item: ItemId; count: number } | undefined>((best, one) => (!best || one.count > best.count ? one : best), undefined)
     const chosen = kept ?? most
@@ -148,9 +159,16 @@ export function stationHas(kind: StationKind, inv: Inventory, match: Match): num
   return countIn(inv, STATION_LAYOUT[kind].inputs, (held) => matches(match, held))
 }
 
-// How many of what an ingredient names are anywhere in an inventory.
+// How many of what an ingredient names are in an inventory's ordinary slots (see `ordinary`).
 export function countMatching(inv: Inventory, match: Match): number {
-  return countIn(inv, [...inv.slots.keys()], (held) => matches(match, held))
+  const plain = ordinary(inv)
+  return countIn(plain, [...plain.slots.keys()], (held) => matches(match, held))
+}
+
+// An inventory's ordinary slots only: not a player's food, ammunition, armour or trash slots, which what goes into a
+// station is never taken from (see `transferItems` in entity.ts), so nothing there counts towards a recipe.
+function ordinary(inv: Inventory): Inventory {
+  return { ...inv, slots: inv.slots.filter((slot) => slot.only === undefined) }
 }
 
 // The kind of tool in a station's tool slot, if any.

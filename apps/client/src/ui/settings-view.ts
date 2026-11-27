@@ -19,11 +19,12 @@ const FIXED: ReadonlyArray<[string, string]> = [
 
 type Tab = 'controls' | 'audio' | 'game'
 
-// The settings of the game being played, kept by the server: who the host is, and whether players can hurt each
-// other, which only the host can change.
+// The settings of the game being played, kept by the server: who the host is, whether players can hurt each other, and
+// whether item spawning is on, which only the host can change.
 export type GameSettings = {
-  get: () => { host: string; pvp: boolean; isHost: boolean }
+  get: () => { host: string; pvp: boolean; items: boolean; isHost: boolean }
   setPvp: (on: boolean) => void
+  setItems: (on: boolean) => void
   // Calls `listener` whenever they change. Gives back a function that stops it.
   subscribe: (listener: () => void) => () => void
 }
@@ -99,11 +100,22 @@ export function createSettingsView(settings: Settings, onBack: () => void, game?
   const pvpBox = element('input', 'checkbox')
   pvpBox.type = 'checkbox'
   pvpBox.addEventListener('change', () => game?.setPvp(pvpBox.checked))
+  const itemsBox = element('input', 'checkbox')
+  itemsBox.type = 'checkbox'
+  itemsBox.addEventListener('change', () => game?.setItems(itemsBox.checked))
   const hostNote = element('p', 'settings-note')
   const gamePanel = element(
     'div',
     'settings-panel',
-    element('div', 'audio-rows', element('label', 'settings-row', element('span', 'controls-label', 'PvP'), pvpBox), element('p', 'settings-note', 'With PvP on, players can hurt each other.'), hostNote),
+    element(
+      'div',
+      'audio-rows',
+      element('label', 'settings-row', element('span', 'controls-label', 'PvP'), pvpBox),
+      element('p', 'settings-note', 'With PvP on, players can hurt each other.'),
+      element('label', 'settings-row', element('span', 'controls-label', 'Item spawning'), itemsBox),
+      element('p', 'settings-note', 'With item spawning on, everyone can take any item, as many as they like, from beside their inventory (for testing).'),
+      hostNote,
+    ),
   )
 
   const body = element('div', 'settings-body')
@@ -138,9 +150,11 @@ export function createSettingsView(settings: Settings, onBack: () => void, game?
     }
     mute.checked = settings.muted
     if (game) {
-      const { host, pvp, isHost } = game.get()
+      const { host, pvp, items, isHost } = game.get()
       pvpBox.checked = pvp
       pvpBox.disabled = !isHost
+      itemsBox.checked = items
+      itemsBox.disabled = !isHost
       hostNote.textContent = isHost ? 'You are the host: this is up to you, for everyone in the game.' : `Only the host${host ? ` (${host})` : ''} can change this.`
     }
   }

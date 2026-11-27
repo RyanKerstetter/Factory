@@ -13,6 +13,20 @@ const PITCH_ZOOMED_IN = 35
 // end, below 1 levelling off sooner.
 const PITCH_CURVE = 1.5
 
+// How many pixels a tile is drawn at zoom 1, on a window VIEW_HEIGHT pixels tall (a taller or shorter window shows the
+// same ground, bigger or smaller).
+export const PX_PER_TILE = 56
+export const VIEW_HEIGHT = 1440
+
+// How much ground a screen of an aspect (width over height) shows round the player, at a zoom: tiles each way across
+// (`x`), and each way north and south (`y`: the camera is tilted, so the screen's height covers more ground than it
+// would looking straight down). The camera looks squarely, without perspective, so this is the same whatever the
+// window's size.
+export function groundSpan(aspect: number, zoom: number): { x: number; y: number } {
+  const halfHeight = VIEW_HEIGHT / 2 / (PX_PER_TILE * zoom)
+  return { x: halfHeight * aspect, y: halfHeight / Math.sin(cameraPitch(zoom)) }
+}
+
 // How far zoomed in, 0 (ZOOM_MIN) to 1 (ZOOM_MAX), evenly for each notch of the wheel.
 function zoomShare(zoom: number): number {
   return Math.min(1, Math.max(0, Math.log(zoom / ZOOM_MIN) / Math.log(ZOOM_MAX / ZOOM_MIN)))

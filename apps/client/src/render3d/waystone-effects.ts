@@ -1,12 +1,12 @@
 import * as THREE from 'three'
-import { WARP_LIGHT_LEVELS, warpLightAt } from '../../../../packages/shared/src/index.ts'
+import { warpLightAt } from '../../../../packages/shared/src/index.ts'
 import type { WarpFlashView, WarpView } from './frame.ts'
-import { WAYSTONE_FACE, WAYSTONE_LIGHTS } from './models.ts'
+import { WAYSTONE_LIGHTS } from './models.ts'
 import { Pool, showObject } from './reuse.ts'
 
 // Travelling by waystone, drawn (see waystones.ts):
-// - while it charges, the lights up the stone's face come on a pair at a time from the bottom (each flaring as it
-//   does, then glowing), the keystone at the top last; motes of light rise round the player in a tightening spiral, a
+// - while it charges, the marks on the stone's face light up one at a time from the bottom (each flaring as it does,
+//   then glowing), the square keystone at the top last; motes of light rise round the player in a tightening spiral, a
 //   ring of light closes in on the ground under them, and at the last a column of light swallows them;
 // - when they go, a flash and a pillar of light where they stood, and the same where they arrive, with sparks falling
 //   round them; the lights of the stone they arrive at glow and fade.
@@ -116,27 +116,26 @@ export class WaystoneEffects {
     }
   }
 
-  // The lights on a waystone's face, each as bright as `brightness(level)` (0 off, 1 full).
+  // The marks on a waystone's face, each as bright as `brightness(level)` (0 off, 1 full): the mark itself lit, and a
+  // glow round it.
   private stoneLights(tileX: number, tileY: number, brightness: (level: number) => number, seconds: number): void {
     const x = tileX + 0.5
-    const z = tileY + 0.5 + WAYSTONE_FACE + 0.012
     for (const light of WAYSTONE_LIGHTS) {
+      const z = tileY + 0.5 + light.z + 0.014
       const on = brightness(light.level)
       if (on <= 0.01) continue
-      const keystone = light.level === WARP_LIGHT_LEVELS
-      const size = keystone ? 0.08 : 0.06
       const flicker = 1 + 0.08 * Math.sin(seconds * 13 + light.y * 20 + light.x * 9)
-      this.light(x + light.x, light.y, z, size, PALE, on * flicker)
-      this.light(x + light.x, light.y, z + 0.002, size * 2.6, BLUE, on * 0.45 * flicker)
-      this.light(x + light.x, light.y, z + 0.004, size * 5, DEEP, on * 0.25)
+      this.light(x + light.x, light.y, z, light.w, light.h, PALE, on * flicker)
+      this.light(x + light.x, light.y, z + 0.002, light.w + 0.08, light.h + 0.08, BLUE, on * 0.45 * flicker)
+      this.light(x + light.x, light.y, z + 0.004, light.w + 0.2, light.h + 0.2, DEEP, on * 0.25)
     }
   }
 
-  private light(x: number, y: number, z: number, size: number, color: number, opacity: number): void {
+  private light(x: number, y: number, z: number, width: number, height: number, color: number, opacity: number): void {
     if (opacity <= 0.01) return
     const { mesh, material } = this.lights.next()
     mesh.position.set(x, y, z)
-    mesh.scale.set(size, size, 1)
+    mesh.scale.set(width, height, 1)
     material.color.setHex(color)
     material.opacity = Math.min(1, opacity)
   }

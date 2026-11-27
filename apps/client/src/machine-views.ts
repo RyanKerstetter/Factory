@@ -69,7 +69,8 @@ export function machineView(entity: Entity, player: Inventory, inv: Inventory, a
       }
     }
     case 'stump':
-    case 'workbench': {
+    case 'workbench':
+    case 'carpenter': {
       // The tool slot first (marked as one), then what it works from, then what comes out.
       const layout = STATION_LAYOUT[entity.kind]
       return {
@@ -77,7 +78,7 @@ export function machineView(entity: Entity, player: Inventory, inv: Inventory, a
         outputs: [{ index: layout.output }],
         gauges: [],
         buttons: [],
-        recipes: { title: entity.kind === 'stump' ? 'Stump recipes' : 'Workbench recipes', action: 'Craft', entries: stationBook(entity.kind, player, inv) },
+        recipes: { title: STATION_BOOK_TITLES[entity.kind], action: 'Craft', entries: stationBook(entity.kind, player, inv) },
         status: stationStatus(entity.kind, entity.recipe, entity.active),
       }
     }
@@ -117,6 +118,9 @@ export function machineView(entity: Entity, player: Inventory, inv: Inventory, a
   }
 }
 
+// The heading over each station's recipes.
+const STATION_BOOK_TITLES: Readonly<Record<StationKind, string>> = { stump: 'Stump recipes', workbench: 'Workbench recipes', carpenter: "Carpenter's bench recipes" }
+
 // What a machine is doing now, in a few words for the foot of its panel ("Crafting planks"; "Not crafting" while it is
 // idle).
 function stationStatus(kind: StationKind, recipe: number, active: boolean | number): string {
@@ -142,7 +146,8 @@ function barrelStatus(barrel: Barrel): string {
 export function machineProgress(entity: Entity, alpha: number): number | undefined {
   switch (entity.kind) {
     case 'stump':
-    case 'workbench': {
+    case 'workbench':
+    case 'carpenter': {
       const recipe = STATION_RECIPES[entity.kind][entity.recipe - 1]
       return recipe && entity.active ? (entity.progress + alpha) / recipe.ticks : 0
     }
@@ -191,7 +196,8 @@ function ingredient(match: Match, need: number, have: number): BookEntry['inputs
   return { item: shown, need, have, label: `Any ${match.slice(1)} (${shown ? getItem(shown).name : '…'})` }
 }
 
-// A station's recipes (the stump's, the workbench's), in the order their categories first come. What the player has
+// A station's recipes (the stump's, the workbench's), in the order their categories first come, and in each, what it has
+// from the smaller stations first and what is new at it last (see `level` in stations.ts). What the player has
 // counts what is already in the station, and a tool it needs counts whether it is on the player or in the station's tool
 // slot (it goes in when Craft is pressed, and is not used up).
 function stationBook(kind: StationKind, player: Inventory, inv: Inventory): BookEntry[] {
@@ -199,7 +205,7 @@ function stationBook(kind: StationKind, player: Inventory, inv: Inventory): Book
   const recipes = STATION_RECIPES[kind]
   const categories = [...new Set(recipes.map((recipe) => recipe.category))]
   return [...recipes]
-    .sort((a, b) => categories.indexOf(a.category) - categories.indexOf(b.category))
+    .sort((a, b) => categories.indexOf(a.category) - categories.indexOf(b.category) || a.level - b.level)
     .map((recipe) =>
       entry(
         recipe.index,

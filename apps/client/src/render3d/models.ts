@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { liquidLook } from '../liquids.ts'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
 import { hashInts, WARP_LIGHT_LEVELS } from '../../../../packages/shared/src/index.ts'
 import { POND_COLOR } from './ground-colors.ts'
 
@@ -24,6 +25,15 @@ const PALETTE = {
   soil: 0x4a3220,
   soilDark: 0x3a2616,
   hay: 0xd8c27a,
+  // A feed trough's boards, its pale rim, its dark inside and legs, and the food in it.
+  trough: 0xa7773f,
+  troughRim: 0xe2b46e,
+  // The trim along the top of a wooden wall.
+  wallTrim: 0x7a5432,
+  troughInside: 0x3a2414,
+  troughDark: 0x5a3a20,
+  feed: 0xc9a84e,
+  feedLight: 0xe0c46a,
   wheat: 0xd9b94a,
   sprout: 0x6fbf4a,
   hide: 0xa87a4f,
@@ -164,6 +174,15 @@ const vary = (x: number, y: number, salt: number): number => (hashInts(x, y, sal
 function group(...children: THREE.Object3D[]): THREE.Group {
   const made = new THREE.Group()
   if (children.length > 0) made.add(...children)
+  return made
+}
+
+// A group to turn about `at`, holding `children` placed where they would be without it (in its parent's terms): they
+// are moved to be relative to it.
+function pivot(at: [number, number, number], ...children: THREE.Object3D[]): THREE.Group {
+  const made = group(...children)
+  made.position.set(...at)
+  for (const child of children) child.position.sub(made.position)
   return made
 }
 
@@ -437,7 +456,7 @@ export function sprout(look: number): THREE.Group {
   return foliageClump('unripe', 0.72, 0.52, 4)
 }
 
-// A crop in a garden plot, by how far it has grown: green shoots, taller, and golden ears once it is ready.
+// A crop in farmland, by how far it has grown: green shoots, taller, and golden ears once it is ready.
 // Wheat, at one of its CROP_GROWTH_STAGES (see cropStage in art-catalog.ts): a few thin green shoots; then more and
 // taller, with leaves; then a thick green stand; then heads forming; and last, ripe, a dense golden stand of heavy heads
 // that fills the whole plot like a patch of a wheat field. Each stage is one mesh (its stalks, leaves and heads joined),
@@ -567,6 +586,223 @@ export function gate(across: boolean, open: boolean): THREE.Group {
   leaf.rotation.y = (across ? 0 : -Math.PI / 2) + (open ? -Math.PI / 2 : 0)
   made.add(leaf)
   return made
+}
+
+// A wooden wall: a frame clad in upright boards on both faces, as thick as what of it stands in the way (`wallBoxes`
+// in fences.ts). Each board stands a little proud of or back from the ones beside it, its top a little uneven, with dark
+// gaps between, over a dark sill at the foot. Seen from
+// above it is open between its two faces down to a dark cavity, a narrow top beam running along it, and a post stands
+// at each corner where two faces meet (its ends, its outside corners). A block in the middle of its tile, and a stretch
+// out to each side it joins (`mask`, as a fence's), so walls side by side run on unbroken.
+const WALL_THICK = 0.75
+const WALL_HEIGHT = 0.95
+// How wide a board is (as the floor's planks): a quarter of a tile. Boards lie on a grid of that, from the tile's
+// edge, so a wall's pieces (its middle and its stretches out) and walls side by side all share it.
+const WALL_BOARD = 0.25
+// A stretch of wall from `from` to `to` along x (or, `alongZ`, z): its cavity (unless `core` is false), the boards and
+// sill on the faces `faces` (-1 or 1: which side across it), and its top beam (along all of it, or
+// from and to where `beam` says, or none). `tile` is the wall's tile, so its boards differ from every other wall's.
+function boardWall(from: number, to: number, alongZ: boolean, faces: readonly number[], core = true, beam: boolean | readonly [number, number] = true, tile = { x: 0, y: 0 }): THREE.Object3D[] {
+  const at = (along: number, up: number, across: number): [number, number, number] => (alongZ ? [across, up, along] : [along, up, across])
+  const length = to - from
+  const middle = (from + to) / 2
+  const half = WALL_THICK / 2
+  const made: THREE.Object3D[] = []
+  // The cavity between the faces, its dark top well down from the boards' tops.
+  if (core) made.push(part(box(), PALETTE.barkDark, at(middle, (WALL_HEIGHT - 0.09) / 2, 0), at(length, WALL_HEIGHT - 0.09, WALL_THICK - 0.1)))
+  if (beam) {
+    const [start, stop] = beam === true ? [from, to] : beam
+    made.push(part(box(), PALETTE.wallTrim, at((start + stop) / 2, WALL_HEIGHT - 0.055, 0), at(stop - start, 0.05, 0.13)))
+  }
+  // The browns its boards are, as the wooden floor's: from dark to a little lighter, none yellow.
+  const shades = [0x8a6844, 0x7a5a3a, 0x94724c, 0x6e5034, 0x86603c, 0x9a7a54]
+  const gap = 0.012
+  const near = (a: number, b: number): boolean => Math.abs(a - b) < 1e-6
+  for (const face of faces) {
+    // The boards on the grid, each cut to this stretch: a gap only where a board ends, not where the stretch does.
+    for (let k = Math.floor(from / WALL_BOARD + 1e-6); k * WALL_BOARD < to - 1e-6; k++) {
+      const start = k * WALL_BOARD
+      const a = Math.max(from, start) + (near(Math.max(from, start), start) ? gap / 2 : 0)
+      const b = Math.min(to, start + WALL_BOARD) - (near(Math.min(to, start + WALL_BOARD), start + WALL_BOARD) ? gap / 2 : 0)
+      if (b <= a) continue
+      // Each board a little different, by its place on the grid (the same in every piece of it): its colour, how far it
+      // stands out, and how high its top comes.
+      // Its place in the world: along the wall (the boards of tiles side by side running on), and across it.
+      const board = k + Math.round(1 / WALL_BOARD) * (alongZ ? tile.y : tile.x)
+      const line = alongZ ? tile.x : tile.y
+      const which = Math.abs(board * 5 + face * 3)
+      const depth = which % 2 === 0 ? 0.075 : 0.06
+      const height = WALL_HEIGHT + ((which % 3) - 1) * 0.015
+      const shade = shades[hashInts(board, face, line, 31) % shades.length]
+      made.push(part(box(), shade, at((a + b) / 2, height / 2, face * (half - 0.085 + depth / 2)), at(b - a, height, depth)))
+    }
+    // The sill at the boards' foot.
+    made.push(part(box(), PALETTE.troughDark, at(middle, 0.035, face * (half + 0.005)), at(length, 0.07, 0.04)))
+  }
+  return made
+}
+export function woodWall(mask: number, x = 0, y = 0): THREE.Group {
+  const tile = { x, y }
+  const half = WALL_THICK / 2
+  // The middle: boards on each face that does not run on into more wall; its top beam along each way it runs on,
+  // stopping inside the boards at an end (not poking out through them).
+  const inside = half - 0.06
+  const beamAlong = (low: number, high: number): readonly [number, number] => [mask & low ? -half : -inside, mask & high ? half : inside]
+  const made = group(
+    ...boardWall(-half, half, false, [mask & 1 ? 0 : -1, mask & 4 ? 0 : 1].filter((face) => face !== 0), true, (mask & 10) !== 0 || (mask & 5) === 0 ? beamAlong(8, 2) : false, tile),
+    ...boardWall(-half, half, true, [mask & 8 ? 0 : -1, mask & 2 ? 0 : 1].filter((face) => face !== 0), false, (mask & 5) !== 0 ? beamAlong(1, 4) : false, tile),
+  )
+  // Out to each side it joins, to the tile's edge.
+  if (mask & 1) made.add(...boardWall(-0.5, -half, true, [-1, 1], true, true, tile))
+  if (mask & 2) made.add(...boardWall(half, 0.5, false, [-1, 1], true, true, tile))
+  if (mask & 4) made.add(...boardWall(half, 0.5, true, [-1, 1], true, true, tile))
+  if (mask & 8) made.add(...boardWall(-0.5, -half, false, [-1, 1], true, true, tile))
+  // A post at each corner where two faces meet, set in so it stands only a little proud of the boards: [the side
+  // across x, the side across z, which sides make it].
+  for (const [x, z, sides] of [[-1, -1, 9], [1, -1, 3], [1, 1, 6], [-1, 1, 12]] as const) {
+    if (mask & sides) continue
+    made.add(part(box(), PALETTE.troughDark, [x * (half - 0.035), (WALL_HEIGHT + 0.03) / 2, z * (half - 0.035)], [0.1, WALL_HEIGHT + 0.03, 0.1]))
+  }
+  return made
+}
+
+// A wooden door, after its icon (icons/buildings/wood-door.png): a short stretch of board wall at each side of its tile
+// (meeting the walls beside it) and a door of upright planks between, braced across its back, with an iron ring for a
+// handle, hung across x (`across`) or z, and swung open like a gate's leaf.
+// The doorway is DOOR_WIDTH wide (its door too), between slim jambs, with a short stretch of wall either side.
+const DOOR_WIDTH = 0.78
+export function woodDoor(across: boolean, open: boolean): THREE.Group {
+  const half = DOOR_WIDTH / 2
+  const made = group(...boardWall(-0.5, -half, !across, [-1, 1]), ...boardWall(half, 0.5, !across, [-1, 1]))
+  // A jamb post at the inside end of each, framing the doorway, and a lintel over it.
+  for (const end of [-half, half]) made.add(part(box(), PALETTE.troughDark, across ? [end, (WALL_HEIGHT + 0.03) / 2, 0] : [0, (WALL_HEIGHT + 0.03) / 2, end], across ? [0.06, WALL_HEIGHT + 0.03, WALL_THICK + 0.02] : [WALL_THICK + 0.02, WALL_HEIGHT + 0.03, 0.06]))
+  made.add(part(box(), PALETTE.troughDark, [0, WALL_HEIGHT - 0.02, 0], across ? [DOOR_WIDTH + 0.06, 0.08, 0.16] : [0.16, 0.08, DOOR_WIDTH + 0.06]))
+  // The door, hung from its hinge side: planks side by side, light and dark, a brace from batten to batten and a handle.
+  const door = new THREE.Group()
+  const width = DOOR_WIDTH
+  const planks = 5
+  for (let i = 0; i < planks; i++) {
+    const x = (width / planks) * (i + 0.5)
+    door.add(part(box(), i % 2 === 0 ? PALETTE.wood : PALETTE.woodLight, [x, 0.44, 0], [width / planks - 0.008, 0.86, 0.07]))
+  }
+  for (const height of [0.2, 0.68]) door.add(part(box(), PALETTE.barkDark, [width / 2, height, -0.045], [width - 0.04, 0.07, 0.025]))
+  const across2 = width - 0.12
+  door.add(part(box(), PALETTE.barkDark, [width / 2, 0.44, -0.045], [0.06, Math.hypot(across2, 0.48), 0.025], [0, 0, Math.atan2(across2, 0.48)]))
+  door.add(part(geometry('doorRing', () => new THREE.TorusGeometry(0.5, 0.18, 4, 8)), PALETTE.iron, [width - 0.1, 0.46, 0.05], [0.07, 0.07, 0.07]))
+  door.position.set(across ? -half : 0, 0, across ? 0 : -half)
+  door.rotation.y = (across ? 0 : -Math.PI / 2) + (open ? -Math.PI / 2 : 0)
+  made.add(door)
+  return made
+}
+
+// The floors: boards or stones lying just over the ground (so whatever stands on a floor stands on it), in rows across
+// x, laid as if over the whole world rather than tile by tile: each row's joints are at its own offset and a little
+// uneven, so no two rows line up and no grid shows, and a board or stone is the same (its colour, its height) in every
+// tile it crosses. Where a floor is beside it (`mask`, as a fence's: north 1, east 2, south 4, west 8) a floor stops at
+// its tile's edge, meeting the next one's without a seam; on its other sides it reaches FLOOR_LIP past its tile, so it
+// covers the ground a wall leaves at the edge of its tile.
+export const FLOOR_TOP = 0.03
+const FLOOR_LIP = 0.125
+type Deck = {
+  // How wide a row is (a whole number of rows to a tile), how long a piece is on average and how much that varies
+  // (a share of it), and the gap between pieces. Each row's joints are offset by `stagger` (a share of a piece, by
+  // the row: the list over and over), or by chance without it.
+  row: number
+  length: number
+  jitter: number
+  gap: number
+  // The gap between rows, if not `gap` (the camera, looking down from the south, sees less of a gap between rows than
+  // along one).
+  rowGap?: number
+  stagger?: readonly number[]
+  // What shows in the gaps; each piece's colour and how high its top is, by its row and its place along it.
+  under: number
+  color: (row: number, piece: number) => number
+  top: (row: number, piece: number) => number
+  // Whether each piece is nailed down at its ends.
+  nails: boolean
+}
+function deck(x: number, y: number, mask: number, look: Deck): THREE.Group {
+  const made = new THREE.Group()
+  const west = mask & 8 ? -0.5 : -0.5 - FLOOR_LIP
+  const east = mask & 2 ? 0.5 : 0.5 + FLOOR_LIP
+  const north = mask & 1 ? -0.5 : -0.5 - FLOOR_LIP
+  const south = mask & 4 ? 0.5 : 0.5 + FLOOR_LIP
+  made.add(part(box(), look.under, [(west + east) / 2, FLOOR_TOP / 2 - 0.004, (north + south) / 2], [east - west, FLOOR_TOP - 0.008, south - north]))
+  // The tile's west and east edges, in the world.
+  const left = x + 0.5 + west
+  const right = x + 0.5 + east
+  const rows = Math.round(1 / look.row)
+  for (let i = -rows; i <= rows; i++) {
+    const rowGap = look.rowGap ?? look.gap
+    const from = Math.max(north, (i - 0.5) * look.row + rowGap / 2)
+    const to = Math.min(south, (i + 0.5) * look.row - rowGap / 2)
+    if (to <= from) continue
+    const row = y * rows + i
+    const stagger = look.stagger
+    const offset = (stagger ? stagger[((row % stagger.length) + stagger.length) % stagger.length] : vary(row, 7, 11)) * look.length
+    // Where the joint after piece `k` of this row is, in the world.
+    const joint = (k: number): number => (k + 1) * look.length + offset + (vary(k, row, 13) - 0.5) * look.jitter * look.length
+    let k = Math.floor((left - offset) / look.length) - 2
+    while (joint(k) <= left) k++
+    let at = left
+    for (;;) {
+      const next = Math.min(joint(k), right)
+      // The gap at a joint, not at the tile's edge.
+      const a = at === left ? at : at + look.gap / 2
+      const b = next === right ? next : next - look.gap / 2
+      if (b > a) {
+        const height = look.top(row, k)
+        made.add(part(box(), look.color(row, k), [(a + b) / 2 - x - 0.5, height / 2, (from + to) / 2], [b - a, height, to - from]))
+        if (look.nails) {
+          const middle = (from + to) / 2
+          for (const [end, edge] of [[a, at !== left], [b, next !== right]] as const) {
+            if (!edge) continue
+            const u = end - x - 0.5 + (end === a ? 0.03 : -0.03)
+            for (const dz of [-0.055, 0.055]) made.add(part(box(), PALETTE.iron, [u, height + 0.001, middle + dz], [0.018, 0.004, 0.018]))
+          }
+        }
+      }
+      if (next >= right) break
+      at = next
+      k++
+    }
+  }
+  return made
+}
+
+// A wooden floor, after its icon (icons/buildings/floors/wood-floor.png): dark planks a quarter of a tile wide and a
+// tile long, all alike, each row's joints staggered from the next's, each plank a little different in colour, nailed
+// at its ends.
+export function woodFloor(x: number, y: number, mask = 0): THREE.Group {
+  return deck(x, y, mask, {
+    row: 0.25,
+    length: 1,
+    jitter: 0,
+    gap: 0.012,
+    stagger: [0.125, 0.625, 0.375, 0.875],
+    under: 0x2e1e12,
+    color: (row, piece) => new THREE.Color(PALETTE.wood).multiplyScalar(0.68 + vary(piece, row, 5) * 0.2).getHex(),
+    top: () => FLOOR_TOP,
+    nails: true,
+  })
+}
+
+// A stone floor, after its icon (icons/buildings/floors/stone-floor.png): square stones a third of a tile across, all
+// alike, every other row set half a stone along, in dark mortar.
+export function stoneFloor(x: number, y: number, mask = 0): THREE.Group {
+  return deck(x, y, mask, {
+    row: 1 / 3,
+    length: 1 / 3,
+    jitter: 0,
+    gap: 0.025,
+    rowGap: 0.045,
+    stagger: [0.25, 0.75],
+    under: 0x4a4740,
+    color: () => PALETTE.stone,
+    top: () => FLOOR_TOP,
+    nails: false,
+  })
 }
 
 // A stump, with `tool` (an item key) in it: an axe is sunk blade first into its top, its handle up at a slant; a knife
@@ -705,6 +941,179 @@ export function workbench(tool?: string): THREE.Group {
     }
     made.add(resting)
   }
+  return made
+}
+
+// A carpenter's bench, after its icon (icons/buildings/station/carpenters-bench.png): a long top of planks on four legs,
+// a shelf under it with planks on it, and behind, a pegboard of dark holes with a saw, a hammer and a square hung on it;
+// a saw and a plank lie on the top, and a vice is clamped to its right-hand end.
+export function carpentersBench(): THREE.Group {
+  const made = group()
+  const back = -0.26
+  // The top: planks along it, seams between them, its front edge pale.
+  for (const [i, z] of [-0.18, 0, 0.18].entries()) made.add(part(box(), i === 1 ? PALETTE.woodLight : PALETTE.wood, [0, 0.5, z + 0.06], [0.96, 0.07, 0.175]))
+  for (const z of [-0.03, 0.15]) made.add(part(box(), PALETTE.barkDark, [0, 0.537, z], [0.96, 0.004, 0.01]))
+  made.add(part(box(), PALETTE.troughRim, [0, 0.5, 0.33], [0.97, 0.072, 0.02]))
+  // The legs, a rail under the front of the top, and the shelf low down, two planks on it.
+  for (const [lx, lz] of [[-0.42, -0.2], [0.42, -0.2], [-0.42, 0.3], [0.42, 0.3]]) made.add(part(box(), PALETTE.bark, [lx, 0.23, lz], [0.08, 0.46, 0.08]))
+  made.add(part(box(), PALETTE.barkDark, [0, 0.43, 0.3], [0.78, 0.06, 0.04]))
+  made.add(part(box(), PALETTE.wood, [0, 0.12, 0.05], [0.8, 0.03, 0.46]))
+  made.add(part(box(), PALETTE.woodLight, [-0.1, 0.15, 0.08], [0.6, 0.03, 0.12], [0, 0.06, 0]))
+  made.add(part(box(), PALETTE.wood, [-0.08, 0.18, 0.06], [0.56, 0.03, 0.11], [0, -0.04, 0]))
+  // The pegboard behind, on two posts, its holes in two rows.
+  for (const lx of [-0.44, 0.44]) made.add(part(box(), PALETTE.bark, [lx, 0.76, back], [0.07, 0.52, 0.06]))
+  made.add(part(box(), PALETTE.wood, [0, 0.8, back], [0.86, 0.4, 0.04]))
+  made.add(part(box(), PALETTE.troughRim, [0, 1.01, back], [0.92, 0.04, 0.06]))
+  for (const y of [0.9, 0.72]) for (let i = 0; i < 6; i++) made.add(part(box(), PALETTE.barkDark, [-0.3 + i * 0.12, y, back + 0.022], [0.04, 0.04, 0.004]))
+  // Hung on it: a saw (its handle and blade), a hammer, a square.
+  made.add(part(box(), PALETTE.wood, [-0.28, 0.82, back + 0.04], [0.08, 0.1, 0.025]))
+  made.add(part(box(), PALETTE.iron, [-0.28, 0.67, back + 0.04], [0.07, 0.22, 0.008]))
+  made.add(part(box(), PALETTE.woodLight, [0.02, 0.78, back + 0.04], [0.025, 0.2, 0.025]))
+  made.add(part(box(), PALETTE.iron, [0.02, 0.88, back + 0.045], [0.1, 0.04, 0.04]))
+  made.add(part(box(), PALETTE.iron, [0.26, 0.86, back + 0.04], [0.14, 0.025, 0.008]))
+  made.add(part(box(), PALETTE.iron, [0.32, 0.79, back + 0.04], [0.025, 0.14, 0.008]))
+  // On the top: a saw lying across it, and a plank.
+  made.add(part(box(), PALETTE.iron, [0.12, 0.54, 0.16], [0.3, 0.008, 0.08], [0, 0.3, 0]))
+  made.add(part(box(), PALETTE.wood, [-0.06, 0.55, 0.2], [0.1, 0.03, 0.06], [0, 0.3, 0]))
+  made.add(part(box(), PALETTE.woodLight, [-0.22, 0.55, 0.02], [0.4, 0.03, 0.1], [0, -0.08, 0]))
+  // The vice at the right-hand end, with its screw.
+  made.add(part(box(), PALETTE.bark, [0.47, 0.46, 0.22], [0.08, 0.16, 0.14]))
+  made.add(part(cylinder(6), PALETTE.iron, [0.53, 0.46, 0.22], [0.025, 0.12, 0.025], [0, 0, Math.PI / 2]))
+  return made
+}
+
+// ---- furniture: smooth, polished wood (not the flat facets of everything else), tops in one piece with softly rounded
+// edges and a moulding under them, turned legs with bulbs and rings, and the ornament of their icons.
+// The same browns as the walls' boards and the wooden floor (PALETTE.wood and its shades), not brighter or redder.
+const FURNITURE = {
+  top: 0x8c6a45,
+  edge: 0x563c22,
+  leg: 0x5c4026,
+  ring: 0x7a5a38,
+  dark: 0x3a2818,
+}
+const smoothMaterials = new Map<number, THREE.MeshStandardMaterial>()
+function smooth(color: number): THREE.MeshStandardMaterial {
+  let made = smoothMaterials.get(color)
+  if (!made) {
+    made = new THREE.MeshStandardMaterial({ color, flatShading: false, roughness: 0.8, metalness: 0 })
+    smoothMaterials.set(color, made)
+  }
+  return made
+}
+// A part of a piece of furniture, in its smooth wood.
+function wood(shape: THREE.BufferGeometry, color: number, at: [number, number, number], scale: [number, number, number] = [1, 1, 1], turn: [number, number, number] = [0, 0, 0]): THREE.Mesh {
+  const mesh = part(shape, color, at, scale, turn)
+  mesh.material = smooth(color)
+  return mesh
+}
+// A slab with softly rounded edges, of a size (cached by it).
+function roundedSlab(width: number, height: number, depth: number, radius: number): THREE.BufferGeometry {
+  return geometry(`slab${width}|${height}|${depth}|${radius}`, () => new RoundedBoxGeometry(width, height, depth, 3, radius))
+}
+// A turned shape, from its profile (pairs of radius and height, bottom to top), round its upright.
+function turned(key: string, profile: ReadonlyArray<readonly [number, number]>): THREE.BufferGeometry {
+  return geometry(`turned${key}`, () => new THREE.LatheGeometry(profile.map(([r, y]) => new THREE.Vector2(r, y)), 14))
+}
+// A turned leg `height` tall (scaled from one a unit tall): a foot, a bulb low down, a ring, a slim shaft, a ring and a
+// collar at the top, where it meets the apron.
+const LEG_PROFILE: ReadonlyArray<readonly [number, number]> = [
+  [0, 0], [0.034, 0], [0.04, 0.03], [0.03, 0.07], [0.026, 0.14], [0.042, 0.24], [0.046, 0.3], [0.03, 0.37], [0.024, 0.46],
+  [0.022, 0.62], [0.03, 0.7], [0.034, 0.74], [0.026, 0.78], [0.032, 0.82], [0.032, 1], [0, 1],
+]
+function leg(at: [number, number], height: number): THREE.Mesh {
+  return wood(turned('leg', LEG_PROFILE), FURNITURE.leg, [at[0], 0, at[1]], [1, height, 1])
+}
+// A table top: one smooth slab, its rounded edge a little darker, and a moulding under it.
+function tableTop(y: number, width: number, depth: number, thick: number): THREE.Object3D[] {
+  return [
+    wood(roundedSlab(width, thick, depth, 0.02), FURNITURE.top, [0, y, 0]),
+    wood(roundedSlab(width - 0.05, 0.02, depth - 0.05, 0.008), FURNITURE.edge, [0, y - thick / 2 - 0.008, 0]),
+  ]
+}
+// An apron round under a top, with a carved drop hanging from the middle of its long sides.
+function apron(y: number, width: number, depth: number, tall: number): THREE.Object3D[] {
+  const made: THREE.Object3D[] = []
+  for (const z of [-depth / 2, depth / 2]) made.push(wood(roundedSlab(width, tall, 0.035, 0.008), FURNITURE.edge, [0, y, z]))
+  for (const x of [-width / 2, width / 2]) made.push(wood(roundedSlab(0.035, tall, depth, 0.008), FURNITURE.edge, [x, y, 0]))
+  for (const z of [-depth / 2, depth / 2]) {
+    // The drop: a half disc under the apron, and a bead below it.
+    made.push(wood(geometry('drop', () => new THREE.CylinderGeometry(0.5, 0.5, 1, 16, 1, false, -Math.PI / 2, Math.PI)), FURNITURE.edge, [0, y - tall / 2, z], [0.14, 0.035, 0.14], [Math.PI / 2, 0, 0]))
+    made.push(wood(geometry('bead', () => new THREE.SphereGeometry(0.5, 10, 8)), FURNITURE.ring, [0, y - tall / 2 - 0.075, z], [0.04, 0.04, 0.04]))
+  }
+  return made
+}
+
+// A table, after its icon (icons/buildings/furniture/table.png): a smooth top nearly as big as its tile on four turned
+// legs, an apron under it with a carved drop in the middle of each long side.
+export function table(): THREE.Group {
+  const made = group(...tableTop(0.565, 0.94, 0.86, 0.06), ...apron(0.49, 0.8, 0.72, 0.08))
+  for (const [x, z] of [[-0.4, -0.36], [0.4, -0.36], [-0.4, 0.36], [0.4, 0.36]] as const) made.add(leg([x, z], 0.535))
+  return made
+}
+
+// A low table, after its icon (icons/buildings/furniture/low-table.png): the same, long and low, on short turned legs.
+export function lowTable(): THREE.Group {
+  const made = group(...tableTop(0.33, 0.96, 0.78, 0.055), ...apron(0.265, 0.82, 0.64, 0.065))
+  for (const [x, z] of [[-0.41, -0.32], [0.41, -0.32], [-0.41, 0.32], [0.41, 0.32]] as const) made.add(leg([x, z], 0.3))
+  return made
+}
+
+// A round table, after its icon (icons/buildings/furniture/round-table.png): a round top nearly as wide as its tile on
+// one turned post, bulbs and rings up it, standing on four feet curving out to the ground.
+const PEDESTAL_PROFILE: ReadonlyArray<readonly [number, number]> = [
+  [0, 0], [0.09, 0], [0.09, 0.04], [0.06, 0.07], [0.05, 0.1], [0.075, 0.16], [0.08, 0.2], [0.05, 0.25], [0.04, 0.3],
+  [0.055, 0.34], [0.06, 0.37], [0.04, 0.4], [0.035, 0.46], [0.06, 0.5], [0.07, 0.53], [0, 0.53],
+]
+export function roundTable(): THREE.Group {
+  const made = group(
+    wood(geometry('roundTop', () => new THREE.CylinderGeometry(0.47, 0.47, 0.06, 40)), FURNITURE.top, [0, 0.565, 0]),
+    // The rounded edge round the top, a little darker.
+    wood(geometry('roundEdge', () => new THREE.TorusGeometry(0.47, 0.03, 8, 48).rotateX(Math.PI / 2)), FURNITURE.edge, [0, 0.565, 0]),
+    wood(geometry('roundMoulding', () => new THREE.CylinderGeometry(0.36, 0.36, 0.03, 32)), FURNITURE.edge, [0, 0.52, 0]),
+    wood(turned('pedestal', PEDESTAL_PROFILE), FURNITURE.leg, [0, 0, 0]),
+  )
+  // The feet: each a curve out from the foot of the post down to the ground, ending in a small pad.
+  for (let i = 0; i < 4; i++) {
+    const turn = (i / 4) * Math.PI * 2 + Math.PI / 4
+    const foot = new THREE.Group()
+    foot.add(wood(roundedSlab(0.3, 0.06, 0.07, 0.025), FURNITURE.leg, [0.17, 0.06, 0], [1, 1, 1], [0, 0, -0.28]))
+    foot.add(wood(roundedSlab(0.08, 0.035, 0.08, 0.015), FURNITURE.ring, [0.32, 0.018, 0]))
+    foot.rotation.y = -turn
+    made.add(foot)
+  }
+  return made
+}
+
+// A chair, after its icon (icons/buildings/furniture/chair.png), facing south (towards the camera): a smooth seat on
+// turned legs, stretchers between them, and a tall back of turned spindles between two posts under a curved crest rail
+// pierced with a row of holes.
+const POST_PROFILE: ReadonlyArray<readonly [number, number]> = [
+  [0, 0], [0.03, 0], [0.034, 0.03], [0.024, 0.08], [0.022, 0.3], [0.032, 0.36], [0.024, 0.4], [0.021, 0.62], [0.028, 0.66],
+  [0.021, 0.7], [0.021, 0.9], [0.032, 0.94], [0.028, 0.98], [0, 1],
+]
+export function chair(): THREE.Group {
+  const back = -0.19
+  const rail = (): THREE.BufferGeometry => geometry('rail', () => new THREE.CylinderGeometry(0.5, 0.5, 1, 10))
+  const made = group(
+    wood(roundedSlab(0.48, 0.05, 0.46, 0.02), FURNITURE.top, [0, 0.36, 0.02]),
+    wood(roundedSlab(0.44, 0.02, 0.42, 0.008), FURNITURE.edge, [0, 0.327, 0.02]),
+  )
+  // Front legs, and the back posts running on up into the back.
+  for (const x of [-0.2, 0.2]) {
+    made.add(leg([x, 0.21], 0.33))
+    made.add(wood(turned('post', POST_PROFILE), FURNITURE.leg, [x, 0, back], [1, 0.98, 1]))
+  }
+  // Stretchers between the legs, low down.
+  for (const x of [-0.2, 0.2]) made.add(wood(rail(), FURNITURE.leg, [x, 0.1, 0.01], [0.022, 0.4, 0.022], [Math.PI / 2, 0, 0]))
+  made.add(wood(rail(), FURNITURE.leg, [0, 0.1, 0.21], [0.022, 0.4, 0.022], [0, 0, Math.PI / 2]))
+  // The back: three turned spindles from a lower rail up to the crest.
+  made.add(wood(roundedSlab(0.4, 0.04, 0.035, 0.012), FURNITURE.edge, [0, 0.44, back]))
+  for (const x of [-0.1, 0, 0.1]) made.add(wood(turned('post', POST_PROFILE), FURNITURE.ring, [x, 0.44, back], [0.7, 0.4, 0.7]))
+  // The crest rail: a slab with a curved top, pierced with a row of holes.
+  made.add(wood(roundedSlab(0.44, 0.1, 0.045, 0.015), FURNITURE.top, [0, 0.89, back]))
+  made.add(wood(geometry('crest', () => new THREE.CylinderGeometry(0.5, 0.5, 1, 24, 1, false, Math.PI / 2, Math.PI)), FURNITURE.top, [0, 0.94, back], [0.36, 0.045, 0.06], [Math.PI / 2, 0, 0]))
+  for (const x of [-0.12, -0.04, 0.04, 0.12]) made.add(part(box(), FURNITURE.dark, [x, 0.89, back + 0.024], [0.035, 0.035, 0.006]))
   return made
 }
 
@@ -1076,86 +1485,53 @@ export function pedestal(): THREE.Group {
   return made
 }
 
-// A waystone, after its icon: a tall slab of blue-grey stone with a rounded top, standing on a dark plinth, lit from
-// the upper left (a pale edge down its left, a dark one down its right, a pale crown), dark runes cut in its face, and up
-// each edge of its face a row of sockets, with a keystone socket at the top, which light up as it charges (see
-// waystone-effects.ts, which draws the light over them at WAYSTONE_LIGHTS).
+// A waystone: a squat block of blue-grey stone with a flat top, narrowing a little as it rises (WAYSTONE_TAPER), on a
+// base of two steps of dark stone. Three marks are cut in its face to the right of its middle, each in a carved rim, two
+// bars and a small square above them, which light up from the bottom as it charges (see waystone-effects.ts, which
+// draws the light over them at WAYSTONE_LIGHTS).
 const WAYSTONE = {
   stone: 0x6f7186,
-  light: 0x878ca7,
-  crown: 0xafb5cc,
-  dark: 0x26213d,
-  plinth: 0x2e2f37,
-  step: 0x656879,
-  rune: 0x14131b,
-  socket: 0x34405a,
+  base: 0x2e2f37,
+  step: 0x45474f,
+  mark: 0x14131b,
+  rim: 0x5a5d72,
 }
-const WAYSTONE_HALF = 0.28
-const WAYSTONE_DEPTH = 0.26
-const WAYSTONE_SHOULDER = 1.08
-// The face of a waystone, how far in front of its middle (tiles).
-export const WAYSTONE_FACE = WAYSTONE_DEPTH / 2
-// Where each of a waystone's lights is (tiles, from its tile's middle on the ground), level by level from the bottom
-// (a pair a level, left then right), the keystone last.
-export const WAYSTONE_LIGHTS: ReadonlyArray<{ x: number; y: number; level: number }> = [
-  ...Array.from({ length: WARP_LIGHT_LEVELS }, (_, level) => {
-    const y = 0.3 + (level * (WAYSTONE_SHOULDER - 0.3)) / (WARP_LIGHT_LEVELS - 1)
-    return [
-      { x: -0.19, y, level },
-      { x: 0.19, y, level },
-    ]
-  }).flat(),
-  { x: 0, y: WAYSTONE_SHOULDER + 0.15, level: WARP_LIGHT_LEVELS },
-]
+const WAYSTONE_WIDTH = 0.48
+const WAYSTONE_DEPTH = 0.34
+const WAYSTONE_BASE = 0.11
+const WAYSTONE_TOP = 0.66
+// How wide its top is, as a share of its foot.
+const WAYSTONE_TAPER = 0.84
+// How far in front of its middle its face is at a height (tiles), as the face leans back while it narrows.
+function waystoneFace(y: number): number {
+  const up = (y - WAYSTONE_BASE) / (WAYSTONE_TOP - WAYSTONE_BASE)
+  return (WAYSTONE_DEPTH / 2) * (1 - (1 - WAYSTONE_TAPER) * up)
+}
+// How far its face leans back (radians).
+const WAYSTONE_LEAN = Math.atan(((WAYSTONE_DEPTH / 2) * (1 - WAYSTONE_TAPER)) / (WAYSTONE_TOP - WAYSTONE_BASE))
+// Where each of a waystone's marks is (tiles, from its tile's middle on the ground; `z` just in front of its face), and
+// how wide and high, level by level from the bottom (see WARP_LIGHT_LEVELS): the bars, then the square at the top, the
+// keystone.
+export const WAYSTONE_LIGHTS: ReadonlyArray<{ x: number; y: number; z: number; w: number; h: number; level: number }> = [
+  ...Array.from({ length: WARP_LIGHT_LEVELS }, (_, level) => ({ x: 0.08, y: 0.28 + level * 0.11, w: 0.1, h: 0.035, level })),
+  { x: 0.11, y: 0.28 + WARP_LIGHT_LEVELS * 0.11 + 0.01, w: 0.045, h: 0.045, level: WARP_LIGHT_LEVELS },
+].map((light) => ({ ...light, z: waystoneFace(light.y) }))
 export function waystone(): THREE.Group {
-  const made = group()
-  // The plinth and the step on it.
-  made.add(part(box(), WAYSTONE.plinth, [0, 0.05, 0], [0.84, 0.1, 0.5]))
-  made.add(part(box(), WAYSTONE.step, [0, 0.13, 0], [0.7, 0.06, 0.4]))
-  // The slab, and its rounded top: half a disc of stone as thick as the slab.
-  const tall = WAYSTONE_SHOULDER - 0.16
-  made.add(part(box(), WAYSTONE.stone, [0, 0.16 + tall / 2, 0], [WAYSTONE_HALF * 2, tall, WAYSTONE_DEPTH]))
-  made.add(
-    part(
-      geometry('waystoneTop', () => new THREE.CylinderGeometry(WAYSTONE_HALF, WAYSTONE_HALF, WAYSTONE_DEPTH, 12, 1, false, -Math.PI / 2, Math.PI)),
-      WAYSTONE.stone,
-      [0, WAYSTONE_SHOULDER, 0],
-      [1, 1, 1],
-      [-Math.PI / 2, 0, 0],
-    ),
+  const tall = WAYSTONE_TOP - WAYSTONE_BASE
+  // The block: a four-sided frustum, a square at its foot narrowing to WAYSTONE_TAPER of it at its flat top, stretched
+  // to its width and depth.
+  const block = geometry('waystoneBlock', () =>
+    new THREE.CylinderGeometry((WAYSTONE_TAPER * Math.SQRT2) / 2, Math.SQRT2 / 2, 1, 4, 1).rotateY(Math.PI / 4),
   )
-  // Its light from the upper left: a pale edge down the left of its face, a dark one down the right, a pale crown.
-  const front = WAYSTONE_FACE + 0.004
-  made.add(part(box(), WAYSTONE.light, [-WAYSTONE_HALF + 0.03, 0.16 + tall / 2, front], [0.05, tall, 0.01]))
-  made.add(part(box(), WAYSTONE.dark, [WAYSTONE_HALF - 0.025, 0.16 + tall / 2, front], [0.05, tall, 0.01]))
-  made.add(part(box(), WAYSTONE.dark, [WAYSTONE_HALF + 0.002, 0.16 + tall / 2, 0], [0.01, tall, WAYSTONE_DEPTH]))
-  made.add(
-    part(
-      geometry('waystoneCrown', () => new THREE.TorusGeometry(WAYSTONE_HALF - 0.03, 0.025, 3, 10, Math.PI * 0.7)),
-      WAYSTONE.crown,
-      [0, WAYSTONE_SHOULDER, front],
-      [1, 1, 1],
-      [0, 0, Math.PI * 0.3],
-    ),
+  const made = group(
+    part(box(), WAYSTONE.base, [0, 0.03, 0], [WAYSTONE_WIDTH + 0.18, 0.06, WAYSTONE_DEPTH + 0.16]),
+    part(box(), WAYSTONE.step, [0, 0.085, 0], [WAYSTONE_WIDTH + 0.08, 0.05, WAYSTONE_DEPTH + 0.07]),
+    part(block, WAYSTONE.stone, [0, WAYSTONE_BASE + tall / 2, 0], [WAYSTONE_WIDTH, tall, WAYSTONE_DEPTH]),
   )
-  // A darker band at its foot, where it meets the plinth.
-  made.add(part(box(), WAYSTONE.step, [0, 0.2, front], [WAYSTONE_HALF * 2 - 0.02, 0.08, 0.01]))
-  // The runes cut down the middle of its face.
-  for (const [x, y, w, h] of [
-    [0.02, 0.92, 0.05, 0.05],
-    [-0.02, 0.8, 0.1, 0.03],
-    [0.03, 0.72, 0.03, 0.1],
-    [-0.03, 0.6, 0.08, 0.03],
-    [0.0, 0.5, 0.03, 0.12],
-    [0.02, 0.38, 0.1, 0.03],
-  ] as const) {
-    made.add(part(box(), WAYSTONE.rune, [x, y, front + 0.002], [w, h, 0.01]))
-  }
-  // The sockets the lights come on in.
+  // The marks, cut dark into its face, each in a carved rim, leaning back with it.
   for (const light of WAYSTONE_LIGHTS) {
-    const size = light.level === WARP_LIGHT_LEVELS ? 0.08 : 0.06
-    made.add(part(box(), WAYSTONE.rune, [light.x, light.y, front + 0.001], [size + 0.025, size + 0.025, 0.01]))
-    made.add(part(box(), WAYSTONE.socket, [light.x, light.y, front + 0.004], [size, size, 0.01]))
+    made.add(part(box(), WAYSTONE.rim, [light.x, light.y, light.z + 0.002], [light.w + 0.024, light.h + 0.024, 0.008], [-WAYSTONE_LEAN, 0, 0]))
+    made.add(part(box(), WAYSTONE.mark, [light.x, light.y, light.z + 0.004], [light.w, light.h, 0.008], [-WAYSTONE_LEAN, 0, 0]))
   }
   return made
 }
@@ -1272,7 +1648,7 @@ export function rack(state: 'empty' | 'drying' | 'done' = 'empty'): THREE.Group 
   return made
 }
 
-// A garden plot: its soil dark where it is well watered, drying out to pale (`water` 0 to 100).
+// Farmland: its soil dark where it is well watered, drying out to pale (`water` 0 to 100).
 export function plot(water = 0): THREE.Group {
   const wet = Math.max(0, Math.min(1, water / 100))
   const soil = new THREE.Color(0x9a7a52).lerp(new THREE.Color(0x3a2616), wet).getHex()
@@ -1284,13 +1660,52 @@ export function plot(water = 0): THREE.Group {
   )
 }
 
-export function feeder(): THREE.Group {
-  return group(
-    part(box(), PALETTE.wood, [0, 0.2, 0], [0.9, 0.3, 0.55]),
-    part(box(), PALETTE.hay, [0, 0.37, 0], [0.78, 0.06, 0.42]),
-    part(box(), PALETTE.bark, [-0.35, 0.08, 0], [0.08, 0.16, 0.6]),
-    part(box(), PALETTE.bark, [0.35, 0.08, 0], [0.08, 0.16, 0.6]),
+// A feed trough, after its icon (icons/buildings/feed-trough.png): a long wooden trough on four short legs, its sides
+// flaring out to a pale rim, dark inside. The food in it shows how full it is (`feed`, 0 empty to 1 full): a bed of it
+// rising from the trough's floor to heaped just under the rim; empty, only the bare boards.
+const TROUGH_FLOOR = 0.24
+const TROUGH_DEPTH = 0.24
+const TROUGH_FLARE = 0.28
+export function feeder(feed = 0): THREE.Group {
+  const made = group(
+    // The legs, splayed a little, and a rail between each pair.
+    ...[-1, 1].flatMap((x) => [-1, 1].map((z) => part(box(), PALETTE.troughDark, [x * 0.36, TROUGH_FLOOR / 2, z * 0.17], [0.06, TROUGH_FLOOR + 0.02, 0.06], [z * 0.12, 0, 0]))),
+    ...[-1, 1].map((x) => part(box(), PALETTE.troughDark, [x * 0.36, 0.08, 0], [0.04, 0.04, 0.36])),
+    // The floor and the dark inside.
+    part(box(), PALETTE.trough, [0, TROUGH_FLOOR, 0], [0.84, 0.04, 0.4]),
+    part(box(), PALETTE.troughInside, [0, TROUGH_FLOOR + 0.025, 0], [0.76, 0.01, 0.34]),
   )
+  // The long sides, flaring out, each with its pale rim along the top.
+  for (const side of [-1, 1]) {
+    const lean = side * TROUGH_FLARE
+    const wall = group(
+      part(box(), PALETTE.trough, [0, 0, 0], [0.84, TROUGH_DEPTH + 0.04, 0.04]),
+      part(box(), PALETTE.troughInside, [0, 0.01, -side * 0.021], [0.78, TROUGH_DEPTH, 0.004]),
+      part(box(), PALETTE.troughRim, [0, (TROUGH_DEPTH + 0.04) / 2 + 0.015, 0], [0.9, 0.03, 0.07]),
+    )
+    wall.position.set(0, TROUGH_FLOOR + TROUGH_DEPTH / 2, side * (0.19 + Math.sin(TROUGH_FLARE) * TROUGH_DEPTH * 0.5))
+    wall.rotation.x = lean
+    made.add(wall)
+  }
+  // The ends: boards wide enough to close the flared sides, a pale rim on each.
+  const top = TROUGH_FLOOR + TROUGH_DEPTH + 0.02
+  for (const x of [-1, 1]) {
+    made.add(part(box(), PALETTE.trough, [x * 0.42, TROUGH_FLOOR + TROUGH_DEPTH / 2, 0], [0.05, TROUGH_DEPTH + 0.04, 0.4 + 2 * Math.sin(TROUGH_FLARE) * TROUGH_DEPTH]))
+    made.add(part(box(), PALETTE.troughRim, [x * 0.42, top + 0.015, 0], [0.08, 0.03, 0.44 + 2 * Math.sin(TROUGH_FLARE) * TROUGH_DEPTH]))
+  }
+  // The food: as deep as it is full, its top as wide as the flared sides are at that height (its body as narrow as the
+  // floor, so it never pokes through them), with a few heaps on top.
+  const fill = Math.max(0, Math.min(1, feed))
+  if (fill > 0) {
+    const depth = 0.03 + (TROUGH_DEPTH - 0.06) * fill
+    const width = 0.32 + 2 * Math.tan(TROUGH_FLARE) * depth
+    made.add(part(box(), PALETTE.feed, [0, TROUGH_FLOOR + 0.02 + depth / 2, 0], [0.76, depth, 0.32]))
+    made.add(part(box(), PALETTE.feed, [0, TROUGH_FLOOR + 0.02 + depth - 0.012, 0], [0.76, 0.024, width]))
+    for (const [x, z, size] of [[-0.22, -0.04, 0.16], [0.05, 0.05, 0.2], [0.25, -0.03, 0.14]] as const) {
+      made.add(part(blob(), PALETTE.feedLight, [x, TROUGH_FLOOR + 0.02 + depth, z], [size, 0.06 + 0.04 * fill, size * 0.8]))
+    }
+  }
+  return made
 }
 
 // A sleeping bag: a long, soft roll of green-dyed hide on the ground, its top folded back, and a pale pillow.
@@ -1361,7 +1776,7 @@ export function caveman(): THREE.Group {
     const foot = new THREE.Group()
     foot.position.set(0, -0.21, 0)
     foot.name = `armor-foot-${name}`
-    knee.add(part(box(), PALETTE.hide, [0.025, 0.018, 0], [0.12, 0.036, 0.08]), foot)
+    knee.add(foot)
     hip.add(knee)
     made.add(hip)
   }
@@ -1420,6 +1835,14 @@ export function caveman(): THREE.Group {
 // How high a caveman's hips are, where its legs swing from and its body leans (tiles).
 export const HIP_HEIGHT = 0.42
 
+// The bone armour's leather (dark, nearly grey: it only holds the bones), and its horns (see `wear`); and the brown
+// leather the bone weapons' grips are bound in.
+const LEATHER = 0x48423c
+const LEATHER_DARK = 0x2c2926
+const HORN = 0x6e5a44
+const HORN_TIP = 0x34281c
+const GRIP = 0x6e4426
+
 // Dresses a caveman (see `caveman`) in a piece of armour, by its item key and colour, in its slot; or takes off what
 // is there (no key). Pieces without a model of their own are drawn in their item's colour.
 export function wear(person: THREE.Object3D, slot: 'head' | 'body' | 'feet', key: string | undefined, color = 0x8a5a3a): void {
@@ -1430,6 +1853,10 @@ export function wear(person: THREE.Object3D, slot: 'head' | 'body' | 'feet', key
       if (!foot) continue
       foot.clear()
       if (!key) continue
+      if (key === 'bone-greaves') {
+        boneGreave(foot)
+        continue
+      }
       const dark = new THREE.Color(color).multiplyScalar(0.7).getHex()
       foot.add(part(box(), color, [0.01, 0.07, 0], [0.105, 0.14, 0.095]))
       foot.add(part(box(), color, [0.04, 0.03, 0], [0.15, 0.06, 0.095]))
@@ -1452,7 +1879,12 @@ export function wear(person: THREE.Object3D, slot: 'head' | 'body' | 'feet', key
       worn.add(part(cone(4), PALETTE.wolfBlack, [-0.02, 1.09, -0.07], [0.05, 0.09, 0.035]))
       worn.add(part(cone(4), PALETTE.wolfBlack, [-0.02, 1.09, 0.07], [0.05, 0.09, 0.035]))
       worn.add(part(box(), PALETTE.wolf, [-0.11, 0.84, 0], [0.05, 0.18, 0.2]))
-    } else worn.add(part(blob(), color, [-0.02, 0.98, 0], [0.23, 0.14, 0.23]))
+    } else if (key === 'bone-helmet') boneHelmet(worn)
+    else worn.add(part(blob(), color, [-0.02, 0.98, 0], [0.23, 0.14, 0.23]))
+    return
+  }
+  if (slot === 'body' && key === 'bone-chestplate') {
+    boneChestplate(worn, sleeves)
     return
   }
   if (slot === 'body') {
@@ -1484,6 +1916,106 @@ export function wear(person: THREE.Object3D, slot: 'head' | 'body' | 'feet', key
     }
     return
   }
+}
+
+// The bone helmet, after its icon (icons/armor/bone-helmet.png): a horned beast's skull worn over the head on a dark
+// leather cap, its face over the brow with dark eye sockets and its snout, and two horns sweeping out and up, dark at
+// their tips; thin straps down the cheeks.
+function boneHelmet(worn: THREE.Object3D): void {
+  worn.add(part(blob(), LEATHER, [-0.025, 0.955, 0], [0.23, 0.14, 0.23]))
+  worn.add(part(blob(), PALETTE.bone, [-0.02, 0.995, 0], [0.235, 0.13, 0.225]))
+  // The face: a broad plate of bone over the brow, its eye sockets, and the snout coming down over the nose.
+  worn.add(part(box(), PALETTE.bone, [0.075, 0.995, 0], [0.06, 0.11, 0.17]))
+  worn.add(part(box(), PALETTE.boneDark, [0.108, 1.04, 0], [0.012, 0.02, 0.14]))
+  for (const z of [-0.045, 0.045]) worn.add(part(box(), 0x1e1a14, [0.106, 1.0, z], [0.012, 0.035, 0.04]))
+  worn.add(part(box(), PALETTE.bone, [0.115, 0.955, 0], [0.05, 0.055, 0.085]))
+  worn.add(part(box(), PALETTE.boneDark, [0.13, 0.93, 0], [0.04, 0.02, 0.07]))
+  for (const z of [-0.018, 0.018]) worn.add(part(box(), 0x1e1a14, [0.141, 0.955, z], [0.006, 0.016, 0.012]))
+  // The horns: from the sides of the skull out, then sweeping up and forward, darker towards their points.
+  for (const side of [-1, 1]) {
+    const points: Array<[number, number, number]> = [
+      [-0.01, 1.03, side * 0.095],
+      [0.0, 1.06, side * 0.18],
+      [0.035, 1.12, side * 0.235],
+      [0.075, 1.19, side * 0.235],
+    ]
+    worn.add(stick(PALETTE.boneDark, points[0], points[1], 0.05, 6))
+    worn.add(stick(HORN, points[1], points[2], 0.042, 6))
+    worn.add(stick(HORN_TIP, points[2], points[3], 0.032, 6))
+    worn.add(part(cone(5), HORN_TIP, [0.09, 1.225, side * 0.228], [0.026, 0.06, 0.026], [0, 0, -0.45]))
+    worn.add(part(box(), LEATHER_DARK, [0.025, 0.885, side * 0.087], [0.025, 0.1, 0.01]))
+  }
+}
+
+// The bone chestplate, after its icon (icons/armor/bone-chesplate.png): a ribcage of bone, square and right round the
+// body, its ribs running across the front, down the sides and round the back to the spine, its breastbone down the
+// middle; collarbones, a shoulder blade over each shoulder with a row of bones along its top; a bone down the front of
+// each arm; and a skirt of bone plates hanging from the belt. The leather under it (a dark jerkin, the belt) only holds
+// the bones on.
+function boneChestplate(worn: THREE.Object3D, sleeves: Array<THREE.Object3D | undefined>): void {
+  worn.add(part(box(), LEATHER, [0, 0.61, 0], [0.162, 0.25, 0.272]))
+  worn.add(part(box(), LEATHER, [0, 0.725, 0], [0.166, 0.075, 0.336]))
+  worn.add(part(box(), LEATHER_DARK, [0, 0.77, 0], [0.12, 0.024, 0.14]))
+  // The ribs, square round the body: across the front from the breastbone, down each side (a little thinner, so their
+  // faces never lie in the front's), and round the back to the spine.
+  for (const y of [0.702, 0.654, 0.606, 0.558]) {
+    for (const side of [-1, 1]) {
+      worn.add(part(box(), PALETTE.bone, [0.089, y, side * 0.077], [0.016, 0.026, 0.11]))
+      worn.add(part(box(), PALETTE.boneDark, [0, y, side * 0.142], [0.17, 0.022, 0.014]))
+      worn.add(part(box(), PALETTE.bone, [-0.089, y, side * 0.077], [0.016, 0.026, 0.11]))
+    }
+  }
+  // The breastbone, and the spine with its knobs.
+  worn.add(part(box(), PALETTE.bone, [0.094, 0.62, 0], [0.014, 0.23, 0.04]))
+  worn.add(part(box(), PALETTE.bone, [-0.094, 0.615, 0], [0.014, 0.24, 0.032]))
+  for (let i = 0; i < 5; i++) worn.add(part(box(), PALETTE.boneDark, [-0.104, 0.52 + i * 0.046, 0], [0.008, 0.018, 0.044]))
+  // The collarbones, and over each shoulder its blade of bone with a row of bones along its top.
+  for (const side of [-1, 1]) {
+    worn.add(part(box(), PALETTE.bone, [0.074, 0.758, side * 0.085], [0.03, 0.024, 0.13]))
+    worn.add(part(blob(), PALETTE.bone, [0, 0.785, side * 0.19], [0.15, 0.048, 0.115]))
+    for (const x of [-0.045, 0, 0.045]) worn.add(part(box(), PALETTE.boneDark, [x, 0.812, side * 0.19], [0.024, 0.03, 0.085]))
+    worn.add(part(cone(4), PALETTE.bone, [0, 0.835, side * 0.23], [0.035, 0.07, 0.035], [side * -0.5, 0, 0]))
+  }
+  // The belt, a buckle of bone, and the skirt of bone plates hanging from it all round.
+  worn.add(part(box(), LEATHER_DARK, [0, 0.49, 0], [0.168, 0.032, 0.278]))
+  worn.add(part(box(), PALETTE.bone, [0.087, 0.49, 0], [0.012, 0.04, 0.05]))
+  for (let i = 0; i < 8; i++) {
+    const turn = (i / 8) * Math.PI * 2
+    const plate = part(box(), i % 2 === 0 ? PALETTE.bone : PALETTE.boneDark, [Math.cos(turn) * 0.085, 0.425, Math.sin(turn) * 0.13], [0.016, 0.1, 0.07])
+    plate.rotation.set(0, -turn, -0.08)
+    worn.add(plate)
+  }
+  // The sleeves: thin dark leather, a bone down the front of the upper arm and another down the forearm.
+  sleeves.forEach((sleeve) => {
+    sleeve?.add(part(box(), LEATHER, [0, -0.08, 0], [0.077, 0.16, 0.077]))
+    sleeve?.add(part(box(), PALETTE.bone, [0.043, -0.1, 0], [0.014, 0.15, 0.038]))
+    sleeve?.add(part(box(), PALETTE.bone, [0.044, -0.26, 0], [0.014, 0.1, 0.032]))
+    sleeve?.add(part(box(), LEATHER_DARK, [0, -0.205, 0], [0.081, 0.018, 0.081]))
+  })
+}
+
+// A bone greave, after its icon (icons/armor/bone-greaves.png), on one foot (see `wear`): a shaped boot of dark
+// leather (a round toe), its leather going on up round the whole shin to the knee, solid all round (wider than the
+// shin, square as it is, so none of it shows through), with bone along it: a toe cap, plates down the top of the foot,
+// strips along its sides; up the shin, a plate of bone with splints down its sides and a kneecap, strapped on. (Nothing
+// lies in the same plane as anything it touches, so nothing flickers.)
+function boneGreave(foot: THREE.Object3D): void {
+  foot.add(part(box(), LEATHER_DARK, [0.035, 0.008, 0], [0.16, 0.016, 0.094]))
+  foot.add(part(blob(), LEATHER, [0.045, 0.045, 0], [0.17, 0.075, 0.093]))
+  // The leather round the shin (0.075 across), from the sole to the knee (0.21 up), with a darker rolled top.
+  foot.add(part(box(), LEATHER, [0.002, 0.1165, 0], [0.096, 0.197, 0.097]))
+  foot.add(part(box(), LEATHER_DARK, [0.002, 0.209, 0], [0.104, 0.016, 0.105]))
+  // Bone along the boot: its toe cap, plates down the top of the foot, and a strip along each side.
+  foot.add(part(blob(), PALETTE.bone, [0.108, 0.045, 0], [0.066, 0.058, 0.084]))
+  for (const [x, y, tilt] of [[0.072, 0.077, 0.5], [0.042, 0.1, 0.35]] as const) {
+    foot.add(part(box(), PALETTE.bone, [x, y, 0], [0.03, 0.014, 0.062], [0, 0, tilt]))
+  }
+  for (const z of [-1, 1]) foot.add(part(box(), PALETTE.boneDark, [0.045, 0.05, z * 0.054], [0.11, 0.022, 0.006]))
+  // Up the shin, over the leather: the plate, its splints, the kneecap, and two thin straps round them all.
+  foot.add(part(box(), PALETTE.bone, [0.06, 0.15, 0], [0.018, 0.13, 0.066]))
+  for (const z of [-1, 1]) foot.add(part(box(), PALETTE.boneDark, [0.004, 0.14, z * 0.055], [0.06, 0.12, 0.01]))
+  foot.add(part(blob(), PALETTE.bone, [0.062, 0.222, 0], [0.05, 0.05, 0.066]))
+  for (const y of [0.1, 0.18]) foot.add(part(box(), LEATHER_DARK, [0.008, y, 0], [0.124, 0.014, 0.124]))
 }
 
 // What a player holds in a hand (see `caveman`): a model of the weapon or tool, by its item key, pointing on from the
@@ -1530,20 +2062,22 @@ export function heldModel(key: string): THREE.Group | undefined {
         part(box(), PALETTE.wood, [0, -1.02, 0], [0.1, 0.08, 0.04]),
       )
     case 'bow': {
-      // Two limbs bent forward from the grip, and the string between their tips.
+      // Two limbs bent forward from the grip, and the string straight between their tips (`rest`: where its middle is
+      // when it is not drawn; see three-view's `poseArms`).
       const made = group(
         part(box(), PALETTE.wood, [0, -0.04, 0], [0.05, 0.08, 0.05]),
         part(box(), PALETTE.wood, [0.17, -0.07, 0], [0.32, 0.04, 0.04], [0, 0, 0.25]),
         part(box(), PALETTE.wood, [-0.17, -0.07, 0], [0.32, 0.04, 0.04], [0, 0, -0.25]),
       )
-      const string = new THREE.Line(
-        new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0.32, -0.03, 0), new THREE.Vector3(0, 0, 0), new THREE.Vector3(-0.32, -0.03, 0)]),
-        new THREE.LineBasicMaterial({ color: 0xf2efe6 }),
-      )
-      string.name = 'bow-string'
-      made.add(string)
+      made.add(bowString(0.32, -0.03))
       return made
     }
+    case 'bone-longbow':
+      return boneLongbow()
+    case 'skewer':
+      return skewer()
+    case 'permafrost':
+      return permafrost()
     case 'sling': {
       // Two thin cords from the fist (a loop round a finger) down to a leather pouch cupping a stone. The cords and pouch
       // hang from a pivot (`sling-cords`) along the hand's -y, so they hang down from the fist; turned a quarter round
@@ -1567,6 +2101,95 @@ export function heldModel(key: string): THREE.Group | undefined {
   }
 }
 
+// A bow's string: straight from tip to tip (at `x` each side, `y` along the hand), its middle the point drawn back.
+function bowString(x: number, y: number): THREE.Line {
+  const string = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(x, y, 0), new THREE.Vector3(0, y, 0), new THREE.Vector3(-x, y, 0)]),
+    new THREE.LineBasicMaterial({ color: 0xf2efe6 }),
+  )
+  string.name = 'bow-string'
+  string.userData.rest = y
+  return string
+}
+
+// The bone longbow, after its icon (icons/tools/weapons/bone-longbow.png): a long bow of bone in one smooth curve, thick
+// at the grip and tapering to the tips, its grip bound in leather; its tips capped darker and bent back a little, nocked
+// for the string, which runs straight between them.
+function boneLongbow(): THREE.Group {
+  const half = 0.46
+  const depth = 0.11
+  const at = (t: number): [number, number, number] => [t * half, depth * t * t, 0]
+  const made = group()
+  const steps = 12
+  for (let i = 0; i < steps; i++) {
+    const from = -1 + (2 * i) / steps
+    const to = -1 + (2 * (i + 1)) / steps
+    made.add(stick(PALETTE.bone, at(from), at(to), 0.052 - 0.024 * Math.abs((from + to) / 2), 6))
+  }
+  made.add(stick(GRIP, at(-0.15), at(0.15), 0.066, 6))
+  for (const side of [-1, 1]) {
+    const tip = at(side)
+    made.add(stick(PALETTE.boneDark, tip, [tip[0] + side * 0.045, tip[1] - 0.045, 0], 0.03, 5))
+    made.add(part(ball(), PALETTE.boneDark, tip, [0.036, 0.036, 0.036]))
+  }
+  made.add(bowString(half, depth))
+  return made
+}
+
+// The skewer, after its icon (icons/tools/weapons/skewer.png): a long spear of bone, capped at its butt, its lower half
+// bound in a leather grip; at its head, bound on with leather, a long point of bone barbed back along both edges.
+function skewer(): THREE.Group {
+  const made = group(
+    part(cylinder(6), PALETTE.bone, [0, -0.3, 0], [0.045, 1.3, 0.045]),
+    part(ball(), PALETTE.bone, [0, 0.36, 0], [0.066, 0.066, 0.066]),
+    part(cylinder(6), GRIP, [0, 0.05, 0], [0.058, 0.52, 0.058]),
+    part(cylinder(6), GRIP, [0, -0.93, 0], [0.06, 0.08, 0.06]),
+    part(cone(4), PALETTE.bone, [0, -1.12, 0], [0.09, 0.3, 0.035], [Math.PI, 0, 0]),
+  )
+  // The barbs, along both edges of the point, hooked back towards the grip.
+  for (const [y, size] of [[-1.02, 0.1], [-1.1, 0.075]] as const) {
+    for (const side of [-1, 1]) made.add(part(cone(3), PALETTE.boneDark, [side * 0.05, y, 0], [0.03, size, 0.022], [0, 0, -side * 0.55]))
+  }
+  return made
+}
+
+// Permafrost, after its icon (icons/tools/weapons/permafrost.png): a short staff of bone, capped at its foot, bound in
+// leather at the grip and under its head, where three claws of bone hold a great crystal of ice, glowing.
+function permafrost(): THREE.Group {
+  const made = group(
+    part(cylinder(6), PALETTE.bone, [0, -0.22, 0], [0.042, 0.98, 0.042]),
+    part(ball(), PALETTE.boneDark, [0, 0.27, 0], [0.06, 0.06, 0.06]),
+    part(cylinder(6), GRIP, [0, 0, 0], [0.056, 0.3, 0.056]),
+    part(cylinder(6), GRIP, [0, -0.64, 0], [0.056, 0.09, 0.056]),
+  )
+  // Three claws, curling up round the crystal.
+  for (let i = 0; i < 3; i++) {
+    const turn = (i / 3) * Math.PI * 2
+    const out = (r: number): [number, number] => [Math.cos(turn) * r, Math.sin(turn) * r]
+    const [ax, az] = out(0.025)
+    const [bx, bz] = out(0.085)
+    const [cx, cz] = out(0.055)
+    made.add(stick(PALETTE.bone, [ax, -0.68, az], [bx, -0.78, bz], 0.024, 5))
+    made.add(stick(PALETTE.boneDark, [bx, -0.78, bz], [cx, -0.91, cz], 0.018, 5))
+  }
+  // The crystal: a long point of bright ice, a short one over it, and a glint.
+  const crystal = group()
+  crystal.position.set(0, -0.85, 0)
+  const ice = (geometry: THREE.BufferGeometry, color: number, at: [number, number, number], scale: [number, number, number], turn: [number, number, number] = [0, 0, 0]): THREE.Mesh => {
+    const mesh = new THREE.Mesh(geometry, glowing(color))
+    mesh.position.set(...at)
+    mesh.scale.set(...scale)
+    mesh.rotation.set(...turn)
+    return mesh
+  }
+  crystal.add(ice(cone(5), 0x6fd8ff, [0, -0.1, 0], [0.15, 0.24, 0.15], [Math.PI, 0, 0]))
+  crystal.add(ice(cone(5), 0xbff0ff, [0, 0.045, 0], [0.15, 0.09, 0.15]))
+  crystal.add(ice(box(), 0xffffff, [0.035, -0.02, 0.03], [0.012, 0.09, 0.012], [0, 0.6, 0.15]))
+  made.add(crystal)
+  return made
+}
+
+
 // The animals, each as a male or a female, told apart at a glance: a bull is dark, broad and long-horned, a cow pied
 // with an udder; a rooster has a tall red comb, wattles and a sweeping dark tail, a hen a small comb and brown
 // feathers; a buck has antlers and a dark neck, a doe none; a male wolf is bigger and darker with a heavy mane, a female
@@ -1582,17 +2205,67 @@ export function cow(male: boolean): THREE.Group {
     part(box(), coat, [-0.5, 0.57, 0], [0.04, 0.32, 0.04], [0, 0, 0.3]),
   )
   if (male) {
-    // Long horns curving out and forward, a hump of muscle, and a ring in the nose.
-    made.add(part(cone(4), PALETTE.horn, [0.54, 0.9, -0.26], [0.07, 0.34, 0.07], [Math.PI / 2 - 0.3, 0, -0.2]))
-    made.add(part(cone(4), PALETTE.horn, [0.54, 0.9, 0.26], [0.07, 0.34, 0.07], [-Math.PI / 2 + 0.3, 0, -0.2]))
+    // Long horns sweeping out and then forward and up, a hump of muscle, and a ring in the nose.
+    for (const side of [-1, 1]) made.add(...cowHorn(side, [0.5, 0.84, 0.15], [0.47, 0.87, 0.47], [0.66, 1.08, 0.44], 0.085, 0.016))
     made.add(part(box(), coat, [0.28, 0.86, 0], [0.3, 0.14, 0.4]))
     made.add(part(cylinder(8), PALETTE.ring, [0.75, 0.6, 0], [0.09, 0.02, 0.09], [0, 0, Math.PI / 2]))
   } else {
-    made.add(part(cone(4), PALETTE.horn, [0.54, 0.9, -0.12], [0.06, 0.14, 0.06], [0, 0, -0.3]))
-    made.add(part(cone(4), PALETTE.horn, [0.54, 0.9, 0.12], [0.06, 0.14, 0.06], [0, 0, -0.3]))
+    // Shorter horns, out a little and curving up.
+    for (const side of [-1, 1]) made.add(...cowHorn(side, [0.5, 0.85, 0.13], [0.49, 0.89, 0.28], [0.56, 1.03, 0.27], 0.055, 0.012))
     made.add(part(box(), PALETTE.pink, [-0.1, 0.32, 0], [0.22, 0.1, 0.2]))
   }
   for (const [lx, lz] of [[-0.32, -0.15], [-0.32, 0.15], [0.32, -0.15], [0.32, 0.15]]) made.add(part(box(), coat, [lx, 0.17, lz], [0.11, 0.34, 0.11]))
+  return made
+}
+
+// A cow's or a bull's horn on one `side` of its head (-1 or 1): one smooth tube along a curve from `from` (on the
+// head) bending towards `bend` and ending at `to` (all given for the +z side), tapering from `thick` across to a
+// point; pale, going darker towards the tip (three lengths of it, each a shade darker), on a boss where it grows out.
+function cowHorn(side: number, from: [number, number, number], bend: [number, number, number], to: [number, number, number], thick: number, tip: number): THREE.Object3D[] {
+  const curve = new THREE.QuadraticBezierCurve3(
+    new THREE.Vector3(from[0], from[1], from[2] * side),
+    new THREE.Vector3(bend[0], bend[1], bend[2] * side),
+    new THREE.Vector3(to[0], to[1], to[2] * side),
+  )
+  const radius = (t: number): number => (thick + (tip * 0.3 - thick) * t ** 1.3) / 2
+  const made: THREE.Object3D[] = []
+  for (const [t0, t1, color] of [[0, 0.62, PALETTE.horn], [0.62, 0.84, 0x9a8a70], [0.84, 1, 0x4a3e30]] as const) {
+    const mesh = new THREE.Mesh(taperedTube(curve, t0, t1, radius), material(color))
+    mesh.castShadow = true
+    made.push(mesh)
+  }
+  made.push(part(ball(), PALETTE.horn, [from[0], from[1], from[2] * side], [thick * 1.3, thick, thick * 1.3]))
+  return made
+}
+
+// A tube along part of a curve (`t0` to `t1` of it), `radius(t)` round at each point of it, closed at its far end
+// when that comes to a point.
+function taperedTube(curve: THREE.Curve<THREE.Vector3>, t0: number, t1: number, radius: (t: number) => number, rings = 8, sides = 8): THREE.BufferGeometry {
+  const frames = curve.computeFrenetFrames(64, false)
+  const positions: number[] = []
+  const index: number[] = []
+  for (let i = 0; i <= rings; i++) {
+    const t = t0 + ((t1 - t0) * i) / rings
+    const frame = Math.min(64, Math.round(t * 64))
+    const middle = curve.getPointAt(t)
+    const r = radius(t)
+    for (let j = 0; j < sides; j++) {
+      const a = (j / sides) * Math.PI * 2
+      const out = frames.normals[frame].clone().multiplyScalar(Math.cos(a)).add(frames.binormals[frame].clone().multiplyScalar(Math.sin(a)))
+      positions.push(middle.x + out.x * r, middle.y + out.y * r, middle.z + out.z * r)
+    }
+  }
+  for (let i = 0; i < rings; i++) {
+    for (let j = 0; j < sides; j++) {
+      const a = i * sides + j
+      const b = i * sides + ((j + 1) % sides)
+      index.push(a, a + sides, b, b, a + sides, b + sides)
+    }
+  }
+  const made = new THREE.BufferGeometry()
+  made.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  made.setIndex(index)
+  made.computeVertexNormals()
   return made
 }
 
@@ -1620,30 +2293,48 @@ export function chicken(male: boolean): THREE.Group {
   return made
 }
 
-// A deer: slender and long-legged, with a pale belly and tail; a buck darker at the neck, with antlers.
+// A deer: slender and long-legged, with a pale belly and tail; a buck darker at the neck, with antlers. Jointed so it
+// can walk and run (see three-view's `gaitDeer`): all of it hangs from the middle of its back (`body`), so it can rise
+// and pitch; its neck and head from the base of the neck (`head`); its tail from its rump (`tail`); and each straight
+// leg from the hip or shoulder (`leg-fl`, `leg-fr`, `leg-hl`, `leg-hr`: front or hind, left or right).
 export function deer(male: boolean): THREE.Group {
-  const made = group(
-    part(box(), PALETTE.deer, [0, 0.66, 0], male ? [0.76, 0.32, 0.32] : [0.68, 0.28, 0.28]),
-    part(box(), PALETTE.deerBelly, [0, 0.52, 0], [0.6, 0.04, 0.26]),
+  // Antlers: a tall beam and three tines each side.
+  const antlers = male
+    ? [-1, 1].flatMap((side) => [
+        part(cylinder(4), PALETTE.antler, [0.44, 1.3, side * 0.1], [0.03, 0.36, 0.03], [side * -0.45, 0, 0.15]),
+        part(cylinder(4), PALETTE.antler, [0.52, 1.34, side * 0.14], [0.022, 0.16, 0.022], [0, 0, -0.7]),
+        part(cylinder(4), PALETTE.antler, [0.47, 1.45, side * 0.19], [0.022, 0.14, 0.022], [side * -0.3, 0, -0.5]),
+        part(cylinder(4), PALETTE.antler, [0.4, 1.47, side * 0.17], [0.02, 0.12, 0.02], [side * -0.6, 0, 0.3]),
+      ])
+    : []
+  const head = pivot(
+    [0.28, 0.76, 0],
     // The neck, leaning forward, and the head.
     part(box(), male ? PALETTE.deerDark : PALETTE.deer, [0.36, 0.86, 0], male ? [0.18, 0.36, 0.18] : [0.12, 0.34, 0.12], [0, 0, -0.45]),
     part(box(), PALETTE.deer, [0.5, 1.02, 0], [0.24, 0.15, 0.15]),
     part(box(), PALETTE.nose, [0.63, 1.0, 0], [0.04, 0.06, 0.08]),
     part(cone(4), PALETTE.deer, [0.44, 1.12, -0.09], [0.05, 0.12, 0.03], [0.5, 0, 0]),
     part(cone(4), PALETTE.deer, [0.44, 1.12, 0.09], [0.05, 0.12, 0.03], [-0.5, 0, 0]),
-    part(box(), PALETTE.deerBelly, [-0.38, 0.74, 0], [0.06, 0.12, 0.08], [0, 0, 0.5]),
+    ...antlers,
   )
-  if (male) {
-    // Antlers: a tall beam and three tines each side.
-    for (const side of [-1, 1]) {
-      made.add(part(cylinder(4), PALETTE.antler, [0.44, 1.3, side * 0.1], [0.03, 0.36, 0.03], [side * -0.45, 0, 0.15]))
-      made.add(part(cylinder(4), PALETTE.antler, [0.52, 1.34, side * 0.14], [0.022, 0.16, 0.022], [0, 0, -0.7]))
-      made.add(part(cylinder(4), PALETTE.antler, [0.47, 1.45, side * 0.19], [0.022, 0.14, 0.022], [side * -0.3, 0, -0.5]))
-      made.add(part(cylinder(4), PALETTE.antler, [0.4, 1.47, side * 0.17], [0.02, 0.12, 0.02], [side * -0.6, 0, 0.3]))
-    }
-  }
-  for (const [lx, lz] of [[-0.27, -0.1], [-0.27, 0.1], [0.27, -0.1], [0.27, 0.1]]) made.add(part(box(), PALETTE.deer, [lx, 0.26, lz], [0.07, 0.52, 0.07]))
-  return made
+  head.name = 'head'
+  const tail = pivot([-0.34, 0.8, 0], part(box(), PALETTE.deerBelly, [-0.38, 0.74, 0], [0.06, 0.12, 0.08], [0, 0, 0.5]))
+  tail.name = 'tail'
+  const legs = ([['fl', 0.27, -0.1], ['fr', 0.27, 0.1], ['hl', -0.27, -0.1], ['hr', -0.27, 0.1]] as const).map(([name, lx, lz]) => {
+    const leg = pivot([lx, 0.52, lz], part(box(), PALETTE.deer, [lx, 0.26, lz], [0.07, 0.52, 0.07]))
+    leg.name = `leg-${name}`
+    return leg
+  })
+  const body = pivot(
+    [0, 0.66, 0],
+    part(box(), PALETTE.deer, [0, 0.66, 0], male ? [0.76, 0.32, 0.32] : [0.68, 0.28, 0.28]),
+    part(box(), PALETTE.deerBelly, [0, 0.52, 0], [0.6, 0.04, 0.26]),
+    head,
+    tail,
+    ...legs,
+  )
+  body.name = 'body'
+  return group(body)
 }
 
 // A wolf: grey, low and long, with a pointed muzzle, pricked ears and a bushy tail; a male bigger and darker, with a
@@ -1823,84 +2514,94 @@ export function iceDoor(): THREE.Group {
 
 // ---- landmarks
 
-// A skeletons' camp: a ring of stones round a cold, blackened fire, a ragged hide tent, and bones about.
-export function camp(): THREE.Group {
-  const made = group()
-  for (let i = 0; i < 8; i++) {
-    const angle = (i / 8) * Math.PI * 2
-    made.add(part(lump(), i % 2 ? PALETTE.stone : PALETTE.stoneDark, [Math.cos(angle) * 0.45, 0.07, Math.sin(angle) * 0.45], [0.2, 0.15, 0.2]))
-  }
-  made.add(part(cylinder(8), PALETTE.ash, [0, 0.02, 0], [0.7, 0.04, 0.7]))
-  for (const angle of [0.3, 1.4, 2.5]) made.add(part(cylinder(5), PALETTE.char, [0, 0.08, 0], [0.08, 0.6, 0.08], [Math.PI / 2, angle, 0]))
-  // The tent, behind the fire.
-  const tent = group(
-    part(cone(4), PALETTE.hide, [0, 0.7, 0], [1.6, 1.4, 1.6], [0, Math.PI / 4, 0]),
-    part(box(), PALETTE.barkDark, [0, 1.45, 0], [0.06, 0.3, 0.06]),
-    part(box(), PALETTE.soilDark, [0.56, 0.35, 0], [0.04, 0.6, 0.4]),
-  )
-  tent.position.set(-1.9, 0, -1.6)
-  tent.rotation.y = 0.6
-  made.add(tent)
-  // Bones lying about, and a skull on a stake.
-  for (const [bx, bz, turn] of [[1.2, 0.8, 0.4], [0.9, -1.3, 1.7], [-0.6, 1.5, 2.6], [1.7, -0.2, 0.9]]) {
-    made.add(part(box(), PALETTE.bone, [bx, 0.04, bz], [0.36, 0.05, 0.06], [0, turn, 0]))
-  }
-  made.add(part(box(), PALETTE.barkDark, [1.6, 0.55, 1.4], [0.07, 1.1, 0.07]))
-  made.add(part(box(), PALETTE.bone, [1.6, 1.18, 1.4], [0.2, 0.2, 0.2]))
-  made.add(part(box(), PALETTE.eye, [1.71, 1.2, 1.4], [0.02, 0.06, 0.12]))
+// The camps (see `isCampKind`): what keeps each stands on its own tile (and only that tile stands in the way), and
+// the rest of the camp lies round it, flat or small enough to walk over: the fire in front of it (towards the camera),
+// and bones, stakes and blocks off to the sides. Its rocks lie two tiles out to the sides and back (see campRockSpots).
+// The building itself is a group of its own (`shaken`), the only part that rocks when it is hit.
+function campBuilding(...parts: THREE.Object3D[]): THREE.Group {
+  const made = group(...parts)
+  made.name = 'shaken'
   return made
 }
 
-// A goblins' camp on the meadow: a ring of stones round a fire burnt down to ash, a lean-to of patched hides on two
-// poles, sharpened stakes stuck in the ground, and a heap of gnawed bones.
-export function goblinCamp(): THREE.Group {
+// A ring of stones round a fire burnt down to ash and blackened logs, at a point.
+function campFire(x: number, z: number): THREE.Group {
   const made = group()
   for (let i = 0; i < 8; i++) {
     const angle = (i / 8) * Math.PI * 2
-    made.add(part(lump(), i % 2 ? PALETTE.stone : PALETTE.stoneDark, [Math.cos(angle) * 0.45, 0.07, Math.sin(angle) * 0.45], [0.2, 0.15, 0.2]))
+    made.add(part(lump(), i % 2 ? PALETTE.stone : PALETTE.stoneDark, [Math.cos(angle) * 0.42, 0.07, Math.sin(angle) * 0.42], [0.18, 0.14, 0.18]))
   }
-  made.add(part(cylinder(8), PALETTE.ash, [0, 0.02, 0], [0.7, 0.04, 0.7]))
-  for (const angle of [0.3, 1.4, 2.5]) made.add(part(cylinder(5), PALETTE.char, [0, 0.08, 0], [0.08, 0.6, 0.08], [Math.PI / 2, angle, 0]))
-  // The lean-to: a sloping roof of patched hides on two poles.
-  const shelter = group(
-    stick(PALETTE.bark, [-0.7, 0, 0], [-0.7, 1.1, 0], 0.06),
-    stick(PALETTE.bark, [0.7, 0, 0], [0.7, 1.1, 0], 0.06),
-    part(box(), PALETTE.hide, [0, 0.6, -0.42], [1.6, 0.05, 1.15], [0.85, 0, 0]),
-    part(box(), 0x7a6a3a, [-0.3, 0.62, -0.4], [0.5, 0.055, 0.5], [0.85, 0, 0]),
+  made.add(part(cylinder(8), PALETTE.ash, [0, 0.02, 0], [0.66, 0.04, 0.66]))
+  for (const angle of [0.3, 1.4, 2.5]) made.add(part(cylinder(5), PALETTE.char, [0, 0.08, 0], [0.08, 0.56, 0.08], [Math.PI / 2, angle, 0]))
+  made.position.set(x, 0, z)
+  return made
+}
+
+// A skeletons' camp: a ragged hide tent (what keeps it), a cold, blackened fire in front of it, bones lying about, and a
+// skull on a stake.
+export function camp(): THREE.Group {
+  const made = group(
+    campBuilding(
+      part(cone(4), PALETTE.hide, [0, 0.62, 0], [1.15, 1.24, 1.15], [0, Math.PI / 4, 0]),
+      part(box(), PALETTE.barkDark, [0, 1.3, 0], [0.06, 0.26, 0.06]),
+      part(box(), PALETTE.soilDark, [0, 0.3, 0.38], [0.36, 0.56, 0.04]),
+    ),
   )
-  shelter.position.set(-1.8, 0, -1.5)
-  shelter.rotation.y = 0.5
-  made.add(shelter)
-  // Sharpened stakes, leaning.
-  for (const [sx, sz, tilt] of [[1.5, -1.2, 0.3], [1.8, 0.4, -0.2], [-1.3, 1.6, 0.25]]) {
+  made.add(campFire(0, 1.9))
+  for (const [bx, bz, turn] of [[0.9, 1.4, 0.4], [-0.8, 1.6, 1.7], [-0.7, 0.9, 2.6], [1.1, 2.4, 0.9]]) {
+    made.add(part(box(), PALETTE.bone, [bx, 0.04, bz], [0.36, 0.05, 0.06], [0, turn, 0]))
+  }
+  made.add(part(box(), PALETTE.barkDark, [-1.0, 0.55, 2.3], [0.07, 1.1, 0.07]))
+  made.add(part(box(), PALETTE.bone, [-1.0, 1.18, 2.3], [0.2, 0.2, 0.2]))
+  made.add(part(box(), PALETTE.eye, [-0.89, 1.2, 2.3], [0.02, 0.06, 0.12]))
+  return made
+}
+
+// A goblins' camp on the meadow: a lean-to of patched hides (what keeps it), its roof sloping from two poles at the
+// front down to the ground at the back, open to the fire burnt down to ash in front of it; sharpened stakes stuck in the
+// ground, and a heap of gnawed bones.
+export function goblinCamp(): THREE.Group {
+  const made = group(
+    campBuilding(
+      stick(PALETTE.bark, [-0.45, 0, 0.26], [-0.45, 0.84, 0.26], 0.06),
+      stick(PALETTE.bark, [0.45, 0, 0.26], [0.45, 0.84, 0.26], 0.06),
+      stick(PALETTE.bark, [-0.5, 0.82, 0.26], [0.5, 0.82, 0.26], 0.045),
+      part(box(), PALETTE.hide, [0, 0.45, -0.05], [1.05, 0.05, 0.95], [-0.85, 0, 0]),
+      part(box(), 0x7a6a3a, [-0.2, 0.47, -0.07], [0.4, 0.055, 0.4], [-0.85, 0, 0]),
+      part(box(), 0x6a5a30, [0.28, 0.33, -0.2], [0.26, 0.055, 0.22], [-0.85, 0, 0]),
+    ),
+  )
+  made.add(campFire(0, 1.9))
+  for (const [sx, sz, tilt] of [[1.1, 1.2, 0.3], [-1.1, 1.3, -0.2], [1.0, 2.5, 0.25]]) {
     const stake = group(part(cylinder(5), PALETTE.bark, [0, 0.4, 0], [0.08, 0.8, 0.08]), part(cone(5), PALETTE.woodLight, [0, 0.88, 0], [0.08, 0.18, 0.08]))
     stake.position.set(sx, 0, sz)
     stake.rotation.set(tilt, 0, tilt / 2)
     made.add(stake)
   }
-  // A heap of gnawed bones.
-  for (const [bx, bz, turn] of [[1.1, 1.0, 0.4], [1.25, 1.1, 1.9], [0.95, 1.2, 2.8]]) made.add(part(box(), PALETTE.bone, [bx, 0.04, bz], [0.32, 0.05, 0.06], [0, turn, 0]))
+  for (const [bx, bz, turn] of [[-0.9, 2.3, 0.4], [-0.75, 2.4, 1.9], [-1.0, 2.5, 2.8]]) made.add(part(box(), PALETTE.bone, [bx, 0.04, bz], [0.32, 0.05, 0.06], [0, turn, 0]))
   return made
 }
 
-// A mummies' tomb in the desert: a squat sandstone tomb on a low plinth, a heavy capstone on it, its doorway a dark
-// hole between two pillars under a lintel (facing south, as the camera looks), a step before it, and blocks fallen from
-// it lying in the sand.
+// A mummies' tomb in the desert (what keeps it): a squat sandstone tomb on a low plinth, a heavy capstone on it, its
+// doorway a dark hole between two pillars under a lintel (facing south, as the camera looks), a step before it, and
+// blocks fallen from it lying in the sand.
 export function tomb(): THREE.Group {
   const sandstone = 0xd2b47a
   const sandstoneDark = 0xa98a55
   const made = group(
-    part(box(), sandstoneDark, [0, 0.05, 0], [1.7, 0.1, 1.7]),
-    part(box(), sandstone, [0, 0.55, -0.05], [1.3, 0.9, 1.3]),
-    part(box(), sandstoneDark, [0, 1.06, -0.05], [1.46, 0.12, 1.46]),
-    part(box(), sandstone, [0, 1.2, -0.05], [1.0, 0.18, 1.0]),
-    part(box(), PALETTE.void, [0, 0.42, 0.61], [0.42, 0.64, 0.02]),
-    part(box(), sandstoneDark, [-0.31, 0.45, 0.66], [0.16, 0.8, 0.12]),
-    part(box(), sandstoneDark, [0.31, 0.45, 0.66], [0.16, 0.8, 0.12]),
-    part(box(), sandstone, [0, 0.9, 0.68], [0.84, 0.16, 0.16]),
-    part(box(), sandstoneDark, [0, 0.06, 0.88], [0.6, 0.12, 0.3]),
+    campBuilding(
+    part(box(), sandstoneDark, [0, 0.05, 0], [1.08, 0.1, 1.08]),
+    part(box(), sandstone, [0, 0.5, -0.04], [0.86, 0.8, 0.86]),
+    part(box(), sandstoneDark, [0, 0.96, -0.04], [0.98, 0.12, 0.98]),
+    part(box(), sandstone, [0, 1.1, -0.04], [0.68, 0.16, 0.68]),
+    part(box(), PALETTE.void, [0, 0.38, 0.4], [0.3, 0.56, 0.02]),
+    part(box(), sandstoneDark, [-0.23, 0.42, 0.44], [0.12, 0.72, 0.1]),
+    part(box(), sandstoneDark, [0.23, 0.42, 0.44], [0.12, 0.72, 0.1]),
+    part(box(), sandstone, [0, 0.82, 0.45], [0.62, 0.13, 0.13]),
+    part(box(), sandstoneDark, [0, 0.06, 0.62], [0.44, 0.12, 0.24]),
+    ),
   )
-  for (const [bx, bz, turn] of [[1.15, 0.6, 0.4], [1.0, -0.95, 1.1], [-1.2, 0.9, 2.0]]) made.add(part(box(), sandstoneDark, [bx, 0.11, bz], [0.32, 0.22, 0.24], [0, turn, 0]))
+  for (const [bx, bz, turn] of [[0.9, 1.1, 0.4], [-1.0, 1.0, 1.1], [0.3, 1.8, 2.0]]) made.add(part(box(), sandstoneDark, [bx, 0.11, bz], [0.32, 0.22, 0.24], [0, turn, 0]))
   return made
 }
 
@@ -1969,7 +2670,37 @@ export const RAFT_POST_HEIGHT = 0.42
 // ---- what flies
 
 // An arrow, a thrown spear, a sling stone, a shard of ice or an icicle, pointing along +x.
-export function projectile(kind: 'arrow' | 'spear' | 'stone' | 'shard' | 'icicle'): THREE.Group {
+export function projectile(kind: 'arrow' | 'spear' | 'stone' | 'shard' | 'icicle' | 'ice-spear' | 'hex' | 'twister'): THREE.Group {
+  // A twister: a funnel of whirling dust standing on the ground, wide at its top, a few shades of sand.
+  if (kind === 'twister') {
+    const made = group()
+    const funnel: Array<[number, number, number]> = [
+      [0.15, 0.08, 0.16],
+      [0.4, 0.16, 0.2],
+      [0.68, 0.26, 0.24],
+      [0.98, 0.36, 0.26],
+    ]
+    funnel.forEach(([y, radius, height], i) => {
+      const ring = new THREE.Mesh(cylinder(7), dustMaterial(i % 2 === 0 ? 0xd9bf86 : 0xbfa06a, 0.7))
+      ring.position.set(0, y, 0)
+      ring.scale.set(radius * 2, height, radius * 2)
+      ring.rotation.y = i * 0.7
+      made.add(ring)
+    })
+    return made
+  }
+  // A goblin shaman's hex: a glowing green ball.
+  if (kind === 'hex') {
+    const ball_ = new THREE.Mesh(ball(), glowing(0x8dff5a))
+    ball_.scale.setScalar(0.18)
+    return group(ball_)
+  }
+  // A staff's ice spear: an icicle, bigger, point down.
+  if (kind === 'ice-spear') {
+    const made = projectile('icicle')
+    made.scale.setScalar(1.6)
+    return made
+  }
   if (kind === 'spear') {
     return group(
       part(cylinder(5), PALETTE.wood, [0, 0, 0], [0.05, 1.2, 0.05], [0, 0, Math.PI / 2]),
@@ -2050,13 +2781,13 @@ export function seedling(look: number): THREE.Group {
   )
 }
 
-// Clay on a river's bank: a few smooth, wet, reddish lumps heaped together.
+// Clay on a river's bank: a few smooth, wet, grey lumps heaped together (the grey of the clay's icon).
 export function clay(x: number, y: number): THREE.Group {
   const turn = vary(x, y, 72) * Math.PI * 2
   const lumps = group(
-    part(lump(), 0xa8644a, [0, 0.16, 0], [0.7, 0.34, 0.6]),
-    part(lump(), 0x8c5440, [0.24, 0.1, 0.14], [0.36, 0.22, 0.34], [0, 1.1, 0]),
-    part(lump(), 0xb8765a, [-0.2, 0.12, -0.12], [0.32, 0.2, 0.3], [0, 2.3, 0]),
+    part(lump(), 0xa49a9a, [0, 0.16, 0], [0.7, 0.34, 0.6]),
+    part(lump(), 0x847d7d, [0.24, 0.1, 0.14], [0.36, 0.22, 0.34], [0, 1.1, 0]),
+    part(lump(), 0xb2a9a9, [-0.2, 0.12, -0.12], [0.32, 0.2, 0.3], [0, 2.3, 0]),
   )
   for (const mesh of lumps.children as THREE.Mesh[]) mesh.material = shiny((mesh.material as THREE.MeshStandardMaterial).color.getHex())
   lumps.rotation.y = turn
@@ -2112,6 +2843,35 @@ export function cactus(x: number, y: number): THREE.Group {
   }
   if (vary(x, y, 79) > 0.6) made.add(part(blob(), 0xe85a8a, [0, tall + 0.1, 0], [0.12, 0.08, 0.12]))
   made.rotation.y = vary(x, y, 78) * Math.PI * 2
+  return made
+}
+
+// A young cactus, at each of its looks on the way to a cactus (see `growthLook`): a little round green nub just out of
+// the sand, a few spines on it; then a short, fat column; then a column nearly as tall as a grown one, an arm budding.
+export function youngCactus(look: number): THREE.Group {
+  const green = 0x4f8a4a
+  const dark = 0x3a6e3a
+  const spine = 0xf0ead0
+  const tall = [0.16, 0.42, 0.78][Math.max(0, Math.min(2, look))]
+  const wide = [0.2, 0.26, 0.3][Math.max(0, Math.min(2, look))]
+  const made = group(
+    part(cylinder(8), green, [0, tall / 2, 0], [wide, tall, wide]),
+    part(ball(), green, [0, tall, 0], [wide, wide * 0.65, wide]),
+  )
+  for (let i = 0; i < 8; i += 2) {
+    const angle = (i / 8) * Math.PI * 2
+    made.add(part(box(), dark, [Math.cos(angle) * wide * 0.48, tall / 2, Math.sin(angle) * wide * 0.48], [0.025, tall * 0.94, 0.025], [0, -angle, 0]))
+  }
+  const spines = 3 + look * 3
+  for (let i = 0; i < spines; i++) {
+    const angle = (i / spines) * Math.PI * 2 + i
+    const at = tall * (0.3 + 0.6 * ((i * 0.37) % 1))
+    made.add(part(box(), spine, [Math.cos(angle) * wide * 0.53, at, Math.sin(angle) * wide * 0.53], [0.04, 0.01, 0.01], [0, -angle, 0]))
+  }
+  if (look >= 2) {
+    made.add(part(cylinder(6), green, [0.19, tall * 0.5, 0], [0.13, 0.12, 0.13], [0, 0, Math.PI / 2]))
+    made.add(part(ball(), green, [0.25, tall * 0.5 + 0.04, 0], [0.13, 0.14, 0.13]))
+  }
   return made
 }
 
@@ -2198,55 +2958,241 @@ export function beeBox(): THREE.Group {
   return made
 }
 
-// A spider of the desert: a big round abdomen banded dark, a smaller head with a cluster of eyes, and eight long legs,
-// each bent at the knee. A male is slighter, with a paler band.
+// A spider of the desert, cartoonish: a huge round abdomen, striped, a small head with two big eyes (and little ones
+// round them) and a pair of fangs, and eight thick legs arched high at the knee, each knee a knob. A male is slighter,
+// with a pale stripe. Each leg turns about its hip, named (`leg-l-0` to `leg-r-3`, front first; r is its right, +z) to
+// walk (see gaitCrawler in three-view).
 export function spider(male: boolean): THREE.Group {
   const coat = male ? 0x9a7a4a : 0x7a5a34
+  const stripe = male ? 0xd8b878 : 0x4a3220
   const dark = 0x3a2a1a
   const made = group(
-    part(ball(), coat, [-0.16, 0.26, 0], [0.4, 0.3, 0.34]),
-    part(box(), male ? 0xc9a870 : dark, [-0.16, 0.4, 0], [0.24, 0.03, 0.14]),
-    part(ball(), coat, [0.12, 0.2, 0], [0.24, 0.18, 0.22]),
-    part(box(), 0x1a1410, [0.23, 0.24, -0.04], [0.03, 0.03, 0.03]),
-    part(box(), 0x1a1410, [0.23, 0.24, 0.04], [0.03, 0.03, 0.03]),
-    part(box(), 0x7a1a1a, [0.235, 0.21, 0], [0.02, 0.02, 0.06]),
+    // The abdomen: big, round, tipped up a little at the back, striped across.
+    part(ball(), coat, [-0.26, 0.38, 0], [0.64, 0.56, 0.58], [0, 0, -0.25]),
+    part(ball(), stripe, [-0.26, 0.38, 0], [0.46, 0.58, 0.6], [0, 0, -0.25]),
+    part(ball(), coat, [-0.26, 0.38, 0], [0.28, 0.6, 0.61], [0, 0, -0.25]),
+    // The head, small, low before it.
+    part(ball(), coat, [0.1, 0.24, 0], [0.24, 0.2, 0.24]),
+    // Two dark eyes, and four little ones round them.
+    part(ball(), 0x1a1410, [0.21, 0.3, -0.05], [0.06, 0.065, 0.06]),
+    part(ball(), 0x1a1410, [0.21, 0.3, 0.05], [0.06, 0.065, 0.06]),
+    ...([[0.17, 0.35, -0.1], [0.17, 0.35, 0.1], [0.2, 0.25, -0.09], [0.2, 0.25, 0.09]] as const).map((at) => part(ball(), 0x1a1410, [...at], [0.03, 0.03, 0.03])),
+    // Fangs.
+    part(cone(4), 0xe8dcc0, [0.21, 0.16, -0.035], [0.03, 0.07, 0.03], [0, 0, Math.PI]),
+    part(cone(4), 0xe8dcc0, [0.21, 0.16, 0.035], [0.03, 0.07, 0.03], [0, 0, Math.PI]),
   )
-  // Four legs each side: up from the body to the knee, and down to the ground.
+  // Four legs each side: up from the body, arched high to a knob of a knee, and down to a point on the ground.
   for (const side of [-1, 1]) {
     for (let i = 0; i < 4; i++) {
-      const along = 0.2 - i * 0.12
-      const knee: [number, number, number] = [along + 0.02, 0.34, side * 0.28]
-      made.add(stick(dark, [0.08, 0.2, side * 0.08], knee, 0.03, 4))
-      made.add(stick(dark, knee, [along + (i < 2 ? 0.12 : -0.08), 0, side * 0.44], 0.025, 4))
+      const along = 0.2 - i * 0.13
+      const hip: [number, number, number] = [0.06 - i * 0.03, 0.24, side * 0.1]
+      const knee: [number, number, number] = [along + 0.02, 0.46, side * 0.3]
+      const foot: [number, number, number] = [along + (i < 2 ? 0.14 : -0.1), 0.02, side * 0.46]
+      const leg = pivot(
+        hip,
+        stick(dark, hip, knee, 0.08, 6),
+        part(ball(), coat, knee, [0.12, 0.12, 0.12]),
+        stick(dark, knee, foot, 0.07, 6),
+        part(ball(), dark, foot, [0.07, 0.05, 0.07]),
+      )
+      leg.name = `leg-${side > 0 ? 'r' : 'l'}-${i}`
+      made.add(leg)
     }
   }
   return made
 }
 
-// A goblin: small and green, a big head with long pointed ears and red eyes, a ragged hide tunic, and a crude club in
-// its fist.
-export function goblin(): THREE.Group {
-  const skin = 0x6a9a3a
-  const skinDark = 0x4e7a2a
-  const rag = 0x6a4a2a
-  const made = group(
+// A scarab of the desert, cartoonish: a beetle with a huge, high-domed back of hard wing cases, split down the middle,
+// shining, and swelling out round and full behind; a little dome of a thorax before it, rimmed; a small head with a
+// broad toothed scoop and two big eyes; clubbed feelers; and six short, stout legs, each knee a knob. A male is dark
+// green-black, with a great horn curving up off his head and a short one on his thorax; a female is bronze-brown,
+// hornless. Its body (`body`, turning about the middle of its shell) curls up and rolls, and each leg turns about its
+// hip, named as a spider's are (`leg-l-0` to `leg-r-2`, front first), to walk and to be drawn in (see three-view).
+export function scarab(male: boolean): THREE.Group {
+  const shell = male ? 0x1f3a36 : 0x5e4426
+  const sheen = male ? 0x4f9a84 : 0xb88a4a
+  const rim = male ? 0x2c524a : 0x7a5a32
+  const dark = 0x1c1712
+  const body = pivot(
+    [-0.12, 0.34, 0],
+    // The wing cases: a big, high dome, fuller behind, its rim a band round its foot.
+    part(ball(), shell, [-0.08, 0.35, 0], [0.64, 0.62, 0.6]),
+    part(ball(), shell, [-0.26, 0.32, 0], [0.5, 0.56, 0.58]),
+    part(ball(), rim, [-0.14, 0.17, 0], [0.8, 0.14, 0.64]),
+    // (The split: thin slices of the dome and its back a little bigger than them, so it follows the curve.)
+    part(ball(), dark, [-0.08, 0.35, 0], [0.648, 0.628, 0.02]),
+    part(ball(), dark, [-0.26, 0.32, 0], [0.508, 0.568, 0.02]),
+    // Where the light catches it, either side of the split.
+    part(ball(), sheen, [-0.04, 0.6, -0.13], [0.24, 0.08, 0.13], [0, 0, -0.15]),
+    part(ball(), sheen, [-0.04, 0.6, 0.13], [0.24, 0.08, 0.13], [0, 0, -0.15]),
+    part(ball(), 0xffffff, [0.02, 0.635, -0.13], [0.07, 0.03, 0.05], [0, 0, -0.3]),
+    // The thorax, rimmed.
+    part(ball(), shell, [0.22, 0.26, 0], [0.22, 0.22, 0.36]),
+    part(ball(), rim, [0.22, 0.2, 0], [0.25, 0.08, 0.39]),
+    part(ball(), sheen, [0.24, 0.33, 0], [0.09, 0.04, 0.16]),
+    // The head, a broad scoop toothed along its front, and dark eyes at its sides.
+    part(ball(), dark, [0.34, 0.16, 0], [0.14, 0.1, 0.24]),
+    ...[-0.08, -0.027, 0.027, 0.08].map((z) => part(cone(3), dark, [0.415, 0.15, z], [0.03, 0.05, 0.03], [0, 0, -Math.PI / 2])),
+    part(ball(), 0x101010, [0.37, 0.2, -0.1], [0.05, 0.05, 0.04]),
+    part(ball(), 0x101010, [0.37, 0.2, 0.1], [0.05, 0.05, 0.04]),
+  )
+  // Its feelers: short, each ending in a little club. (What is added to it from here is placed from its middle.)
+  for (const side of [-1, 1]) {
+    body.add(stick(dark, [0.4, -0.1, side * 0.1], [0.48, -0.03, side * 0.17], 0.018, 3))
+    body.add(part(lump(), 0x4a3a22, [0.49, -0.02, side * 0.175], [0.045, 0.035, 0.045]))
+  }
+  // A male's horns: a great one curving up off his head, and a short one on his thorax.
+  if (male) {
+    body.add(stick(dark, [0.38, -0.12, 0], [0.47, -0.01, 0], 0.07, 6))
+    body.add(stick(dark, [0.47, -0.01, 0], [0.5, 0.12, 0], 0.055, 6))
+    body.add(part(cone(6), dark, [0.495, 0.2, 0], [0.045, 0.16, 0.045], [0, 0, 0.3]))
+    body.add(part(cone(5), shell, [0.29, 0.07, 0], [0.07, 0.13, 0.07], [0, 0, -0.6]))
+  }
+  body.name = 'body'
+  const made = group(body)
+  // Three legs a side from under it: out and up to a knob of a knee, down to the ground, stout.
+  for (const side of [-1, 1]) {
+    ;[0.18, 0.02, -0.16].forEach((along, i) => {
+      const hip: [number, number, number] = [along, 0.14, side * 0.14]
+      const knee: [number, number, number] = [along + (i === 0 ? 0.08 : i === 1 ? 0 : -0.08), 0.22, side * 0.33]
+      const foot: [number, number, number] = [along + (i === 0 ? 0.16 : i === 1 ? 0.01 : -0.18), 0.01, side * 0.42]
+      const leg = pivot(hip, stick(dark, hip, knee, 0.085, 6), part(ball(), rim, knee, [0.11, 0.11, 0.11]), stick(dark, knee, foot, 0.075, 6), part(ball(), dark, foot, [0.08, 0.05, 0.08]))
+      leg.name = `leg-${side > 0 ? 'r' : 'l'}-${i}`
+      made.add(leg)
+    })
+  }
+  return made
+}
+
+const GOBLIN_SKIN = 0x6a9a3a
+const GOBLIN_SKIN_DARK = 0x4e7a2a
+
+// A goblin's body: small and green, a big head with long pointed ears and red eyes, a ragged hide tunic (`rag`), and
+// legs; its arms are each kind's own.
+function goblinBody(rag: number): THREE.Group {
+  return group(
     part(box(), rag, [0, 0.42, 0], [0.24, 0.3, 0.3]),
     part(box(), 0x4a3418, [0, 0.29, 0], [0.26, 0.06, 0.32]),
-    part(box(), skin, [0.02, 0.72, 0], [0.26, 0.24, 0.26]),
-    part(box(), skinDark, [0.15, 0.66, 0], [0.06, 0.08, 0.1]),
-    part(cone(4), skin, [0.0, 0.76, -0.2], [0.06, 0.24, 0.06], [-Math.PI / 2 + 0.4, 0, 0]),
-    part(cone(4), skin, [0.0, 0.76, 0.2], [0.06, 0.24, 0.06], [Math.PI / 2 - 0.4, 0, 0]),
+    part(box(), GOBLIN_SKIN, [0.02, 0.72, 0], [0.26, 0.24, 0.26]),
+    part(box(), GOBLIN_SKIN_DARK, [0.15, 0.66, 0], [0.06, 0.08, 0.1]),
+    part(cone(4), GOBLIN_SKIN, [0.0, 0.76, -0.2], [0.06, 0.24, 0.06], [-Math.PI / 2 + 0.4, 0, 0]),
+    part(cone(4), GOBLIN_SKIN, [0.0, 0.76, 0.2], [0.06, 0.24, 0.06], [Math.PI / 2 - 0.4, 0, 0]),
     part(box(), 0xff3a1a, [0.15, 0.75, -0.06], [0.02, 0.04, 0.05]),
     part(box(), 0xff3a1a, [0.15, 0.75, 0.06], [0.02, 0.04, 0.05]),
-    // Arms: one hanging, one with the club.
-    part(box(), skin, [0.02, 0.42, -0.2], [0.07, 0.26, 0.07], [0.2, 0, 0]),
-    part(box(), skin, [0.08, 0.46, 0.2], [0.07, 0.24, 0.07], [-0.3, 0, -0.5]),
-    stick(PALETTE.bark, [0.16, 0.36, 0.24], [0.42, 0.62, 0.24], 0.05),
-    part(lump(), PALETTE.barkDark, [0.44, 0.65, 0.24], [0.12, 0.14, 0.12]),
-    // Legs.
-    part(box(), skinDark, [0, 0.13, -0.08], [0.08, 0.26, 0.08]),
-    part(box(), skinDark, [0, 0.13, 0.08], [0.08, 0.26, 0.08]),
+    part(box(), GOBLIN_SKIN_DARK, [0, 0.13, -0.08], [0.08, 0.26, 0.08]),
+    part(box(), GOBLIN_SKIN_DARK, [0, 0.13, 0.08], [0.08, 0.26, 0.08]),
   )
+}
+
+// A goblin, with a crude spear: a wooden shaft and a point of knapped stone, bound on. Its spear arm is a group of its
+// own from the shoulder (`spear-arm`), held low with the spear levelled forward, so it can be drawn back and jab, or be
+// raised back and throw (see three-view's `poseSpearArm`).
+export function goblin(): THREE.Group {
+  const made = goblinBody(0x6a4a2a)
+  made.add(part(box(), GOBLIN_SKIN, [0.02, 0.42, -0.2], [0.07, 0.26, 0.07], [0.2, 0, 0]))
+  const arm = group(
+    part(box(), GOBLIN_SKIN, [0.04, -0.09, 0], [0.07, 0.22, 0.07], [0, 0, 0.55]),
+    stick(PALETTE.wood, [-0.32, -0.17, 0.03], [0.6, -0.14, 0.03], 0.034, 5),
+    part(box(), PALETTE.rope, [0.58, -0.14, 0.03], [0.05, 0.045, 0.045]),
+    part(cone(4), PALETTE.stoneDark, [0.66, -0.138, 0.03], [0.055, 0.15, 0.03], [0, 0, -Math.PI / 2]),
+  )
+  arm.position.set(0.05, 0.52, 0.2)
+  arm.name = 'spear-arm'
+  made.add(arm)
+  return made
+}
+
+// A goblin archer: a goblin in a darker tunic with a short bow held out in its left hand and its right hand back at the
+// string, a quiver on its back. While it aims, an arrow (named `nocked`) lies on the bow.
+export function goblinArcher(): THREE.Group {
+  const made = goblinBody(0x4a5a2a)
+  made.add(
+    part(cylinder(6), PALETTE.hide, [-0.15, 0.52, 0.05], [0.08, 0.3, 0.08], [0, 0, -0.35]),
+    part(box(), 0xe8e2d4, [-0.21, 0.68, 0.04], [0.03, 0.07, 0.03], [0, 0, -0.35]),
+    stick(GOBLIN_SKIN, [0, 0.5, -0.15], [0.26, 0.52, -0.06], 0.045, 4),
+    stick(GOBLIN_SKIN, [0, 0.5, 0.15], [0.1, 0.52, 0.07], 0.045, 4),
+    stick(PALETTE.wood, [0.28, 0.52, -0.05], [0.24, 0.74, -0.05], 0.03, 4),
+    stick(PALETTE.wood, [0.28, 0.52, -0.05], [0.24, 0.3, -0.05], 0.03, 4),
+  )
+  const string = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0.24, 0.74, -0.05), new THREE.Vector3(0.18, 0.52, -0.05), new THREE.Vector3(0.24, 0.3, -0.05)]),
+    new THREE.LineBasicMaterial({ color: 0xf2efe6 }),
+  )
+  made.add(string)
+  const nocked = group(
+    stick(PALETTE.woodLight, [0.1, 0.52, -0.05], [0.4, 0.52, -0.05], 0.015, 4),
+    part(cone(4), PALETTE.stoneDark, [0.42, 0.52, -0.05], [0.03, 0.06, 0.03], [0, 0, -Math.PI / 2]),
+  )
+  nocked.name = 'nocked'
+  nocked.visible = false
+  made.add(nocked)
+  return made
+}
+
+// A goblin shaman: a goblin in a ragged hood with a bone mask, a crooked staff topped with a green stone in its right
+// hand. While it aims a hex the stone blazes (named `nocked`).
+export function goblinShaman(): THREE.Group {
+  const made = goblinBody(0x5a3a5a)
+  made.add(
+    part(blob(), 0x4a2a4a, [-0.03, 0.82, 0], [0.32, 0.22, 0.32]),
+    part(box(), PALETTE.bone, [0.15, 0.73, 0], [0.03, 0.14, 0.16]),
+    part(box(), 0x1e1a14, [0.165, 0.75, -0.04], [0.01, 0.03, 0.04]),
+    part(box(), 0x1e1a14, [0.165, 0.75, 0.04], [0.01, 0.03, 0.04]),
+    part(box(), GOBLIN_SKIN, [0.02, 0.42, -0.2], [0.07, 0.26, 0.07], [0.2, 0, 0]),
+    part(box(), GOBLIN_SKIN, [0.1, 0.48, 0.2], [0.07, 0.22, 0.07], [-0.2, 0, -0.6]),
+    stick(PALETTE.barkDark, [0.2, 0.08, 0.24], [0.2, 1.0, 0.24], 0.035, 5),
+    stick(PALETTE.barkDark, [0.2, 1.0, 0.24], [0.27, 1.08, 0.24], 0.03, 5),
+    part(ball(), 0x3f8f2a, [0.27, 1.13, 0.24], [0.1, 0.1, 0.1]),
+  )
+  const blaze = new THREE.Mesh(ball(), glowing(0x8dff5a))
+  blaze.position.set(0.27, 1.13, 0.24)
+  blaze.scale.setScalar(0.16)
+  blaze.name = 'nocked'
+  blaze.visible = false
+  made.add(blaze)
+  return made
+}
+
+// A dust elemental: a whirling column of sand and grit, narrow at its foot and wide at its top, with two amber eyes
+// burning in the dust, and grit going round it. The column and the grit are named (`swirl`) to be turned round and
+// round (see three-view).
+export function dustElemental(): THREE.Group {
+  const swirl = group()
+  swirl.name = 'swirl'
+  const rings: Array<[number, number, number]> = [
+    [0.15, 0.1, 0.12],
+    [0.3, 0.17, 0.16],
+    [0.47, 0.25, 0.18],
+    [0.66, 0.33, 0.2],
+    [0.85, 0.4, 0.2],
+  ]
+  rings.forEach(([y, radius, height], i) => {
+    const ring = new THREE.Mesh(cylinder(7), dustMaterial(i % 2 === 0 ? 0xcdb07a : 0xb8975e, 0.82))
+    ring.position.set(0, y, 0)
+    ring.scale.set(radius * 2, height, radius * 2)
+    ring.rotation.y = i * 0.5
+    swirl.add(ring)
+  })
+  for (let i = 0; i < 6; i++) {
+    const turn = (i / 6) * Math.PI * 2
+    swirl.add(part(lump(), 0x8f7448, [Math.cos(turn) * 0.42, 0.25 + (i % 3) * 0.25, Math.sin(turn) * 0.42], [0.06, 0.05, 0.06]))
+  }
+  const made = group(swirl)
+  for (const z of [-0.07, 0.07]) {
+    const eye = new THREE.Mesh(box(), glowing(0xffc860))
+    eye.position.set(0.3, 0.72, z)
+    eye.scale.set(0.02, 0.05, 0.05)
+    made.add(eye)
+  }
+  return made
+}
+
+// See-through dust (a dust elemental, a twister): it does not hide what is behind it. One of each, shared.
+const dustMaterials = new Map<string, THREE.MeshStandardMaterial>()
+function dustMaterial(color: number, opacity: number): THREE.MeshStandardMaterial {
+  const key = `${color}|${opacity}`
+  let made = dustMaterials.get(key)
+  if (!made) dustMaterials.set(key, (made = new THREE.MeshStandardMaterial({ color, transparent: true, opacity, depthWrite: false, flatShading: true })))
   return made
 }
 
@@ -2272,13 +3218,19 @@ export function mummy(): THREE.Group {
     part(box(), linen, [0.02, 0.95, 0], [0.24, 0.26, 0.24]),
     part(box(), band, [0.02, 1.03, 0], [0.25, 0.04, 0.25]),
     part(box(), 0x1e1a14, [0.14, 0.93, 0], [0.01, 0.05, 0.16]),
-    // Arms straight out in front, and the loose end.
-    part(box(), linen, [0.2, 0.74, -0.2], [0.38, 0.09, 0.09]),
+  )
+  // Arms straight out in front (each from its shoulder, `arm-l` and `arm-r`, so they can be raised to slam and
+  // brought down: see three-view's `poseMummyArms`), and a loose end hanging off the right.
+  const left = pivot([0.01, 0.74, -0.2], part(box(), linen, [0.2, 0.74, -0.2], [0.38, 0.09, 0.09]), part(box(), band, [0.24, 0.74, -0.2], [0.04, 0.1, 0.1]))
+  const right = pivot(
+    [0.01, 0.74, 0.2],
     part(box(), linen, [0.2, 0.74, 0.2], [0.38, 0.09, 0.09]),
-    part(box(), band, [0.24, 0.74, -0.2], [0.04, 0.1, 0.1]),
     part(box(), band, [0.3, 0.74, 0.2], [0.04, 0.1, 0.1]),
     part(box(), linen, [0.16, 0.62, 0.25], [0.04, 0.2, 0.03], [0.3, 0, 0]),
   )
+  left.name = 'arm-l'
+  right.name = 'arm-r'
+  made.add(left, right)
   for (const z of [-0.05, 0.05]) {
     const eye = new THREE.Mesh(box(), glowing(0xe8d060))
     eye.position.set(0.146, 0.935, z)

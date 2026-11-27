@@ -7,6 +7,7 @@
     "speed": 4.4,
     "size": 1.0,
     "halfSize": 0.3,
+    "unclump": 3,
     "aggroRadius": 6,
     "leash": 36,
     "attack": {
@@ -29,6 +30,7 @@
     "speed": 3.9,
     "size": 1.0,
     "halfSize": 0.3,
+    "unclump": 3,
     "aggroRadius": 8,
     "leash": 36,
     "attack": { "kind": "bow", "range": 7.5, "aim": 0.7, "lead": 0.2, "cooldown": 1.15, "speed": 14, "damage": 25, "item": "arrow" },
@@ -46,6 +48,7 @@
     "speed": 0,
     "size": 1.6,
     "halfSize": 0.42,
+    "unclump": 0,
     "aggroRadius": 0,
     "leash": 0,
     "boss": true,
@@ -63,7 +66,8 @@
     },
     "drops": [
       { "item": "lich-core", "min": 1, "max": 1 }
-    ]
+    ],
+    "rewards": ["bone-longbow", "permafrost", "skewer"]
   },
   "frost-wisp": {
     "id": 4,
@@ -73,6 +77,7 @@
     "speed": 2.0,
     "size": 0.6,
     "halfSize": 0.22,
+    "unclump": 0,
     "aggroRadius": 0,
     "leash": 0,
     "attack": { "kind": "touch", "damage": 30, "lifetime": 9 },
@@ -81,14 +86,77 @@
   "goblin": {
     "id": 5,
     "name": "Goblin",
-    "hp": 50,
-    "armor": 2,
+    "hp": 100,
+    "armor": 24,
     "speed": 4.2,
     "size": 0.85,
     "halfSize": 0.28,
+    "unclump": 4,
     "aggroRadius": 6,
     "leash": 30,
-    "attack": { "kind": "melee", "reach": 0.25, "damage": 12, "cooldown": 1, "knockback": 0.5 },
+    "attack": {
+      "kind": "spear", "reach": 0.9, "lunge": 0.6, "windup": 0.12, "damage": 44, "cooldown": 0.9, "knockback": 0.5,
+      "throw": { "range": 7, "windup": 0.45, "lead": 0.15, "speed": 50, "damage": 14, "cooldown": 1.5, "chance": 0.3, "item": "wood-spear" }
+    },
+    "drops": []
+  },
+  "goblin-archer": {
+    "id": 9,
+    "name": "Goblin archer",
+    "hp": 80,
+    "armor": 20,
+    "speed": 3.9,
+    "size": 0.85,
+    "halfSize": 0.28,
+    "unclump": 3,
+    "aggroRadius": 8,
+    "leash": 30,
+    "attack": { "kind": "bow", "range": 7, "aim": 0.8, "lead": 0.1, "cooldown": 1.4, "speed": 14, "damage": 42, "item": "arrow" },
+    "drops": []
+  },
+  "goblin-shaman": {
+    "id": 10,
+    "name": "Goblin shaman",
+    "hp": 90,
+    "armor": 18,
+    "speed": 3.6,
+    "size": 0.85,
+    "halfSize": 0.28,
+    "unclump": 3,
+    "aggroRadius": 8,
+    "leash": 30,
+    "attack": { "kind": "lob", "range": 9, "aim": 0.8, "lead": 0, "cooldown": 1.2, "base": 0.6, "speed": 14, "peak": 1.5, "radius": 1.1, "damage": 54, "item": "hex-bolt" },
+    "drops": []
+  },
+  "mummy": {
+    "id": 8,
+    "name": "Mummy",
+    "hp": 120,
+    "armor": 26,
+    "speed": 3.2,
+    "size": 1.0,
+    "halfSize": 0.3,
+    "unclump": 3,
+    "aggroRadius": 6,
+    "leash": 30,
+    "attack": {
+      "kind": "melee", "reach": 0.3, "windup": 0, "damage": 52, "cooldown": 1.5, "knockback": 0.8,
+      "slam": { "windup": 0.7, "ahead": 1.3, "radius": 1.5, "damage": 55, "knockback": 1.2, "cooldown": 6 }
+    },
+    "drops": []
+  },
+  "dust-elemental": {
+    "id": 12,
+    "name": "Dust elemental",
+    "hp": 50,
+    "armor": 20,
+    "speed": 3,
+    "size": 1.0,
+    "halfSize": 0.3,
+    "unclump": 3,
+    "aggroRadius": 7,
+    "leash": 30,
+    "attack": { "kind": "twister", "range": 8, "aim": 0.7, "lead": 0.1, "cooldown": 1.7, "speed": 11, "damage": 49, "width": 0.8, "linger": 3, "item": "twister" },
     "drops": []
   },
   "bee": {
@@ -99,22 +167,10 @@
     "speed": 3.6,
     "size": 0.35,
     "halfSize": 0.12,
+    "unclump": 0.8,
     "aggroRadius": 0,
     "leash": 22,
     "attack": { "kind": "sting", "damage": 4, "cooldown": 1.2 },
-    "drops": []
-  },
-  "mummy": {
-    "id": 8,
-    "name": "Mummy",
-    "hp": 110,
-    "armor": 4,
-    "speed": 2.6,
-    "size": 1.0,
-    "halfSize": 0.3,
-    "aggroRadius": 6,
-    "leash": 30,
-    "attack": { "kind": "melee", "reach": 0.3, "damage": 20, "cooldown": 1.5, "knockback": 0.8 },
     "drops": []
   },
   "queen-bee": {
@@ -125,6 +181,7 @@
     "speed": 1.8,
     "size": 0.5,
     "halfSize": 0.16,
+    "unclump": 0.8,
     "aggroRadius": 0,
     "leash": 0,
     "attack": { "kind": "queen" },

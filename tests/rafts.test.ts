@@ -33,7 +33,7 @@ import { run, TestClient } from './helpers.ts'
 // spawn where a raft fits with land straight to its left (west), right against it: the raft's tile, and where a player
 // stands on that land, just clear of the water, level with the raft's middle.
 function shore(): { room: GameRoom; client: TestClient; tile: { x: number; y: number }; pose: RaftPose; land: { x: number; y: number } } {
-  const room = new GameRoom('RAFT', 11, { dropsOnGround: false, wildAnimals: false, plants: false, animals: true })
+  const room = new GameRoom('RAFT', 11, { dropsOnGround: false, wildAnimals: false, plants: false, animals: true, terrain: { radius: 110 } })
   const client = new TestClient(room, 'Sailor')
   run(room, [client], 5)
   client.player.inventory.slots[0] = { item: itemId('raft'), count: 1 }

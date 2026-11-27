@@ -9,7 +9,7 @@ const START_TRIANGLES = 2048
 
 // Flat shapes painted on the ground, rebuilt every frame into one mesh: attack indicators (filled faintly and outlined
 // more strongly, as the example game draws them), tile frames, crosses. Each shape has its own colour and opacity. It
-// is drawn after the world, over everything on the ground (garden plots, fences), so an indicator is never hidden.
+// is drawn after the world, over everything on the ground (farmland, fences), so an indicator is never hidden.
 export class GroundPaint {
   readonly mesh: THREE.Mesh
   private positions = new Float32Array(START_TRIANGLES * 9)

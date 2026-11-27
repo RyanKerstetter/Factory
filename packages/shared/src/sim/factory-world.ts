@@ -101,8 +101,14 @@ export class FactoryWorld {
     return chunk === undefined ? undefined : this.chunks.get(chunk)?.get(id)
   }
 
+  // What stands on a tile (never its floor: see `floorAt`).
   entityAt(x: number, y: number): Entity | undefined {
     return this.chunks.get(chunkOfTile(x, y))?.at(x, y)
+  }
+
+  // The floor laid on a tile, under whatever stands on it (see Chunk).
+  floorAt(x: number, y: number): Entity | undefined {
+    return this.chunks.get(chunkOfTile(x, y))?.floorAt(x, y)
   }
 
   chunkOfEntity(id: number): number | undefined {

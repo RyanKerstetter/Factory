@@ -1,9 +1,11 @@
 import { CHUNK_SIZE, SUB } from './constants.ts'
 import { floorDiv } from './geometry.ts'
-import { NO_ITEM, ORES, type ItemId } from './items.ts'
+import { NO_ITEM, type ItemId } from './items.ts'
 import { hashInts, valueNoise } from './rng.ts'
 import { dungeonBlocks, isInDungeons } from './dungeon.ts'
-import { biomeSiteAt, inLandmarkClearing, isSandAt, seaWithin, type BiomeKey, type BiomeSite, type Terrain } from './terrain.ts'
+import { biomeSiteAt, campSites, inLandmarkClearing, isSandAt, seaWithin, type BiomeKey, type BiomeSite, type Terrain } from './terrain.ts'
+import { CAMP_KINDS, type CampKind } from './buildings.ts'
+import { CAMPS, type CampRock } from './camps.ts'
 import { TileFacts } from './tile-facts.ts'
 import { WORLD_GEN } from './world-gen-data.ts'
 
@@ -11,59 +13,9 @@ import { WORLD_GEN } from './world-gen-data.ts'
 // client, with whole numbers only: the ore deposits (put away for now), and where plants first grow in each biome (see
 // terrain.ts for the land, the sea and the biomes).
 
-// ---- ore deposits
+// ---- ore
 
-// Ore deposits are for later in the game: none are generated for now, so `oreAt` finds no ore anywhere. The deposits
-// are still worked out by `depositOreAt`, ready to be turned back on by setting this.
-export const ORE_DEPOSITS = false
-
-// The world is divided into cells of DEPOSIT_CELL tiles. Each cell may hold one deposit: a rough disc of one ore,
-// placed and sized by a hash of the seed and the cell. A tile is ore if it is in the deposit of its own cell or of
-// one of the eight around it (a deposit can reach over a cell's edge). The cells round the spawn always hold the
-// common ores, so a new game starts with something to mine.
-
-const DEPOSIT_CELL = 24
-const DEPOSIT_CHANCE = 45 // out of 100
-const MIN_RADIUS = 3
-const MAX_RADIUS = 6
-
-type Deposit = { x: number; y: number; radius: number; ore: ItemId }
-
-const TOTAL_WEIGHT = ORES.reduce((sum, item) => sum + item.weight, 0)
-
-// The deposits always found next to the spawn, by offset from tile 0,0.
-const STARTING_DEPOSITS: readonly Deposit[] = [
-  { x: 7, y: -5, radius: 4, ore: 1 }, // iron
-  { x: -8, y: 6, radius: 4, ore: 2 }, // copper
-  { x: 9, y: 9, radius: 3, ore: 3 }, // tin
-  { x: -9, y: -8, radius: 3, ore: 4 }, // gold
-]
-
-function pickOre(roll: number): ItemId {
-  let left = roll % TOTAL_WEIGHT
-  for (const item of ORES) {
-    if (left < item.weight) return item.id
-    left -= item.weight
-  }
-  return ORES[0].id
-}
-
-function depositOf(seed: number, cx: number, cy: number): Deposit | undefined {
-  // The cells round the spawn hold the starting deposits and nothing else.
-  if (cx >= -1 && cx <= 0 && cy >= -1 && cy <= 0) return undefined
-  const roll = hashInts(seed, cx, cy, 1)
-  if (roll % 100 >= DEPOSIT_CHANCE) return undefined
-  const margin = MAX_RADIUS
-  const span = DEPOSIT_CELL - margin * 2
-  return {
-    x: cx * DEPOSIT_CELL + margin + (hashInts(seed, cx, cy, 2) % span),
-    y: cy * DEPOSIT_CELL + margin + (hashInts(seed, cx, cy, 3) % span),
-    radius: MIN_RADIUS + (hashInts(seed, cx, cy, 4) % (MAX_RADIUS - MIN_RADIUS + 1)),
-    ore: pickOre(hashInts(seed, cx, cy, 5)),
-  }
-}
-
-// Whether a tile is inside a disc: within its radius, with a ragged edge made by a hash of the tile.
+// Whether a tile is inside a disc: within its radius, with a ragged edge made by a hash of the tile (a pond).
 function inDisc(seed: number, disc: { x: number; y: number; radius: number }, x: number, y: number): boolean {
   const dx = x - disc.x
   const dy = y - disc.y
@@ -74,36 +26,23 @@ function inDisc(seed: number, disc: { x: number; y: number; radius: number }, x:
   return hashInts(seed, x, y, 7) % 3 !== 0
 }
 
-// The ore on a tile, or NO_ITEM: none while ORE_DEPOSITS is off.
-export function oreAt(seed: number, x: number, y: number): ItemId {
-  return ORE_DEPOSITS ? depositOreAt(seed, x, y) : NO_ITEM
-}
-
-// The ore the deposits would put on a tile, whether or not deposits are on.
-export function depositOreAt(seed: number, x: number, y: number): ItemId {
-  for (const deposit of STARTING_DEPOSITS) {
-    if (inDisc(seed, deposit, x, y)) return deposit.ore
-  }
-  const cx = floorDiv(x, DEPOSIT_CELL)
-  const cy = floorDiv(y, DEPOSIT_CELL)
-  for (let oy = -1; oy <= 1; oy++) {
-    for (let ox = -1; ox <= 1; ox++) {
-      const deposit = depositOf(seed, cx + ox, cy + oy)
-      if (deposit && inDisc(seed, deposit, x, y)) return deposit.ore
-    }
-  }
+// The factory's ores are gone (only copper and tin are found now, as rocks by the camps): no tile has ore under it, so
+// a miner (put away with the factory) finds none.
+export function oreAt(_seed: number, _x: number, _y: number): ItemId {
   return NO_ITEM
 }
 
 // ---- plants
 
 // Where trees, bushes and rocks are when the world is made, and the flint lying about: in the forest, trees, bushes,
-// grass and flint; in the mountains, rocks; in the desert, cacti, pockets of sand and the odd tin rock; on the meadow,
-// grass, sunflowers, beehives, small patches of rocks (a few of them copper) and clay along its rivers. Nothing round
-// the mummies' tombs or the goblins' camps. The server puts
+// grass and flint; in the mountains, rocks; in the desert, cacti and pockets of sand; on the meadow, grass, sunflowers,
+// beehives, and clay along its rivers. At each camp (see `campPlantAt`) what keeps it (the
+// skeletons' tent, the goblins' lean-to, the mummies' tomb) and its rocks by it: a few rocks at a skeletons' camp, the
+// meadow's only tin rocks at the goblins', the desert's only copper rocks at the mummies'; nothing else round them.
+// The server puts
 // them in a chunk the first time a player comes near it, as buildings (and items on the ground) like any other (they
 // are punched, and change), so after that the chunk is what it says.
-export type PlantKind = 'tree' | 'bush' | 'rock' | 'grass' | 'sunflower' | 'clay' | 'copper-rock' | 'tin-rock' | 'cactus' | 'sand' | 'hive'
+export type PlantKind = 'tree' | 'bush' | 'rock' | 'grass' | 'sunflower' | 'clay' | 'copper-rock' | 'tin-rock' | 'cactus' | 'sand' | 'hive' | CampKind
 
 // How much grows, all in one place. A game can be given its own (GameRoomOptions.plantGeneration); every other world
 // uses these. Rates are whole numbers so the world comes out the same everywhere.
@@ -212,13 +151,12 @@ function inPatch(seed: number, x: number, y: number, kind: PatchKind): boolean {
 // The meadow's and the desert's patches (see `meadow` and `desert` in data/world-gen.json).
 const MEADOW = WORLD_GEN.meadow
 const DESERT = WORLD_GEN.desert
-const MEADOW_ROCKS: PatchKind = { chance: MEADOW.rockChance, min: MEADOW.rocksMin, max: MEADOW.rocksMax, salt: 300, cell: MEADOW.rockCell }
 const SUNFLOWERS: PatchKind = { chance: MEADOW.sunflowerChance, min: MEADOW.sunflowersMin, max: MEADOW.sunflowersMax, salt: 340, cell: MEADOW.sunflowerCell }
 const MEADOW_GRASS: PatchKind = { chance: MEADOW.grassChance, min: MEADOW.grassMin, max: MEADOW.grassMax, salt: 380, cell: MEADOW.grassCell }
 const SAND_POCKETS: PatchKind = { chance: DESERT.sandChance, min: DESERT.sandMin, max: DESERT.sandMax, salt: 420, cell: DESERT.sandCell }
 
 // The meadow: nothing on its beaches; clay on some of the tiles along a river; a beehive now and then (one in some
-// `hiveCell` squares); small patches of rocks, a few of them copper; patches of sunflowers and of grass.
+// `hiveCell` squares); patches of sunflowers and of grass.
 function meadowPlantAt(terrain: Terrain, site: BiomeSite, x: number, y: number): PlantKind | undefined {
   const seed = terrain.seed
   if (isSandAt(terrain, x, y)) return undefined
@@ -233,17 +171,15 @@ function meadowPlantAt(terrain: Terrain, site: BiomeSite, x: number, y: number):
     const hiveY = cy * cell + 2 + (hashInts(seed, cx, cy, 397) % (cell - 4))
     if (x === hiveX && y === hiveY) return 'hive'
   }
-  if (inPatch(seed, x, y, MEADOW_ROCKS)) return hashInts(seed, x, y, 391) % 100 < MEADOW.copperChance ? 'copper-rock' : 'rock'
   if (inPatch(seed, x, y, SUNFLOWERS)) return 'sunflower'
   if (inPatch(seed, x, y, MEADOW_GRASS)) return 'grass'
   return undefined
 }
 
-// The desert (all of it sand): pockets of sand to break, the odd tin rock, and cacti.
+// The desert (all of it sand): pockets of sand to break, and cacti.
 function desertPlantAt(terrain: Terrain, x: number, y: number): PlantKind | undefined {
   const seed = terrain.seed
   if (inPatch(seed, x, y, SAND_POCKETS)) return 'sand'
-  if (hashInts(seed, x, y, 430) % 1000 < DESERT.tinScatter) return 'tin-rock'
   if (hashInts(seed, x, y, 431) % 1000 < DESERT.cactusScatter) return 'cactus'
   return undefined
 }
@@ -255,6 +191,8 @@ export function plantAt(terrain: Terrain, x: number, y: number, rates: PlantGene
   const site = biomeSiteAt(terrain, x, y)
   if (!site || pondAt(terrain, site, x, y) || riverAt(terrain, site, x, y)) return undefined
   const biome = site.biome
+  const camp = campPlantAt(terrain, biome.key, x, y)
+  if (camp) return camp
   if (biome.key === 'mountain' && inLandmarkClearing(terrain, x, y)) return undefined
   if (biome.key === 'meadow' && inClearing(terrain, GOBLIN_CAMPS, x, y)) return undefined
   if (biome.key === 'desert' && inClearing(terrain, TOMBS, x, y)) return undefined
@@ -329,12 +267,64 @@ const WATER = new TileFacts<Terrain>((terrain, x, y) => {
   return site === undefined || pondAt(terrain, site, x, y) || riverAt(terrain, site, x, y) ? 1 : 0
 })
 
+// ---- the camps
+
+// The kind that keeps each camp, the kind of rock that lies by it, and how many (see `rocks` in data/camps.json): a
+// skeletons' camp in the mountains (its tent; plain rocks), a goblins' camp on the meadow (its lean-to; tin), a mummies'
+// tomb in the desert (copper).
+export const CAMP_ROCKS: Readonly<Record<CampKind, { rock: CampRock; count: number }>> = Object.fromEntries(
+  CAMP_KINDS.map((kind) => [kind, { rock: CAMPS[kind].rocks.kind, count: CAMPS[kind].rocks.count }]),
+) as Record<CampKind, { rock: CampRock; count: number }>
+
+// Where a camp's rocks lie, round what keeps it (at its middle): CAMP_ROCK_SPOTS spots two tiles out to the sides and
+// back of it (the front, towards the camera, has the fire), never next to it, so it can always be got at. A camp takes
+// the first `count` of them in an order of its own (by a hash of the seed and where it is), and its rocks are put back on
+// those same spots as its monsters come back (see the server's monsters.ts).
+const ROCK_OFFSETS: ReadonlyArray<readonly [number, number]> = [
+  [-2, 0], [2, 0], [-2, -1], [2, -1], [-1, -2], [1, -2], [-2, 1], [2, 1],
+]
+export function campRockSpots(seed: number, x: number, y: number, count: number): Array<{ x: number; y: number }> {
+  return ROCK_OFFSETS.map((offset, i) => ({ offset, key: hashInts(seed, x, y, 770 + i) }))
+    .sort((a, b) => a.key - b.key)
+    .slice(0, Math.max(0, Math.min(ROCK_OFFSETS.length, count)))
+    .map(({ offset: [ox, oy] }) => ({ x: x + ox, y: y + oy }))
+}
+
+// The camps the seed grows, each with what keeps it at its middle tile: the skeletons' in the mountains (see campSites
+// in terrain.ts), the goblins' on the meadow and the mummies' tombs in the desert (below).
+export function grownCamps(terrain: Terrain): ReadonlyArray<{ kind: CampKind; x: number; y: number }> {
+  let found = grownMade.get(terrain)
+  if (!found) {
+    found = [
+      ...campSites(terrain).map((site) => ({ kind: 'skeleton-camp' as const, ...site })),
+      ...goblinCampSites(terrain).map((site) => ({ kind: 'goblin-camp' as const, ...site })),
+      ...tombSites(terrain).map((site) => ({ kind: 'tomb' as const, ...site })),
+    ]
+    grownMade.set(terrain, found)
+  }
+  return found
+}
+const grownMade = new WeakMap<Terrain, ReadonlyArray<{ kind: CampKind; x: number; y: number }>>()
+// The biome each kind of camp is in: grown there, and only put down there.
+export const CAMP_BIOME: Readonly<Record<CampKind, BiomeKey>> = { 'skeleton-camp': 'mountain', 'goblin-camp': 'meadow', tomb: 'desert' }
+
+// What a camp grows on a tile, if anything: what keeps it, on its middle, or one of its rocks.
+function campPlantAt(terrain: Terrain, biome: BiomeKey, x: number, y: number): PlantKind | undefined {
+  for (const camp of grownCamps(terrain)) {
+    if (CAMP_BIOME[camp.kind] !== biome || Math.abs(camp.x - x) > 2 || Math.abs(camp.y - y) > 2) continue
+    if (camp.x === x && camp.y === y) return camp.kind
+    const rocks = CAMP_ROCKS[camp.kind]
+    if (campRockSpots(terrain.seed, camp.x, camp.y, rocks.count).some((spot) => spot.x === x && spot.y === y)) return rocks.rock
+  }
+  return undefined
+}
+
 // ---- the goblins' camps and the mummies' tombs
 
 // The goblins' camps on the meadow and the mummies' tombs in the desert (see `goblinCamps` and `tombs` in
 // data/world-gen.json), found the same way: one in each `cell` square of the island, `chance` percent of the time, on
-// a tile of it well clear of the sea and with no river within `clearing` + 1 of it, nothing growing within `clearing`
-// of the middle. Worked out once per world, from its terrain alone, so every page has them where the server does.
+// a tile of it well clear of the sea and with no water (a river, the sea) within `clearing` + 1 of it, nothing growing
+// within `clearing` of the middle. Worked out once per world, from its terrain alone, so every page has them where the server does.
 // (`salt`: so each kind falls in its own places.)
 type Haunts = { biome: BiomeKey; cell: number; chance: number; clearing: number; salt: number; made: WeakMap<Terrain, ReadonlyArray<{ x: number; y: number }>> }
 const GOBLIN_CAMPS: Haunts = { biome: 'meadow', ...WORLD_GEN.goblinCamps, salt: 731, made: new WeakMap() }
@@ -375,8 +365,8 @@ function findHaunts(terrain: Terrain, haunts: Haunts): Array<{ x: number; y: num
   const middleX = Math.floor(site.x / cell)
   const middleY = Math.floor(site.y / cell)
   const clear = Math.ceil(haunts.clearing) + 1
-  const riverNear = (x: number, y: number): boolean => {
-    for (let dy = -clear; dy <= clear; dy++) for (let dx = -clear; dx <= clear; dx++) if (riverAt(terrain, site, x + dx, y + dy)) return true
+  const waterNear = (x: number, y: number): boolean => {
+    for (let dy = -clear; dy <= clear; dy++) for (let dx = -clear; dx <= clear; dx++) if (waterAt(terrain, x + dx, y + dy)) return true
     return false
   }
   for (let gy = middleY - cells; gy <= middleY + cells; gy++) {
@@ -384,7 +374,7 @@ function findHaunts(terrain: Terrain, haunts: Haunts): Array<{ x: number; y: num
       if (hashInts(terrain.seed, gx, gy, salt) % 100 >= haunts.chance) continue
       const x = gx * cell + 6 + (hashInts(terrain.seed, gx, gy, salt + 1) % (cell - 12))
       const y = gy * cell + 6 + (hashInts(terrain.seed, gx, gy, salt + 2) % (cell - 12))
-      if (biomeSiteAt(terrain, x, y) !== site || seaWithin(terrain, x, y, 6) || riverNear(x, y)) continue
+      if (biomeSiteAt(terrain, x, y) !== site || seaWithin(terrain, x, y, 6) || waterNear(x, y)) continue
       found.push({ x, y })
     }
   }

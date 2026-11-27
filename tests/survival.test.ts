@@ -62,16 +62,16 @@ test('armour takes a flat amount off each hit, but a hit always does at least 1'
 })
 
 test('eating food gives back health, more for better food; not when unhurt, and not what is not food', () => {
-  const { room, client } = arena('EAT', { berries: 3, 'cooked-steak': 2, stick: 4 })
-  assert.ok(getItem(itemId('cooked-steak')).heals! > getItem(itemId('steak')).heals!, 'cooked beats raw')
-  assert.ok(getItem(itemId('steak')).heals! > getItem(itemId('berries')).heals! || getItem(itemId('berries')).heals! >= 1)
+  const { room, client } = arena('EAT', { berries: 3, 'cooked-meat': 2, stick: 4 })
+  assert.ok(getItem(itemId('cooked-meat')).heals! > getItem(itemId('meat')).heals!, 'cooked beats raw')
+  assert.ok(getItem(itemId('meat')).heals! > getItem(itemId('berries')).heals! || getItem(itemId('berries')).heals! >= 1)
   client.command({ k: 'eat', slot: 0 })
   run(room, [client], 3)
   assert.equal(client.results.at(-1)?.why, 'fullHealth')
   client.player.health = 5
   client.command({ k: 'eat', slot: 1 })
   run(room, [client], 3)
-  assert.equal(client.player.health, 5 + getItem(itemId('cooked-steak')).heals!)
+  assert.equal(client.player.health, 5 + getItem(itemId('cooked-meat')).heals!)
   assert.equal(client.player.inventory.slots[1].count, 1)
   client.command({ k: 'eat', slot: 2 })
   run(room, [client], 3)
@@ -129,7 +129,7 @@ test('a request the server cannot read is answered as refused, and does not hold
 
 test('deer drop meat and hides; wolves drop hides and fangs; the items they used to drop are gone', () => {
   const drops = (kind: string): string[] => animalDef(kind).drops.map((drop) => getItem(drop.item).key).sort()
-  assert.deepEqual(drops('deer'), ['hide', 'steak'])
+  assert.deepEqual(drops('deer'), ['hide', 'meat'])
   assert.deepEqual(drops('wolf'), ['fang', 'hide'])
   for (const gone of ['venison', 'cooked-venison', 'wolf-pelt', 'cooked-egg']) assert.equal(itemByKey(gone), undefined, `${gone} is gone`)
   assert.equal(cookingOf(itemId('egg'), 'campfire')?.into, itemId('fried-egg'), 'an egg fries')
@@ -177,7 +177,7 @@ test('grass stops spreading once its patch is 15 tufts big', () => {
 })
 
 test('an arrow that comes down over the sea sinks', () => {
-  const room = new GameRoom('SINK', 7, { wildAnimals: false, plants: false, animals: true, terrain: { size: 'small' } })
+  const room = new GameRoom('SINK', 7, { wildAnimals: false, plants: false, animals: true, terrain: { radius: 70 } })
   const client = new TestClient(room, 'Archer')
   // The shore due west of the forest.
   const forest = room.terrain.sites[0]

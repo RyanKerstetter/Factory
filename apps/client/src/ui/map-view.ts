@@ -1,35 +1,37 @@
 import {
   biomeAt,
-  campSites,
   CHUNK_SIZE,
   chunkCoords,
   chunkId,
   dungeonEntrance,
   floorDiv,
-  goblinCampSites,
-  tombSites,
+  isFloorKind,
+  grownCamps,
+  isCampKind,
+  chunkOfTile,
   isFoggedAt,
   isSeaAt,
   coastAround,
   isShelf,
   plantsInChunk,
   waterAt,
-  WORLD_GEN,
+  ZOOM_MIN as ZOOM_OUT_MOST,
   type BuildingKind,
   type Terrain,
 } from '../../../../packages/shared/src/index.ts'
+import { groundSpan } from '../camera.ts'
 import { snowOnTile } from '../snow.ts'
 import { element } from './dom.ts'
 
 // The map (M): the world as far as this player has explored it, PX pixels to a tile, with everyone playing on it. The
 // world goes on every way, so the map does too: what is explored is kept a REGION-tile square at a time, made as the
 // player first comes near it, and kept in this browser for each world and player name (localStorage), so it is still
-// there next time. Ground is explored in cells of CELL tiles, every cell within REVEAL tiles of the player (`map` in
-// data/world-gen.json); it is painted as it is
+// there next time. Ground is explored in cells of CELL tiles: every cell any of which is on the screen round the player
+// (REVEAL: as much as a 16:9 screen shows, zoomed all the way out); it is painted as it is
 // explored (sea, shelf, beach, forest, ponds, rock and snow), with what stands on it (trees, bushes, rocks, and what
 // players have built, each a little picture PX pixels a side), and the camps and the way into the dungeon show once
 // found. What stands on ground the page has loaded is drawn as it is now (`things`); elsewhere, as the seed grew it.
-// The far islands (the desert, the meadow) show only as fog, with nothing on them, until the player has truesight.
+// The far islands (the meadow, the desert) show only as fog, with nothing on them, until the player has truesight.
 // It shows round the player, and dragging it with the left button looks around, as far as you like (a double click, or
 // opening it again, brings it back to the player). The mouse wheel (or its + and - buttons) zooms it in and out, from
 // ZOOM_MIN to ZOOM_MAX times its own size, about the mouse; the zoom is kept while the page is open.
@@ -43,7 +45,7 @@ const ZOOM_MAX = 4
 const ZOOM_STEP = 1.25
 // How often the explored ground the page has loaded is drawn again, so a felled tree or a new fence shows.
 const REFRESH_MS = 2_000
-const REVEAL = WORLD_GEN.map.reveal
+const REVEAL = groundSpan(16 / 9, ZOOM_OUT_MOST)
 // How big a square of the explored ground is kept as one (tiles; a whole number of cells), and the bytes of its
 // explored cells, a bit each.
 const REGION = 64
@@ -85,8 +87,8 @@ const ESSENCE: Rgb = [0x8f, 0xd6, 0xff]
 const PETAL: Rgb = [0xf2, 0xc4, 0x1c]
 const SEED: Rgb = [0x5a, 0x3a, 0x1c]
 const STEM: Rgb = [0x4f, 0x8a, 0x3a]
-const CLAY: Rgb = [0xa8, 0x64, 0x4a]
-const CLAY_DARK: Rgb = [0x84, 0x4c, 0x38]
+const CLAY: Rgb = [0xa4, 0x9a, 0x9a]
+const CLAY_DARK: Rgb = [0x84, 0x7d, 0x7d]
 const COPPER: Rgb = [0xd2, 0x7a, 0x3c]
 const TIN: Rgb = [0xdc, 0xdf, 0xd4]
 const CACTUS: Rgb = [0x3c, 0x7a, 0x3a]
@@ -118,10 +120,15 @@ const GLYPHS: Partial<Record<BuildingKind, Glyph>> = {
   'copper-rock': { rows: ['....', '.so.', 'sSoS', 'SoSS'], colors: { s: STONE_LIGHT, S: STONE, o: COPPER } },
   'tin-rock': { rows: ['....', '.so.', 'sSoS', 'SoSS'], colors: { s: STONE_LIGHT, S: STONE, o: TIN } },
   cactus: { rows: ['.c..', 'cc.c', '.ccc', '.c..'], colors: { c: CACTUS } },
+  'young-cactus': { rows: ['....', '.c..', '.cc.', '....'], colors: { c: CACTUS } },
   sand: { rows: ['....', '.dd.', 'dddd', '....'], colors: { d: SAND_DARK } },
   cobweb: { rows: ['w..w', '.ww.', '.ww.', 'w..w'], colors: { w: WEB } },
   hive: { rows: ['.hh.', 'hcch', 'hcch', '.hh.'], colors: { h: HONEY, c: COMB } },
   'beebox': { rows: ['wwww', 'whhw', 'whhw', 'wwww'], colors: { w: WOOD, h: HONEY } },
+  'wood-wall': { rows: ['dddd', 'dddd', 'dddd', 'dddd'], colors: { d: WOOD_DARK } },
+  'wood-door': { rows: ['dddd', 'wwww', 'wwww', 'dddd'], colors: { d: WOOD_DARK, w: WOOD } },
+  'wood-floor': { rows: ['wwww', 'dddd', 'wwww', 'dddd'], colors: { w: WOOD, d: WOOD_DARK } },
+  'stone-floor': { rows: ['sSss', 'ssSs', 'Ssss', 'ssSs'], colors: { s: STONE_LIGHT, S: STONE } },
 }
 // Anything else a player put down (a chest, the stations, a barrel...): a block of wood.
 const BUILT: Glyph = { rows: ['dddd', 'dwwd', 'dwwd', 'dddd'], colors: { d: WOOD_DARK, w: WOOD } }
@@ -207,7 +214,10 @@ export function createMapView(container: HTMLElement): MapView {
   let key = ''
   let dirty = false
   let savedAt = 0
+  // The way into the dungeon, and the camps as the seed grew them (each camp's mark is where what keeps it stands: as it
+  // is now on ground the page has loaded, see `marks`).
   let landmarks: Array<{ x: number; y: number; kind: 'camp' | 'goblins' | 'tomb' | 'dungeon' }> = []
+  let seedCamps: ReadonlyArray<{ x: number; y: number; kind: BuildingKind }> = []
   let fogLifted = false
   // How far the view has been dragged from round the player (tiles), the drag going on, and how far it is zoomed
   // (times PX pixels a tile).
@@ -313,7 +323,12 @@ export function createMapView(container: HTMLElement): MapView {
     for (const id of frame.loadedChunks) {
       const tiles = new Map<number, BuildingKind>()
       const { cx, cy } = chunkCoords(id)
-      for (const thing of frame.things(id)) tiles.set(thing.x - cx * CHUNK_SIZE + (thing.y - cy * CHUNK_SIZE) * CHUNK_SIZE, thing.kind)
+      for (const thing of frame.things(id)) {
+        const tile = thing.x - cx * CHUNK_SIZE + (thing.y - cy * CHUNK_SIZE) * CHUNK_SIZE
+        // A floor shows only where nothing stands on it.
+        if (isFloorKind(thing.kind) && tiles.has(tile)) continue
+        tiles.set(tile, thing.kind)
+      }
       live.set(id, tiles)
     }
     for (const id of frame.loadedChunks) {
@@ -356,21 +371,32 @@ export function createMapView(container: HTMLElement): MapView {
     }
     flush()
     const entrance = dungeonEntrance(next)
-    landmarks = [
-      ...campSites(next).map((site) => ({ ...site, kind: 'camp' as const })),
-      ...(entrance ? [{ ...entrance, kind: 'dungeon' as const }] : []),
-      // The goblins' camps are on the meadow and the mummies' tombs in the desert, under the fog until the player has
-      // truesight.
-      ...(lifted ? goblinCampSites(next).map((site) => ({ ...site, kind: 'goblins' as const })) : []),
-      ...(lifted ? tombSites(next).map((site) => ({ ...site, kind: 'tomb' as const })) : []),
-    ]
+    landmarks = entrance ? [{ ...entrance, kind: 'dungeon' as const }] : []
+    seedCamps = grownCamps(next)
   }
 
-  // Explores the cells round a point (tiles): those within REVEAL of it.
+  // Every mark on the map: the way into the dungeon, and each camp (its tent, lean-to or tomb) as the seed grew it, or,
+  // on ground the page has loaded, as it stands now (one broken is gone; one put down is there). The goblins' camps and
+  // the mummies' tombs are under the fog until the player has truesight.
+  const CAMP_MARK = { 'skeleton-camp': 'camp', 'goblin-camp': 'goblins', tomb: 'tomb' } as const
+  const marks = (): Array<{ x: number; y: number; kind: 'camp' | 'goblins' | 'tomb' | 'dungeon' }> => {
+    const found = [...landmarks]
+    const camp = (x: number, y: number, kind: BuildingKind): void => {
+      if (!isCampKind(kind) || (kind !== 'skeleton-camp' && !fogLifted)) return
+      found.push({ x, y, kind: CAMP_MARK[kind] })
+    }
+    for (const grown of seedCamps) if (!live.has(chunkOfTile(grown.x, grown.y))) camp(grown.x, grown.y, grown.kind)
+    for (const [id, tiles] of live) {
+      const { cx, cy } = chunkCoords(id)
+      for (const [tile, kind] of tiles) camp(cx * CHUNK_SIZE + (tile % CHUNK_SIZE), cy * CHUNK_SIZE + Math.floor(tile / CHUNK_SIZE), kind)
+    }
+    return found
+  }
+
+  // Explores the cells round a point (tiles): every one any of which a screen centred there shows (see REVEAL).
   const reveal = (x: number, y: number): void => {
-    for (let cy = Math.floor((y - REVEAL) / CELL); cy <= Math.floor((y + REVEAL) / CELL); cy++) {
-      for (let cx = Math.floor((x - REVEAL) / CELL); cx <= Math.floor((x + REVEAL) / CELL); cx++) {
-        if (Math.hypot(cx * CELL + CELL / 2 - x, cy * CELL + CELL / 2 - y) > REVEAL) continue
+    for (let cy = Math.floor((y - REVEAL.y) / CELL); cy <= Math.floor((y + REVEAL.y) / CELL); cy++) {
+      for (let cx = Math.floor((x - REVEAL.x) / CELL); cx <= Math.floor((x + REVEAL.x) / CELL); cx++) {
         const region = regionAt(floorDiv(cx, REGION_CELLS), floorDiv(cy, REGION_CELLS), true)!
         const lx = cx - region.rx * REGION_CELLS
         const ly = cy - region.ry * REGION_CELLS
@@ -412,7 +438,7 @@ export function createMapView(container: HTMLElement): MapView {
       }
     }
     const at = (x: number, y: number): [number, number] => [x * scale - ox, y * scale - oy]
-    for (const mark of landmarks) {
+    for (const mark of marks()) {
       if (!isExplored(mark.x, mark.y)) continue
       const [px, py] = at(mark.x + 0.5, mark.y + 0.5)
       context.fillStyle = mark.kind === 'camp' ? '#d9483b' : mark.kind === 'goblins' ? '#7fae3a' : mark.kind === 'tomb' ? '#d9b56a' : '#9fd6ff'

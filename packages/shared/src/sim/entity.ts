@@ -1,6 +1,6 @@
 import { BEES } from '../bees.ts'
 import { BUILDINGS, type BuildingKind, type FireKind } from '../buildings.ts'
-import { CHEST_SLOTS, FEEDER_SLOTS, MINER_SLOTS, SAPLING_STAGES, SEEDLING_STAGES, SPROUT_STAGES, TPS } from '../constants.ts'
+import { CACTUS_STAGES, CHEST_SLOTS, FEEDER_SLOTS, MINER_SLOTS, SAPLING_STAGES, SEEDLING_STAGES, SPROUT_STAGES, TPS } from '../constants.ts'
 import { getCrop } from '../crops.ts'
 import type { Direction } from '../geometry.ts'
 import { addItems, countOf, createInventory, inventoryFromWire, inventoryToWire, inventoryTotals, removeItems, roomFor, type Inventory } from '../inventory.ts'
@@ -34,31 +34,36 @@ export type MinerEntity = EntityBase & { kind: 'miner'; ore: ItemId; progress: n
 // A chest, and the name a player gave it (shown when it is hovered; not part of the simulation's hash).
 export type ChestEntity = EntityBase & { kind: 'chest'; hp: number; inv: Inventory; name?: string }
 // Something with only the hits it has left in it: a bush, a rock, a tuft of grass, a fence, a sleeping bag, an ice door, a well,
-// a worker skeleton (waiting: it does nothing yet).
-export type PlantEntity = EntityBase & { kind: 'bush' | 'rock' | 'grass' | 'fence' | 'bed' | 'door' | 'well' | 'worker' | 'dummy' | 'sunflower' | 'clay' | 'copper-rock' | 'tin-rock' | 'cactus' | 'sand' | 'cobweb'; hp: number }
+// a worker skeleton (waiting: it does nothing yet), a wooden wall, a wooden or stone floor, a table (any kind), a chair.
+export type PlantEntity = EntityBase & { kind: 'bush' | 'rock' | 'grass' | 'fence' | 'bed' | 'door' | 'well' | 'worker' | 'dummy' | 'sunflower' | 'clay' | 'copper-rock' | 'tin-rock' | 'cactus' | 'sand' | 'cobweb' | 'wood-wall' | 'wood-floor' | 'stone-floor' | 'table' | 'chair' | 'low-table' | 'round-table' | 'skeleton-camp' | 'goblin-camp' | 'tomb'; hp: number }
 // A waystone, and the name a player gave it (what other waystones list it as; not part of the simulation's hash).
 export type WaystoneEntity = EntityBase & { kind: 'waystone'; hp: number; name?: string }
 // Something stuck in the ground, to be knocked loose by a hit (a piece of flint). `item` and `count` are what it gives.
 export type LooseEntity = EntityBase & { kind: 'loose'; item: ItemId; count: number }
-// A gate, and its mode (GATE_AUTO, GATE_OPEN or GATE_SHUT: see fences.ts).
-export type GateEntity = EntityBase & { kind: 'gate'; hp: number; mode: number }
+// A gate or a wooden door, and its mode (GATE_AUTO, GATE_OPEN or GATE_SHUT: see fences.ts).
+export type GateEntity = EntityBase & { kind: 'gate' | 'wood-door'; hp: number; mode: number }
 // A tree: the chopping it has left in it, and the punches towards knocking the next stick (or bark) loose.
 export type TreeEntity = EntityBase & { kind: 'tree'; hp: number; punches: number }
-// A sapling, a berry sprout or a sunflower seedling, which grows a stage on each of its random ticks and becomes a tree
-// (after SAPLING_STAGES), a bush (after SPROUT_STAGES) or a sunflower (after SEEDLING_STAGES).
-export type SaplingEntity = EntityBase & { kind: 'sapling' | 'sprout' | 'seedling'; stage: number }
+// A sapling, a berry sprout, a sunflower seedling or a young cactus, which grows a stage on each of its random ticks and
+// becomes a tree (after SAPLING_STAGES), a bush (after SPROUT_STAGES), a sunflower (after SEEDLING_STAGES) or a cactus
+// (after CACTUS_STAGES).
+export type SaplingEntity = EntityBase & { kind: YoungKind; stage: number }
+export type YoungKind = 'sapling' | 'sprout' | 'seedling' | 'young-cactus'
+export function isYoungKind(kind: string): kind is YoungKind {
+  return kind === 'sapling' || kind === 'sprout' || kind === 'seedling' || kind === 'young-cactus'
+}
 // A beehive, wild or a bee box (see the server's bees.ts): its hits, how much honey is in it (honeycombs), how many
 // worker bees live in it (in it or out and about), and whether its queen is in it (1) or not (0: it stands empty for a
 // queen looking for a home).
 export type HiveEntity = EntityBase & { kind: 'hive' | 'beebox'; hp: number; honey: number; bees: number; queen: number }
-// A garden plot: the crop in it (its number in crops.json, 0 for none), how far it has grown (in GROWTH_STEP a random
+// Farmland: the crop in it (its number in crops.json, 0 for none), how far it has grown (in GROWTH_STEP a random
 // tick, more when watered and fertilised), and how watered and how fertilised it is (0 to 100, falling over time).
 export type PlotEntity = EntityBase & { kind: 'plot'; hp: number; crop: number; growth: number; water: number; fertility: number }
 // A work station, the stump or the workbench (see stations.ts): its tool, input and output slots (STATION_LAYOUT), the
 // recipe picked (its index in its station's list, plus one; 0 for none), how many ticks into it it is, and whether it
 // is working (1) or waiting for Craft to be pressed (0).
 export type StationEntity = EntityBase & { kind: StationKind; hp: number; inv: Inventory; recipe: number; progress: number; active: number }
-// A feed box: what is in it for the animals.
+// A feed trough: what is in it for the animals.
 export type FeederEntity = EntityBase & { kind: 'feeder'; hp: number; inv: Inventory }
 // A campfire, or an oven (see machines.ts).
 export type CampfireEntity = EntityBase & {
@@ -104,6 +109,7 @@ const FIRE_FIELDS = ['hp', 'lit', 'burn', 'target', 'heat', 'cook', 'burnt'] as 
 const MACHINE_FIELDS = {
   stump: STATION_FIELDS,
   workbench: STATION_FIELDS,
+  carpenter: STATION_FIELDS,
   campfire: FIRE_FIELDS,
   oven: FIRE_FIELDS,
   barrel: ['hp', 'liquid', 'amount', 'sealed', 'process', 'progress', 'heat', 'border'],
@@ -117,6 +123,7 @@ export const ALTAR_NUMBERS = MACHINE_FIELDS.altar.length
 export const MACHINE_SLOTS: Readonly<Record<MachineKind, number>> = {
   stump: STATION_LAYOUT.stump.slots,
   workbench: STATION_LAYOUT.workbench.slots,
+  carpenter: STATION_LAYOUT.carpenter.slots,
   campfire: CAMPFIRE_SLOTS,
   oven: CAMPFIRE_SLOTS,
   barrel: BARREL_SLOTS,
@@ -144,6 +151,7 @@ export const GROWS_INTO = {
   sapling: { kind: 'tree', stages: SAPLING_STAGES },
   sprout: { kind: 'bush', stages: SPROUT_STAGES },
   seedling: { kind: 'sunflower', stages: SEEDLING_STAGES },
+  'young-cactus': { kind: 'cactus', stages: CACTUS_STAGES },
 } as const
 export type Entity =
   | BeltEntity
@@ -185,7 +193,7 @@ export function isHittable(entity: Entity): boolean {
 // The hits something has left in it, or 0 for anything that is not hit.
 export function hpOf(entity: Entity): number {
   if ('hp' in entity) return entity.hp
-  return entity.kind === 'sapling' || entity.kind === 'sprout' || entity.kind === 'seedling' ? 1 : 0
+  return isYoungKind(entity.kind) ? 1 : 0
 }
 
 // A new building or plant. `ore` is what is under it, which only a miner cares about.
@@ -218,9 +226,21 @@ export function createEntity(id: number, kind: BuildingKind, x: number, y: numbe
     case 'cactus':
     case 'sand':
     case 'cobweb':
+    case 'wood-wall':
+    case 'wood-floor':
+    case 'stone-floor':
+    case 'table':
+    case 'chair':
+    case 'low-table':
+    case 'round-table':
     case 'waystone':
       return { id, kind, x, y, dir: 0, hp }
+    case 'skeleton-camp':
+    case 'goblin-camp':
+    case 'tomb':
+      return { id, kind, x, y, dir: 0, hp }
     case 'gate':
+    case 'wood-door':
       return { id, kind, x, y, dir: 0, hp, mode: 0 }
     case 'loose':
       // What it gives is `ore` (the item), one of it.
@@ -228,6 +248,7 @@ export function createEntity(id: number, kind: BuildingKind, x: number, y: numbe
     case 'sapling':
     case 'sprout':
     case 'seedling':
+    case 'young-cactus':
       return { id, kind, x, y, dir: 0, stage: 0 }
     case 'hive':
       // A wild one has its colony in it; a bee box stands empty until a queen moves in.
@@ -240,6 +261,7 @@ export function createEntity(id: number, kind: BuildingKind, x: number, y: numbe
       return { id, kind, x, y, dir: 0, hp, inv: createInventory(FEEDER_SLOTS) }
     case 'stump':
     case 'workbench':
+    case 'carpenter':
     case 'campfire':
     case 'oven':
     case 'barrel':
@@ -282,6 +304,7 @@ const STEPS: { readonly [K in Entity['kind']]?: (entity: EntityOf<K>) => void } 
   miner: stepMiner,
   stump: stepStation,
   workbench: stepStation,
+  carpenter: stepStation,
   campfire: stepCampfire,
   oven: stepCampfire,
   barrel: stepBarrel,
@@ -293,17 +316,24 @@ export function stepEntity(entity: Entity): void {
   ;(STEPS[entity.kind] as ((entity: Entity) => void) | undefined)?.(entity)
 }
 
-// Whether a chunk steps a kind of building every tick: one with a step (see STEPS), or a garden plot (its water dries
+// Whether a chunk steps a kind of building every tick: one with a step (see STEPS), or farmland (its water dries
 // on the clock: see Chunk.step).
 export function stepsEachTick(kind: Entity['kind']): boolean {
   return STEPS[kind] !== undefined || kind === 'plot'
+}
+
+// How many ticks a miner takes to dig one of an item: its `mineTicks`, or MINE_TICKS for one that has none (the
+// factory's ores, which had them, are gone).
+export const MINE_TICKS = 60
+export function mineTicksOf(item: ItemId): number {
+  return getItem(item).mineTicks || MINE_TICKS
 }
 
 // A miner digs, unless its store is full (it waits until something takes from it).
 function stepMiner(miner: MinerEntity): void {
   if (roomFor(miner.inv, miner.ore, 1) === 0) return
   miner.progress++
-  if (miner.progress >= getItem(miner.ore).mineTicks) {
+  if (miner.progress >= mineTicksOf(miner.ore)) {
     miner.progress = 0
     addItems(miner.inv, miner.ore, 1)
   }
@@ -311,7 +341,7 @@ function stepMiner(miner: MinerEntity): void {
 
 // A random tick (see RANDOM_TICKS_PER_CHUNK): a crop in a garden
 // plot grows (faster watered and fertilised), and the plot dries out and its fertility fades; a sapling, sprout or
-// seedling grows a stage, and after its last it is a tree, a bush or a sunflower, which is given back to be put in its
+// seedling or young cactus grows a stage, and after its last it is a tree, a bush, a sunflower or a cactus, which is given back to be put in its
 // place (same ID, same tile).
 // Anything else is left as it is.
 export function randomTick(entity: Entity): Entity | undefined {
@@ -324,7 +354,7 @@ export function randomTick(entity: Entity): Entity | undefined {
     entity.fertility = Math.max(0, entity.fertility - FERTILITY_FALL)
     return undefined
   }
-  if (entity.kind !== 'sapling' && entity.kind !== 'sprout' && entity.kind !== 'seedling') return undefined
+  if (entity.kind !== 'sapling' && entity.kind !== 'sprout' && entity.kind !== 'seedling' && entity.kind !== 'young-cactus') return undefined
   const grows = GROWS_INTO[entity.kind]
   entity.stage++
   if (entity.stage < grows.stages) return undefined
@@ -336,7 +366,7 @@ export function growthNeeded(growTicks: number): number {
   return growTicks * GROWTH_STEP
 }
 
-// Whether a garden plot's crop is fully grown.
+// Whether farmland's crop is fully grown.
 export function cropIsGrown(plot: PlotEntity): boolean {
   const crop = getCrop(plot.crop)
   return crop !== undefined && plot.growth >= growthNeeded(crop.growTicks)
@@ -498,11 +528,11 @@ export type EntityState =
   | { id: number; kind: 'miner'; x: number; y: number; dir: Direction; ore: ItemId; progress: number; inv: number[] }
   | { id: number; kind: 'chest'; x: number; y: number; dir: Direction; hp?: number; inv: number[]; name?: string }
   | { id: number; kind: 'tree'; x: number; y: number; dir: Direction; hp: number; punches: number }
-  | { id: number; kind: 'bush' | 'rock' | 'grass' | 'fence' | 'bed' | 'door' | 'well' | 'worker' | 'dummy' | 'sunflower' | 'clay' | 'copper-rock' | 'tin-rock' | 'cactus' | 'sand' | 'cobweb'; x: number; y: number; dir: Direction; hp: number }
+  | { id: number; kind: 'bush' | 'rock' | 'grass' | 'fence' | 'bed' | 'door' | 'well' | 'worker' | 'dummy' | 'sunflower' | 'clay' | 'copper-rock' | 'tin-rock' | 'cactus' | 'sand' | 'cobweb' | 'wood-wall' | 'wood-floor' | 'stone-floor' | 'table' | 'chair' | 'low-table' | 'round-table' | 'skeleton-camp' | 'goblin-camp' | 'tomb'; x: number; y: number; dir: Direction; hp: number }
   | { id: number; kind: 'waystone'; x: number; y: number; dir: Direction; hp: number; name?: string }
-  | { id: number; kind: 'gate'; x: number; y: number; dir: Direction; hp: number; mode: number }
+  | { id: number; kind: 'gate' | 'wood-door'; x: number; y: number; dir: Direction; hp: number; mode: number }
   | { id: number; kind: 'loose'; x: number; y: number; dir: Direction; item: ItemId; count: number }
-  | { id: number; kind: 'sapling' | 'sprout' | 'seedling'; x: number; y: number; dir: Direction; stage: number }
+  | { id: number; kind: YoungKind; x: number; y: number; dir: Direction; stage: number }
   | { id: number; kind: 'hive' | 'beebox'; x: number; y: number; dir: Direction; hp: number; honey: number; bees: number; queen: number }
   | { id: number; kind: 'plot'; x: number; y: number; dir: Direction; hp: number; crop: number; growth: number; water: number; fertility: number }
   | { id: number; kind: 'feeder'; x: number; y: number; dir: Direction; hp: number; inv: number[] }
@@ -540,16 +570,28 @@ export function entityToState(entity: Entity): EntityState {
     case 'cactus':
     case 'sand':
     case 'cobweb':
+    case 'wood-wall':
+    case 'wood-floor':
+    case 'stone-floor':
+    case 'table':
+    case 'chair':
+    case 'low-table':
+    case 'round-table':
+    case 'skeleton-camp':
+    case 'goblin-camp':
+    case 'tomb':
       return { id, kind: entity.kind, x, y, dir, hp: entity.hp }
     case 'waystone':
       return { id, kind: 'waystone', x, y, dir, hp: entity.hp, ...(entity.name ? { name: entity.name } : {}) }
     case 'gate':
-      return { id, kind: 'gate', x, y, dir, hp: entity.hp, mode: entity.mode }
+    case 'wood-door':
+      return { id, kind: entity.kind, x, y, dir, hp: entity.hp, mode: entity.mode }
     case 'loose':
       return { id, kind: 'loose', x, y, dir, item: entity.item, count: entity.count }
     case 'sapling':
     case 'sprout':
     case 'seedling':
+    case 'young-cactus':
       return { id, kind: entity.kind, x, y, dir, stage: entity.stage }
     case 'hive':
     case 'beebox':
@@ -560,6 +602,7 @@ export function entityToState(entity: Entity): EntityState {
       return { id, kind: 'feeder', x, y, dir, hp: entity.hp, inv: inventoryToWire(entity.inv) }
     case 'stump':
     case 'workbench':
+    case 'carpenter':
     case 'campfire':
     case 'oven':
     case 'barrel':
@@ -583,8 +626,12 @@ export function entityFromState(state: EntityState): Entity {
     }
     case 'miner':
       return { id, kind: 'miner', x, y, dir, ore: state.ore, progress: state.progress, inv: inventoryFromWire(state.inv) }
-    case 'chest':
-      return { id, kind: 'chest', x, y, dir, hp: state.hp ?? BUILDINGS.chest.maxHp, inv: inventoryFromWire(state.inv), ...(state.name ? { name: state.name } : {}) }
+    case 'chest': {
+      // A chest saved when chests had fewer slots gets the new ones, empty, at the end.
+      const inv = inventoryFromWire(state.inv)
+      while (inv.slots.length < CHEST_SLOTS) inv.slots.push({ item: NO_ITEM, count: 0 })
+      return { id, kind: 'chest', x, y, dir, hp: state.hp ?? BUILDINGS.chest.maxHp, inv, ...(state.name ? { name: state.name } : {}) }
+    }
     case 'tree':
       return { id, kind: 'tree', x, y, dir, hp: state.hp, punches: state.punches }
     case 'bush':
@@ -603,16 +650,28 @@ export function entityFromState(state: EntityState): Entity {
     case 'cactus':
     case 'sand':
     case 'cobweb':
+    case 'wood-wall':
+    case 'wood-floor':
+    case 'stone-floor':
+    case 'table':
+    case 'chair':
+    case 'low-table':
+    case 'round-table':
+    case 'skeleton-camp':
+    case 'goblin-camp':
+    case 'tomb':
       return { id, kind: state.kind, x, y, dir, hp: state.hp }
     case 'waystone':
       return { id, kind: 'waystone', x, y, dir, hp: state.hp, ...(state.name ? { name: state.name } : {}) }
     case 'gate':
-      return { id, kind: 'gate', x, y, dir, hp: state.hp, mode: state.mode }
+    case 'wood-door':
+      return { id, kind: state.kind, x, y, dir, hp: state.hp, mode: state.mode }
     case 'loose':
       return { id, kind: 'loose', x, y, dir, item: state.item, count: state.count }
     case 'sapling':
     case 'sprout':
     case 'seedling':
+    case 'young-cactus':
       return { id, kind: state.kind, x, y, dir, stage: state.stage }
     case 'hive':
     case 'beebox':
@@ -623,6 +682,7 @@ export function entityFromState(state: EntityState): Entity {
       return { id, kind: 'feeder', x, y, dir, hp: state.hp, inv: inventoryFromWire(state.inv) }
     case 'stump':
     case 'workbench':
+    case 'carpenter':
     case 'campfire':
     case 'oven':
     case 'barrel':
@@ -674,10 +734,21 @@ export function hashEntity(hasher: Hasher, entity: Entity): void {
     case 'cactus':
     case 'sand':
     case 'cobweb':
+    case 'wood-wall':
+    case 'wood-floor':
+    case 'stone-floor':
+    case 'table':
+    case 'chair':
+    case 'low-table':
+    case 'round-table':
+    case 'skeleton-camp':
+    case 'goblin-camp':
+    case 'tomb':
     case 'waystone':
       hasher.int(entity.hp)
       return
     case 'gate':
+    case 'wood-door':
       hasher.int(entity.hp).int(entity.mode)
       return
     case 'loose':
@@ -686,6 +757,7 @@ export function hashEntity(hasher: Hasher, entity: Entity): void {
     case 'sapling':
     case 'sprout':
     case 'seedling':
+    case 'young-cactus':
       hasher.int(entity.stage)
       return
     case 'hive':
@@ -701,6 +773,7 @@ export function hashEntity(hasher: Hasher, entity: Entity): void {
       return
     case 'stump':
     case 'workbench':
+    case 'carpenter':
     case 'campfire':
     case 'oven':
     case 'barrel':

@@ -10,8 +10,9 @@ import {
   EAST,
   entityToState,
   FactoryWorld,
-  getItem,
+  mineTicksOf,
   insertIntoLane,
+  itemId,
   laneHasRoomAt,
   linkSpecsFor,
   linkToState,
@@ -79,9 +80,10 @@ test('a belt holds at most four items, a gap apart', () => {
 })
 
 test('a miner on ore fills its store, an extractor pulls it onto belts, and a belt fills a chest', () => {
-  // The simulation does not look at the ground: a miner digs whatever ore it was made with.
+  // The simulation does not look at the ground: a miner digs whatever it was made with (the factory's ores are gone: any
+  // item does).
   const start = { x: 0, y: 0 }
-  const ore = 1
+  const ore = itemId('stone')
   const world = buildWorld([
     createEntity(1, 'miner', start.x, start.y, EAST, ore),
     createEntity(2, 'extractor', start.x + 1, start.y, EAST, 0),
@@ -90,7 +92,7 @@ test('a miner on ore fills its store, an extractor pulls it onto belts, and a be
     createEntity(5, 'chest', start.x + 4, start.y, EAST, 0),
   ])
   assert.equal(world.linkIds.length, 4, 'miner → extractor → belt → belt → chest')
-  const mineTicks = getItem(ore).mineTicks
+  const mineTicks = mineTicksOf(ore)
   tick(world, mineTicks * 5 + 200)
   const chest = world.entity(5) as ChestEntity
   const miner = world.entity(1) as MinerEntity
@@ -144,7 +146,7 @@ test('a snapshot loaded into another world hashes the same', () => {
     createEntity(1, 'belt', 3, 3, NORTH, 0),
     createEntity(2, 'chest', 3, 2, EAST, 0),
   ])
-  insertIntoLane((world.entity(1) as BeltEntity).lane, 2, 0, 0)
+  insertIntoLane((world.entity(1) as BeltEntity).lane, itemId('log'), 0, 0)
   tick(world, 5)
   const chunk = chunkOfTile(3, 3)
   const copy = new FactoryWorld()

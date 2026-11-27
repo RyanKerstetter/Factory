@@ -1,0 +1,30 @@
+{
+  "skeleton-camp": {
+    "respawnSeconds": 150,
+    "patrolRadius": 11,
+    "rocks": { "kind": "rock", "count": 2 },
+    "monsters": [
+      { "kind": "skeleton", "min": 3, "max": 3 },
+      { "kind": "skeleton-archer", "min": 1, "max": 2 }
+    ]
+  },
+  "goblin-camp": {
+    "respawnSeconds": 150,
+    "patrolRadius": 10,
+    "rocks": { "kind": "tin-rock", "count": 3 },
+    "monsters": [
+      { "kind": "goblin", "min": 2, "max": 4 },
+      { "kind": "goblin-archer", "min": 1, "max": 2 },
+      { "kind": "goblin-shaman", "min": 1, "max": 1 }
+    ]
+  },
+  "tomb": {
+    "respawnSeconds": 150,
+    "patrolRadius": 10,
+    "rocks": { "kind": "copper-rock", "count": 3 },
+    "monsters": [
+      { "kind": "mummy", "min": 3, "max": 4 },
+      { "kind": "dust-elemental", "min": 2, "max": 3 }
+    ]
+  }
+}

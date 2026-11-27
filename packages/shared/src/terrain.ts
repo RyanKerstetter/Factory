@@ -11,9 +11,12 @@ import { TileFacts } from './tile-facts.ts'
 // the sea between can never close (see `wanderAt`); the only way over is by raft. The shallow sea (the shelf) reaches
 // further out on the sides facing a neighbour and joins up across the gap (see `shelfWidthAt`), so it shows the way
 // over. Islands not next to each other in the chain keep well clear of each other. The first two (the forest, the
-// mountains) lie the way the seed picks; after them the chain curves round (the desert, the meadow: see TURN_DEGREES).
-// The desert and the meadow are shrouded in fog (`fogged`): nobody sees them or sets foot on them until they have eaten a
-// truesight flesh (see `isFoggedAt`).
+// mountains) lie the way the seed picks; after them the chain curves round (the meadow, the desert: see `turn`).
+// A biome that `joins` the one before it is not over the sea from it but one land with it: placed so the two overlap
+// well (JOIN_OVERLAP_PERCENT), their coasts wandering freely there, so the noise shapes where they meet and where the
+// one gives way to the other (each tile is the biome it is deeper inside). The desert joins the meadow so. The meadow
+// and the desert are shrouded in fog (`fogged`): nobody sees them or sets foot on them
+// until they have eaten a truesight flesh (see `isFoggedAt`).
 //
 // It is all worked out from the world's seed and its TerrainSettings, the same on the server and on every page: the
 // sites are whole numbers, and each tile is tested with whole-number noise and Math.sqrt (which every JavaScript engine
@@ -43,14 +46,18 @@ export type BiomeDef = {
   ground: 'grass' | 'rock' | 'sand'
   // Shrouded in fog until a player has eaten a truesight flesh: they cannot see it or set foot on it (see `isFoggedAt`).
   fogged: boolean
+  // One land with the biome before it, overlapping it (JOIN_OVERLAP_PERCENT), not over the sea from it.
+  joins: boolean
+  // For a biome after the second: how far round, in degrees, it lies from the way the chain was going (see `layOut`).
+  turn: number
 }
 
 export const BIOMES: readonly BiomeDef[] = [
-  { key: 'forest', name: 'Forest', radiusPercent: 100, temperature: { edge: 16, core: 16, curve: 1 }, regrows: ['grass', 'bush'], ponds: false, soil: true, ground: 'grass', fogged: false },
-  { key: 'mountain', name: 'Mountains', radiusPercent: 95, temperature: { edge: 12, core: -58, curve: 2.2 }, regrows: [], ponds: false, soil: false, ground: 'rock', fogged: false },
+  { key: 'forest', name: 'Forest', radiusPercent: 100, temperature: { edge: 16, core: 16, curve: 1 }, regrows: ['grass', 'bush'], ponds: false, soil: true, ground: 'grass', fogged: false, joins: false, turn: 0 },
+  { key: 'mountain', name: 'Mountains', radiusPercent: 95, temperature: { edge: 12, core: -58, curve: 2.2 }, regrows: [], ponds: false, soil: false, ground: 'rock', fogged: false, joins: false, turn: 0 },
   // The same size as the mountains.
-  { key: 'desert', name: 'Desert', radiusPercent: 95, temperature: { edge: 16, core: 16, curve: 1 }, regrows: [], ponds: false, soil: false, ground: 'sand', fogged: true },
-  { key: 'meadow', name: 'Meadow', radiusPercent: 95, temperature: { edge: 16, core: 16, curve: 1 }, regrows: ['grass'], ponds: false, soil: true, ground: 'grass', fogged: true },
+  { key: 'meadow', name: 'Meadow', radiusPercent: 95, temperature: { edge: 16, core: 16, curve: 1 }, regrows: ['grass'], ponds: false, soil: true, ground: 'grass', fogged: true, joins: false, turn: 70 },
+  { key: 'desert', name: 'Desert', radiusPercent: 95, temperature: { edge: 16, core: 16, curve: 1 }, regrows: [], ponds: false, soil: false, ground: 'sand', fogged: true, joins: true, turn: 45 },
 ]
 
 // The islands, from data/world-gen.json: how ragged every coast is (`bumpiness`, 0 near round to 100 deep bays and long
@@ -66,27 +73,47 @@ const MAX_BUMP_PERCENT = 45
 // past 70°, and between the two in between (see `wanderAt`).
 const COS_FACING = Math.cos((30 * Math.PI) / 180)
 const COS_FREE = Math.cos((70 * Math.PI) / 180)
+// How much two biomes that join (`joins`) overlap: their middles are this much (in percent) nearer than their two radii.
+export const JOIN_OVERLAP_PERCENT = 25
 
 // ---- what a game picks when it is made
 
+// The size presets the menu offers, and the radius of a biome (one at 100 percent) in each, in tiles. A world keeps
+// the radius itself (`TerrainSettings`), not the preset, so changing these never changes a world already made.
 export type WorldSize = 'small' | 'medium' | 'large' | 'huge'
-// The presets, and the radius of a biome (one at 100 percent) in each, in tiles.
 export const WORLD_SIZES: Readonly<Record<WorldSize, { label: string; radius: number }>> = {
-  small: { label: 'Small', radius: 70 },
-  medium: { label: 'Medium', radius: 110 },
-  large: { label: 'Large', radius: 160 },
-  huge: { label: 'Extra large', radius: 220 },
+  small: { label: 'Small', radius: 45 },
+  medium: { label: 'Medium', radius: 70 },
+  large: { label: 'Large', radius: 110 },
+  huge: { label: 'Extra large', radius: 160 },
 }
 export const WORLD_SIZE_KEYS = Object.keys(WORLD_SIZES) as WorldSize[]
+export const DEFAULT_WORLD_SIZE: WorldSize = 'medium'
 
-export type TerrainSettings = { size: WorldSize }
-export const DEFAULT_TERRAIN: Readonly<TerrainSettings> = { size: 'medium' }
+// A world's land: the radius of a biome at 100 percent, in tiles (a whole number from MIN_RADIUS to MAX_RADIUS).
+export type TerrainSettings = { radius: number }
+export const DEFAULT_TERRAIN: Readonly<TerrainSettings> = { radius: WORLD_SIZES[DEFAULT_WORLD_SIZE].radius }
+export const MIN_RADIUS = 20
+export const MAX_RADIUS = 400
 
-// Settings put right: a size that is one of the presets (anything else, like the bumpiness older games chose, is
-// dropped: every world is as bumpy now).
-export function cleanTerrain(settings: Partial<TerrainSettings> | undefined): TerrainSettings {
-  const size = settings?.size && settings.size in WORLD_SIZES ? settings.size : DEFAULT_TERRAIN.size
-  return { size }
+// What older saves kept instead of a radius: a preset's name, which stood for these radii then (and a save from
+// before biomes, with no terrain at all, was made Medium: see `savedTerrain`).
+export const LEGACY_SIZE_RADIUS: Readonly<Record<string, number>> = { small: 70, medium: 110, large: 160, huge: 220 }
+
+// Settings put right: a whole radius in range; or, from an older save, the radius its size preset stood for then;
+// anything else (like the bumpiness older games chose: every world is as bumpy now) dropped, for the default.
+export function cleanTerrain(settings: { radius?: unknown; size?: unknown } | undefined): TerrainSettings {
+  const radius = settings?.radius
+  if (typeof radius === 'number' && Number.isInteger(radius) && radius >= MIN_RADIUS && radius <= MAX_RADIUS) return { radius }
+  const size = settings?.size
+  if (typeof size === 'string' && Object.hasOwn(LEGACY_SIZE_RADIUS, size)) return { radius: LEGACY_SIZE_RADIUS[size] }
+  return { ...DEFAULT_TERRAIN }
+}
+
+// A saved world's settings: as `cleanTerrain`, but a save with none (from before biomes) is as big as it was made
+// then, Medium as it was.
+export function savedTerrain(settings: { radius?: unknown; size?: unknown } | undefined): TerrainSettings {
+  return cleanTerrain(settings ?? { size: 'medium' })
 }
 
 // ---- the layout
@@ -108,13 +135,14 @@ const DIRECTIONS: ReadonlyArray<readonly [number, number]> = Array.from({ length
   return [Math.round(Math.cos(angle) * 1024), Math.round(Math.sin(angle) * 1024)] as const
 })
 
-// The islands after the second (the desert, the meadow) curve round: each lies TURN_DEGREES round from the way the chain
+// The islands after the second (the meadow, the desert) curve round: each lies its `turn` round from the way the chain
 // was going (the line from the island two before it to the one before it), always turned to the same side (which side
 // is the seed's: `curveSide`), with its middle as far from the one before's as the second island's is from the
-// first's. The turn as whole numbers out of 4096, so every engine works out the same tiles.
-export const TURN_DEGREES = 70
-const TURN_COS = Math.round(Math.cos((TURN_DEGREES * Math.PI) / 180) * 4096)
-const TURN_SIN = Math.round(Math.sin((TURN_DEGREES * Math.PI) / 180) * 4096)
+// first's; or, one that `joins` the one before, as far as their two radii less JOIN_OVERLAP_PERCENT. The turn as whole
+// numbers out of 4096 (`turnOf`), so every engine works out the same tiles.
+function turnOf(degrees: number): { cos: number; sin: number } {
+  return { cos: Math.round(Math.cos((degrees * Math.PI) / 180) * 4096), sin: Math.round(Math.sin((degrees * Math.PI) / 180) * 4096) }
+}
 
 // Which way the chain curves after the second island: 1 or -1 (clockwise or not, as the map shows it).
 export function curveSide(seed: number): 1 | -1 {
@@ -126,7 +154,7 @@ const made = new Map<string, Terrain>()
 // The terrain of a world (worked out once per seed and settings, then kept).
 export function terrainOf(seed: number, settings?: Partial<TerrainSettings>): Terrain {
   const clean = cleanTerrain(settings)
-  const key = `${seed}|${clean.size}`
+  const key = `${seed}|${clean.radius}`
   let terrain = made.get(key)
   if (!terrain) {
     const sites = layOut(seed, clean)
@@ -148,7 +176,7 @@ export function terrainOf(seed: number, settings?: Partial<TerrainSettings>): Te
 }
 
 function layOut(seed: number, settings: TerrainSettings): BiomeSite[] {
-  const base = WORLD_SIZES[settings.size].radius
+  const base = settings.radius
   const sites: BiomeSite[] = []
   let heading = hashInts(seed, 501) % DIRECTIONS.length
   for (let index = 0; index < BIOMES.length; index++) {
@@ -162,14 +190,18 @@ function layOut(seed: number, settings: TerrainSettings): BiomeSite[] {
     }
     const before = sites[index - 1]
     if (index >= 2) {
-      // Curving round (see TURN_DEGREES): the way the chain was going, turned, as long a step as the first.
+      // Curving round (see `turn`): the way the chain was going, turned, as long a step as the first (or, joining
+      // the one before, their two radii less JOIN_OVERLAP_PERCENT).
       const twoBack = sites[index - 2]
       const dx = before.x - twoBack.x
       const dy = before.y - twoBack.y
       const side = curveSide(seed)
-      const rx = dx * TURN_COS - side * dy * TURN_SIN
-      const ry = side * dx * TURN_SIN + dy * TURN_COS
-      const step = Math.sqrt((sites[1].x - sites[0].x) ** 2 + (sites[1].y - sites[0].y) ** 2)
+      const { cos, sin } = turnOf(biome.turn)
+      const rx = dx * cos - side * dy * sin
+      const ry = side * dx * sin + dy * cos
+      const step = biome.joins
+        ? Math.round(((before.radius + radius) * (100 - JOIN_OVERLAP_PERCENT)) / 100)
+        : Math.sqrt((sites[1].x - sites[0].x) ** 2 + (sites[1].y - sites[0].y) ** 2)
       const length = Math.sqrt(rx * rx + ry * ry)
       sites.push({ biome, index, x: before.x + Math.round((rx * step) / length), y: before.y + Math.round((ry * step) / length), radius, bump })
       continue
@@ -216,7 +248,7 @@ function neighboursOf(terrain: Terrain, site: BiomeSite): BiomeSite[] {
 // How far out past its radius a site's coast can reach at a point (tiles): its `bump`, but on a side facing a neighbour
 // (within 30° of the line to its middle: COS_FACING) only `facingBump`, easing from one to the other out to 70°
 // (COS_FREE). Its bays are not held in, only its points: so the coasts facing each other wiggle and bend like any
-// other, but can never reach across the gap between them.
+// other, but can never reach across the gap between them. Facing a neighbour it joins (see `joins`), it wanders freely.
 export function wanderAt(terrain: Terrain, site: BiomeSite, x: number, y: number): number {
   const dx = x - site.x
   const dy = y - site.y
@@ -224,6 +256,7 @@ export function wanderAt(terrain: Terrain, site: BiomeSite, x: number, y: number
   let wander = site.bump
   if (distance === 0) return wander
   for (const other of neighboursOf(terrain, site)) {
+    if (joined(site, other)) continue
     const ox = other.x - site.x
     const oy = other.y - site.y
     const cos = (dx * ox + dy * oy) / (distance * Math.sqrt(ox * ox + oy * oy))
@@ -231,6 +264,11 @@ export function wanderAt(terrain: Terrain, site: BiomeSite, x: number, y: number
     wander = Math.min(wander, site.bump + (facingBump(site.bump) - site.bump) * facing)
   }
   return wander
+}
+
+// Whether two sites are one land (the later `joins` the one before it).
+function joined(a: BiomeSite, b: BiomeSite): boolean {
+  return (b.index === a.index + 1 && b.biome.joins) || (a.index === b.index + 1 && a.biome.joins)
 }
 
 // How far inside a site's coast a tile is, in tiles (below 0 is outside it). The coast wanders in and out by up to
@@ -247,8 +285,8 @@ function depthIn(terrain: Terrain, site: BiomeSite, x: number, y: number): numbe
   return site.radius + (out > 0 ? Math.min(out, wanderAt(terrain, site, x, y)) : out) - distance
 }
 
-// The biome a tile is in, or undefined for the sea. The islands never overlap (see `wanderAt`); were two ever to, the
-// tile would be the one it is deeper inside.
+// The biome a tile is in, or undefined for the sea. The islands never overlap (see `wanderAt`), but for two that join
+// (see `joins`); where two do, the tile is the one it is deeper inside.
 //
 // Everything asks this (walking, water, sand, fog, what grows, the ground's picture), many times a tick, and working it
 // out takes noise at every island near: so it is kept (see TileFacts: the site's index plus one, 0 for the sea). Only

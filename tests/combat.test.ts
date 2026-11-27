@@ -22,7 +22,6 @@ import {
   CHARGE_TICKS,
   KEY_CHARGE,
   KEY_LEFT,
-  LUNGE_DISTANCE,
   LUNGE_TICKS,
   PUSH_MAX,
   lungeOf,
@@ -351,7 +350,7 @@ test('a bow drawn while the button is held shoots at once, harder and faster', (
 
 test('melee attacks step the player forward, a pushed input moves the same on the page and the server, and the server only lets a player push so far', () => {
   // A push moves along its angle, not where the keys say.
-  const pushed = stepPlayer({ x: 0, y: 0 }, withPush(KEY_LEFT, 0, LUNGE_DISTANCE / LUNGE_TICKS))
+  const pushed = stepPlayer({ x: 0, y: 0 }, withPush(KEY_LEFT, 0, WEAPONS.get('club')!.lunge / LUNGE_TICKS))
   assert.ok(pushed.x > 0 && pushed.y === 0, 'forward, though the player held left')
   assert.ok(Math.abs(pushOf(withPush(0, Math.PI / 2, PUSH_MAX))!.dy - PUSH_MAX) <= 1)
   // Charging slows the player down.

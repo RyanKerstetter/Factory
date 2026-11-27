@@ -13,8 +13,10 @@ import { ITEMS, itemFromKey, type ItemId } from './items.ts'
 // - `hp`, and `armor`: how much it takes off every hit on it (see damageAfterArmor; never all of it); `speed` in tiles
 //   a second; `size`: how big it is drawn, in tiles;
 //   `halfSize`: how far it reaches from its middle to each side, in tiles, for walking into things; `mass`: how hard
-//   it pulls on a rope, against a player's 1.
-// - `foods`: what it eats from a feed box, by item key, or "#tag" for every item with that tag.
+//   it pulls on a rope, against a player's 1; `unclump`: how hard others of its kind push it away when they come
+//   closer than its `size` (see the server's `unclump` in creatures.ts), in tiles a second, right on top of each other
+//   (less the further apart; 0: not at all).
+// - `foods`: what it eats from a feed trough, by item key, or "#tag" for every item with that tag.
 // - `herd`: how many come together when a herd is spawned; `biomes`: the biomes its wild herds live in (see
 //   terrain.ts; none: it is never spawned by itself); `population`: how many wild ones each of those biomes keeps, for
 //   every 10,000 tiles of it (its area, as a circle of its radius), topped up with herds as they are killed (see the
@@ -29,6 +31,12 @@ import { ITEMS, itemFromKey, type ItemId } from './items.ts'
 //   Packs keep apart: a wolf wanders where it likes, but with a wolf of another pack within half of `territory` tiles,
 //   it walks off away from it; and no new pack turns up within `territory` tiles of another's wolves. Hit, a hunter backs off and does not bite again for `recoil` seconds (1 if not given), so a
 //   player who lands a blow is not bitten straight back.
+//   With `roll` (a scarab), it chases and bites like any hunter for a while, `chaseMin` to `chaseMax` seconds (picked
+//   by chance afresh at the start of a chase and after each roll, so a pack does not all roll at once); then, from
+//   wherever it is, it curls up for `windup` seconds, the way to its prey fixed as it starts, and rolls that way in a
+//   straight line at `speed` tiles a second, on to where they were and `past` tiles beyond (never more than
+//   `distance` tiles in all; sooner if something stops it), hurting everyone within `width` tiles across of its line
+//   once each, for the roll's `damage`. Then it chases and bites again.
 // - `grazes`: whether it eats grass (true unless false).
 // - `solitary`: it lives alone (a spider): it never goes back to others of its kind, and turns up one at a time (each
 //   one's sex by chance), whatever its `herd` says.
@@ -39,7 +47,7 @@ import { ITEMS, itemFromKey, type ItemId } from './items.ts'
 //   lays (every eggTime seconds).
 // - `life`: how fast it gets hungry (`hungerMinutes` from full to starving), how hungry it has to be to go looking for
 //   grass (`hungryAt`, percent) and how far it looks (`grassRadius`, tiles), how much a tuft of grass fills it
-//   (`grassFills`, percent), how long a meal from a feed box keeps it well fed (`wellFedMinutes`), how long after
+//   (`grassFills`, percent), how long a meal from a feed trough keeps it well fed (`wellFedMinutes`), how long after
 //   breeding before it breeds again (`breedCooldownMinutes`), and how long a cow takes to make a unit of milk
 //   (`milkMinutes`).
 // - `stats`: what every animal of the kind is born with: `base` give or take `spread` for a wild one, kept within
@@ -73,7 +81,10 @@ export type Hunt = {
   territory: number
   // Ticks: hit, it backs off (out to the flanking ring round its prey) and does not bite again for this long.
   recoil: number
+  roll?: Roll
 }
+// A roller's roll, now and then in place of a bite (see `roll` above): units, ticks, and units a tick.
+export type Roll = { chaseMin: number; chaseMax: number; windup: number; past: number; distance: number; speed: number; width: number; damage: number }
 
 export type AnimalDef = {
   kind: string
@@ -85,6 +96,8 @@ export type AnimalDef = {
   // Units a tick.
   speed: number
   size: number
+  // Units a tick (see `unclump` above).
+  unclump: number
   // Units.
   halfSize: number
   mass: number
@@ -108,9 +121,9 @@ export type AnimalDef = {
   stats: readonly StatDef[]
 }
 
-const ANIMAL_FIELDS = ['id', 'name', 'hp', 'armor', 'speed', 'size', 'halfSize', 'mass', 'foods', 'herd', 'population', 'biomes', 'temper', 'fleeRadius', 'fleePace', 'hunt', 'grazes', 'solitary', 'webs', 'drops', 'milk', 'lays', 'life', 'stats']
+const ANIMAL_FIELDS = ['id', 'name', 'hp', 'armor', 'speed', 'size', 'halfSize', 'unclump', 'mass', 'foods', 'herd', 'population', 'biomes', 'temper', 'fleeRadius', 'fleePace', 'hunt', 'grazes', 'solitary', 'webs', 'drops', 'milk', 'lays', 'life', 'stats']
 const LIFE_FIELDS = ['hungerMinutes', 'hungryAt', 'grassFills', 'grassRadius', 'wellFedMinutes', 'breedCooldownMinutes', 'milkMinutes']
-const HUNT_FIELDS = ['aggroRadius', 'packRadius', 'pace', 'damage', 'reach', 'cooldown', 'flank', 'territory', 'recoil']
+const HUNT_FIELDS = ['aggroRadius', 'packRadius', 'pace', 'damage', 'reach', 'cooldown', 'flank', 'territory', 'recoil', 'roll']
 
 export const ANIMALS: readonly AnimalDef[] = parseAnimals(animalsData)
 const BY_KIND = new Map(ANIMALS.map((def) => [def.kind, def]))
@@ -178,6 +191,7 @@ function parseAnimals(data: unknown): AnimalDef[] {
       armor: numberField(raw, 'armor', fail, 0, 0),
       speed: Math.max(1, speedField(raw, 'speed', fail)),
       size: numberField(raw, 'size', fail),
+      unclump: speedField(raw, 'unclump', fail, 0),
       halfSize: tilesField(raw, 'halfSize', fail),
       mass: numberField(raw, 'mass', fail),
       foods,
@@ -215,16 +229,35 @@ function websOf(webs: Fields, fail: Fail): { every: number; radius: number; most
 
 function huntOf(hunt: Fields, fail: Fail): Hunt {
   onlyFields(hunt, HUNT_FIELDS, fail, '"hunt": ')
+  const roll = hunt.roll === undefined ? undefined : rollOf(fieldsOf(hunt.roll, '"roll"', fail), fail)
   return {
     aggroRadius: tilesField(hunt, 'aggroRadius', fail),
     packRadius: tilesField(hunt, 'packRadius', fail),
     pace: numberField(hunt, 'pace', fail),
     damage: numberField(hunt, 'damage', fail, 1),
     reach: tilesField(hunt, 'reach', fail),
+    ...(roll ? { roll } : {}),
     cooldown: secondsField(hunt, 'cooldown', fail),
     flank: hunt.flank === true,
     territory: tilesField(hunt, 'territory', fail),
     recoil: secondsField(hunt, 'recoil', fail, 1),
+  }
+}
+
+function rollOf(roll: Fields, fail: Fail): Roll {
+  onlyFields(roll, ['chaseMin', 'chaseMax', 'windup', 'past', 'distance', 'speed', 'width', 'damage'], fail, '"roll": ')
+  const chaseMin = Math.round(numberField(roll, 'chaseMin', fail, 0) * TPS)
+  const chaseMax = Math.round(numberField(roll, 'chaseMax', fail, 0) * TPS)
+  if (chaseMin > chaseMax) fail('"roll": "chaseMin" is more than "chaseMax"')
+  return {
+    chaseMin,
+    chaseMax,
+    damage: numberField(roll, 'damage', fail, 1),
+    past: tilesField(roll, 'past', fail, 0),
+    windup: secondsField(roll, 'windup', fail),
+    distance: tilesField(roll, 'distance', fail),
+    speed: speedField(roll, 'speed', fail),
+    width: tilesField(roll, 'width', fail),
   }
 }
 
@@ -258,6 +291,11 @@ export type AnimalInfo = {
   doing: string
   // A hostile one that is after a player.
   angry?: boolean
+  // A roller (a scarab) curling up to roll, or rolling: which way, for how many ticks from tick `at` (which also tells
+  // one roll from the next).
+  act?: { k: 'curl' | 'roll'; angle: number; ticks: number; at: number }
+  // The tick of its last bite (a hunter), for the pages to show it biting.
+  bit?: number
 }
 
 // Tying to a fence (an animal or a raft, on a rope: see the server's commands.ts): the rope goes from the fence's post

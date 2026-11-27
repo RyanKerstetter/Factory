@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomInt } from 'node:crypto'
 import geckos, { type ServerChannel } from '@geckos.io/server'
-import { cleanName, seedFromText, TICK_MS, type ErrorMessage, type GameInfo, type RequestMessage, type SavedWorldInfo, type WorldSize } from '../../../packages/shared/src/index.ts'
+import { cleanName, seedFromText, TICK_MS, type ErrorMessage, type GameInfo, type RequestMessage, type SavedWorldInfo } from '../../../packages/shared/src/index.ts'
 import {
   AckMessageSchema,
   InputMessageSchema,
@@ -180,7 +180,7 @@ const api = createServer(async (request, response) => {
       if ((await worldNames()).has(name.toLowerCase())) return sendJson(response, 409, { error: 'There is already a world of that name.' })
       const seedText = parsed.data.seed?.trim()
       const seed = seedText ? seedFromText(seedText) : randomInt(1, 1_000_000_000)
-      const terrain = parsed.data.size ? { size: parsed.data.size as WorldSize } : {}
+      const terrain = parsed.data.radius !== undefined ? { radius: parsed.data.radius } : {}
       const room = new GameRoom(await freshCode(), seed, { keepDumps, name, terrain })
       rooms.set(room.code, room)
       await saveRoom(room)

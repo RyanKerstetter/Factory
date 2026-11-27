@@ -20,6 +20,7 @@ import {
   SUB,
   TPS,
   tileOfUnits,
+  dropToState,
   type FactoryWorld,
   type PlayerPosition,
   type StreamEvent,
@@ -101,6 +102,8 @@ export type DungeonContext = {
   monsters: Monsters | undefined
   // Grows a chunk now if nobody has been near it (so the monsters have ground to stand on).
   growChunk: (chunk: number) => void
+  // Whether an item on the ground is bound to one player (what the lich left them), which a copy cleared away keeps.
+  isBound?: (drop: number) => boolean
   // Moves a player somewhere else at once.
   teleport: (id: number, position: PlayerPosition) => void
   // The room's attacks and what is in flight, for the lich's spells.
@@ -207,7 +210,8 @@ export class Dungeons {
     this.copies.set(slot, { slot, chest: chest.id, lich, guards: guards.filter((id) => id !== 0), traps, emptySince: undefined })
   }
 
-  // Clears a copy away: its chest, its monsters, and anything left lying in it.
+  // Clears a copy away: its chest, its monsters, and anything left lying in it, but for what the lich left a player who
+  // has not picked it up yet (they may have fallen in the fight): that is put down just outside the way in, for them.
   private close(context: DungeonContext, copy: Copy): void {
     this.copies.delete(copy.slot)
     for (const monster of context.monsters?.list() ?? []) if (monster.dungeon === copy.slot) context.monsters!.remove(monster.id)
@@ -221,7 +225,10 @@ export class Dungeons {
         if (dungeonSlotAt(entity.x, entity.y) === copy.slot) context.emit({ t: 'remove', id: entity.id })
       }
       for (const drop of [...context.world.dropsInChunk(chunk)]) {
-        if (dungeonSlotAt(tileOfUnits(drop.x), tileOfUnits(drop.y)) === copy.slot) context.emit({ t: 'drop-', id: drop.id })
+        if (dungeonSlotAt(tileOfUnits(drop.x), tileOfUnits(drop.y)) !== copy.slot) continue
+        context.emit({ t: 'drop-', id: drop.id })
+        const outside = context.isBound?.(drop.id) ? Dungeons.outside(context.terrain) : undefined
+        if (outside) context.emit({ t: 'drop+', d: dropToState({ ...drop, x: outside.x, y: outside.y }) })
       }
     }
   }

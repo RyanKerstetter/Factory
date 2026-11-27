@@ -1,6 +1,5 @@
 import * as THREE from 'three'
 import {
-  campSites,
   CHUNK_SIZE,
   chunkCoords,
   DUNGEON_LAYOUT,
@@ -9,15 +8,14 @@ import {
   dungeonTile,
   gateRunsAcross,
   getItem,
-  goblinCampSites,
-  tombSites,
   SAPLING_STAGES,
   SEEDLING_STAGES,
+  CACTUS_STAGES,
   SPROUT_STAGES,
   type ItemId,
   type Terrain,
 } from '../../../../packages/shared/src/index.ts'
-import { cameraPitch, type TileBounds } from '../camera.ts'
+import { cameraPitch, PX_PER_TILE, VIEW_HEIGHT, type TileBounds } from '../camera.ts'
 import type { GameView, ViewStats } from './game-view.ts'
 import type { AnimalView, BuildingView, GhostView, MonsterView, OverlayView, PlayerView, Swish, TrapView, WorldFrame } from './frame.ts'
 import { bake, unbake } from './bake.ts'
@@ -25,13 +23,15 @@ import { Fog } from './fog.ts'
 import { Ground, WALL_SPIKES } from './ground.ts'
 import { floatingAt, itemMaterial, itemPlane } from './item-pictures.ts'
 import * as models from './models.ts'
+import { Puffs } from './puffs.ts'
 import { RitualEffects } from './ritual-effects.ts'
 import { WaystoneEffects } from './waystone-effects.ts'
 import { GroundPaint, Label } from './paint.ts'
 import { KeptById, Pool, showObject } from './reuse.ts'
 
-// How many screen pixels a tile is across at a zoom of 1.
-const PX_PER_TILE = 56
+// How many screen pixels a tile is across at a zoom of 1, on a view VIEW_HEIGHT pixels tall (2560 × 1440). Every view
+// shows as much of the world from top to bottom as that one does, whatever its size (or the display's scaling), and
+// as much more or less across as it is wider or narrower: a tile is PX_PER_TILE × (its height / VIEW_HEIGHT) across.
 // The camera looks from straight south and above, so the world's grid runs square with the screen (north is up), at an
 // angle that levels off as you zoom in (see cameraPitch in camera.ts).
 const CAMERA_DISTANCE = 80
@@ -77,14 +77,14 @@ const SWING_GRIP = 0.35
 // How far forward the arm holding something is held at rest (radians from hanging straight down).
 const CARRY_ARM = 0.6
 // How the models' natural sizes (in tiles) compare with the animals' sizes in data/animals.json.
-const ANIMAL_MODEL_SIZE: Readonly<Record<string, number>> = { cow: 1, chicken: 0.55, deer: 1, wolf: 0.9, spider: 0.7 }
+const ANIMAL_MODEL_SIZE: Readonly<Record<string, number>> = { cow: 1, chicken: 0.55, deer: 1, wolf: 0.9, spider: 0.7, scarab: 0.75 }
 // The same for the monsters' models; and the most spikes of the dungeon's traps drawn at once.
-const MONSTER_MODEL_SIZE: Readonly<Record<string, number>> = { skeleton: 1, 'skeleton-archer': 1, 'frost-lich': 1.1, 'frost-wisp': 0.6, goblin: 0.85, mummy: 1, bee: 0.35, 'queen-bee': 0.5 }
+const MONSTER_MODEL_SIZE: Readonly<Record<string, number>> = { skeleton: 1, 'skeleton-archer': 1, 'frost-lich': 1.1, 'frost-wisp': 0.6, goblin: 0.85, 'goblin-archer': 0.85, 'goblin-shaman': 0.85, 'dust-elemental': 1, mummy: 1, bee: 0.35, 'queen-bee': 0.5 }
 // What floats rather than walks (bobbing in the air).
-const FLOATS: ReadonlySet<string> = new Set(['frost-wisp', 'bee', 'queen-bee'])
+const FLOATS: ReadonlySet<string> = new Set(['frost-wisp', 'bee', 'queen-bee', 'dust-elemental'])
 const MAX_SPIKES = 900
 // How much bigger a male is drawn than a female, by kind.
-const MALE_SCALE: Readonly<Record<string, number>> = { cow: 1.08, deer: 1.06, wolf: 1.14, chicken: 1.05, spider: 0.85 }
+const MALE_SCALE: Readonly<Record<string, number>> = { cow: 1.08, deer: 1.06, wolf: 1.14, chicken: 1.05, spider: 0.85, scarab: 1.08 }
 // The mark over a hostile animal that is after a player, and the ring under it.
 const ANGRY = '#ff4a3a'
 const ANGRY_RING = 0xff4a3a
@@ -96,10 +96,55 @@ const BOB = 0.035
 const BOB_SPEED = 0.004
 // The most animals drawn on ropes at once.
 const MAX_ROPES = 64
+// How a deer walks and runs (see gaitDeer): how far through a stride each tile (of its own size) takes it walking and
+// running; the pace (tiles a second) by which it is fully striding, and between which it goes from walking to running;
+// how far its legs swing either way walking and running (radians); and how quickly its pace eases to how fast it is going (per second).
+const DEER_WALK_STRIDE = 4.5
+const DEER_RUN_STRIDE = 1.4
+const DEER_MOVING_PACE = 0.5
+const DEER_RUN_FROM = 3
+const DEER_RUN_TO = 5.5
+const DEER_WALK_SWING = 0.35
+const DEER_RUN_SWING = 0.8
+const DEER_PACE_EASE = 6
+// Each leg's place in a stride (a fraction of one): walking, one foot at a time (hind left, fore left, hind right,
+// fore right); running, bounding, the forelegs together and the hind legs together, half a stride apart.
+const DEER_LEGS: ReadonlyArray<{ name: string; walk: number; run: number }> = [
+  { name: 'leg-hl', walk: 0, run: 0.5 },
+  { name: 'leg-fl', walk: 0.25, run: 0 },
+  { name: 'leg-hr', walk: 0.5, run: 0.58 },
+  { name: 'leg-fr', walk: 0.75, run: 1.08 },
+]
 
 // An animal or a monster's model as kept from frame to frame: whether it is lit up as hurt, which way it is turned
 // (radians, turning smoothly towards where it faces), and where it was on the last frame (to bob as it walks).
-type KeptCreature = { object: THREE.Object3D; hurt: boolean; angle: number; last: { x: number; y: number } }
+type KeptCreature = { object: THREE.Object3D; hurt: boolean; angle: number; last: { x: number; y: number }; gait?: Gait }
+// A deer's gait as kept from frame to frame (see gaitDeer): where it was and when, how fast it has been going (tiles a
+// second, smoothed), and how far through its strides it is (radians: 2π is a whole stride, a step with each foot).
+type Gait = { x: number; y: number; at: number; pace: number; phase: number }
+// What walks on many legs (see gaitCrawler), and how many it has a side.
+const CRAWLERS: Readonly<Record<string, number>> = { spider: 4, scarab: 3 }
+// A crawler's step: how far through its strides it gets for each tile it walks (radians, at its model's size), how far
+// each leg swings forward and back about its hip and is lifted as it swings forward (radians), and how fast (tiles a
+// second) it has to be going to step fully (slower, its steps are smaller).
+const CRAWLER_STRIDE = 10
+const CRAWLER_SWING = 0.35
+const CRAWLER_LIFT = 0.4
+const CRAWLER_MOVING_PACE = 0.6
+// How far a rolling scarab's body is raised (model units), so its shell tumbling over clears the ground.
+const ROLL_LIFT = 0.12
+// How far a mummy's arms turn up from straight out (radians): raised for a slam, and brought down past level.
+const MUMMY_ARMS_UP = 2.2
+const MUMMY_ARMS_DOWN = -0.6
+// A mummy's plain blow: how far its arms flick up before they chop down (radians), and how far it lurches into it
+// (model units).
+const MUMMY_SWIPE_UP = 0.6
+const MUMMY_LURCH = 0.16
+// A hunter's bite (a wolf, a scarab): how far it lunges forward (model units) and dips its head into it (radians).
+const BITE_LUNGE = 0.22
+const BITE_DIP = 0.22
+// How fast a rolling scarab tumbles over (radians a millisecond).
+const ROLL_SPIN = 0.03
 // A player's: the same, the name over them, how far through a stride they are and how much they are striding (their
 // arms swing as they walk), and what they wear and hold (put on, and in hand, when it changes).
 type KeptPlayer = KeptCreature & { name: Label; walk: number; stride: number; dressed: string; holding: string }
@@ -173,7 +218,7 @@ export async function createThreeView(stage: HTMLElement): Promise<GameView> {
     look(at, newZoom) {
       focus = at
       zoom = newZoom
-      pxPerTile = PX_PER_TILE * zoom
+      pxPerTile = PX_PER_TILE * zoom * (height / VIEW_HEIGHT)
       const halfWidth = width / 2 / pxPerTile
       const halfHeight = height / 2 / pxPerTile
       camera.left = -halfWidth
@@ -289,6 +334,7 @@ class World {
   private readonly monsters = new THREE.Group()
   private readonly paint = new GroundPaint()
   private readonly rituals = new RitualEffects()
+  private readonly puffs = new Puffs()
   private readonly waystoneEffects = new WaystoneEffects()
 
   // Each baked into as few meshes as it can be (see bake.ts), and its baked shapes freed when it goes.
@@ -395,7 +441,7 @@ class World {
     this.spikes.frustumCulled = false
     this.spikes.count = 0
     scene.add(this.ground.view, this.paint.mesh, this.buildings, this.animals, this.monsters, this.spikes, this.players, this.drops, this.dropShadows, this.shots, this.ghosts, this.rafts)
-    scene.add(this.effects, this.labels, this.hoverRing, this.ropes, this.landmarks, this.rituals.group, this.waystoneEffects.group, this.fog.view)
+    scene.add(this.effects, this.labels, this.hoverRing, this.ropes, this.landmarks, this.rituals.group, this.waystoneEffects.group, this.puffs.points, this.fog.view)
   }
 
   update(frame: WorldFrame, bounds: TileBounds, camera: THREE.OrthographicCamera, pxPerTile: number): void {
@@ -427,8 +473,7 @@ class World {
 
   // ---- landmarks
 
-  // The goblins' camps are on the meadow and the mummies' tombs in the desert, under the fog until the player has
-  // truesight.
+  // The way into the dungeon and the ways out of it. (The camps are buildings: see `isCampKind`.)
   private updateLandmarks(terrain: Terrain | undefined, fogLifted: boolean): void {
     if (this.landmarksFor && terrain === this.landmarksFor.terrain && fogLifted === this.landmarksFor.fogLifted) return
     this.landmarksFor = { terrain, fogLifted }
@@ -438,9 +483,6 @@ class World {
       object.position.set(x + 0.5, 0, y + 0.5)
       this.landmarks.add(object)
     }
-    for (const site of campSites(terrain)) place(models.camp(), site.x, site.y)
-    if (fogLifted) for (const site of goblinCampSites(terrain)) place(models.goblinCamp(), site.x, site.y)
-    if (fogLifted) for (const site of tombSites(terrain)) place(models.tomb(), site.x, site.y)
     const entrance = dungeonEntrance(terrain)
     if (entrance) place(models.dungeonEntrance(), entrance.x, entrance.y)
     for (let slot = 0; slot < DUNGEON_SLOTS; slot++) {
@@ -463,8 +505,14 @@ class World {
       object.position.set(building.x + 0.5, 0, building.y + 0.5)
       const shake = frame.shaking.get(building.id) ?? 0
       const sway = shake > 0 ? Math.sin(frame.now * 0.06) * shake : 0
-      object.rotation.z = sway * 0.08
-      object.rotation.x = sway * 0.04
+      // What rocks: all of it, or only the part named `shaken` (a camp's building, not the fire and bones round it); and
+      // once more after it stops, to stand it straight again.
+      if (shake > 0 || object.userData.rocking) {
+        const rocks = object.getObjectByName('shaken') ?? object
+        rocks.rotation.z = sway * 0.08
+        rocks.rotation.x = sway * 0.04
+        object.userData.rocking = shake > 0
+      }
       object.scale.setScalar(frame.removingIds.has(building.id) ? 0.85 : 1)
       // Campfire flames flicker.
       if (building.lit) {
@@ -501,6 +549,11 @@ class World {
       const kept = this.keptAnimals.keep(animal.id, `${animal.kind}|${animal.male}`, () => keptCreature(animalModel(animal.kind, animal.male), animal))
       const scale = (animal.size / (ANIMAL_MODEL_SIZE[animal.kind] ?? 1)) * (animal.baby ? BABY_SCALE : 1) * (animal.male ? (MALE_SCALE[animal.kind] ?? 1) : 1)
       placeCreature(kept, animal, scale, now)
+      if (animal.kind === 'deer') gaitDeer(kept, animal, scale, now)
+      const legs = CRAWLERS[animal.kind]
+      if (legs !== undefined) gaitCrawler(kept, animal, scale, now, legs)
+      if (animal.kind === 'scarab') poseRoller(kept, animal, now)
+      poseBite(kept, animal, scale)
       if (animal.hovered) hovered = animal
       // A hostile one after a player: a red mark bobbing over it, and a red ring under it.
       if (animal.angry) this.markAngry(animal, 1.35 * scale, now, pxPerTile)
@@ -528,6 +581,9 @@ class World {
       const scale = monster.size / (MONSTER_MODEL_SIZE[monster.kind] ?? 1)
       // A wisp floats, and so do bees, their wings a blur.
       placeCreature(kept, monster, scale, now, FLOATS.has(monster.kind))
+      // A dust elemental whirls, faster as it gathers a twister.
+      const swirl = kept.object.getObjectByName('swirl')
+      if (swirl) swirl.rotation.y = (now * (monster.act?.k === 'aim' ? 0.03 : 0.012)) % (Math.PI * 2)
       if (monster.kind === 'bee' || monster.kind === 'queen-bee') {
         const wings = (kept.object.userData.wings ??= kept.object.getObjectsByProperty('name', 'wing')) as THREE.Object3D[]
         wings.forEach((wing, i) => (wing.rotation.x = (i === 0 ? -1 : 1) * (0.2 + 0.6 * Math.abs(Math.sin(now * 0.09 + monster.id)))))
@@ -543,6 +599,17 @@ class World {
       if (arm && body) poseSkeleton(body, arm, object.getObjectByName('fury'), act, now)
       const nocked = object.getObjectByName('nocked')
       if (nocked) nocked.visible = act?.k === 'aim'
+      const spearArm = object.getObjectByName('spear-arm')
+      if (spearArm) poseSpearArm(spearArm, act)
+      if (monster.kind === 'mummy') {
+        poseMummyArms(object, act)
+        // Its blow: a lurch forward into it.
+        if (act?.k === 'swipe') {
+          const lurch = Math.sin(Math.PI * Math.min(1, act.progress)) * MUMMY_LURCH * scale
+          object.position.x += Math.cos(kept.angle) * lurch
+          object.position.z += Math.sin(kept.angle) * lurch
+        }
+      }
       const staff = object.getObjectByName('staff')
       const glow = object.getObjectByName('glow')
       if (staff) {
@@ -676,7 +743,7 @@ class World {
     const model = models.heldModel(key)
     if (model) {
       model.name = 'held'
-      ;(key === 'bow' ? left : right)?.add(model)
+      ;(isBow(key) ? left : right)?.add(model)
       return
     }
     const picture = new THREE.Sprite(itemMaterial(item))
@@ -729,10 +796,12 @@ class World {
       const kind = projectileKind(shot.item)
       // Each a model, pointing the way it flies.
       const { object } = this.keptShots.keep(shot.id, kind, () => ({ object: models.projectile(kind) }))
-      // An icicle falls from high above, faster and faster; anything else flies at about head height.
-      const height = shot.fall !== undefined ? 4.5 * (1 - shot.fall * shot.fall) : 0.7
+      // An icicle falls from high above, faster and faster; something lobbed goes up and over as high as it is; anything
+      // else flies at about head height.
+      // (A twister stands on the ground, whirling.)
+      const height = kind === 'twister' ? 0 : shot.fall !== undefined ? 4.5 * (1 - shot.fall * shot.fall) : shot.lift !== undefined ? 0.5 + shot.lift : 0.7
       object.position.set(shot.x, height, shot.y)
-      object.rotation.y = -shot.angle
+      object.rotation.y = kind === 'twister' ? (performance.now() * 0.015) % (Math.PI * 2) : -shot.angle
     }
     this.keptShots.sweep()
   }
@@ -897,6 +966,9 @@ class World {
     }
     this.sparkMeshes.finish()
 
+    // Clouds: frost, poison, snow.
+    this.puffs.update(frame.attacks.puffs)
+
     // Damage numbers rise off what was hurt and fade.
     for (const number of frame.attacks.numbers) {
       const label = this.numberLabels.next()
@@ -927,10 +999,19 @@ function buildingKey(building: BuildingView): string {
       return `sprout${models.growthLook(Math.min(building.stage ?? 0, SPROUT_STAGES) / SPROUT_STAGES)}`
     case 'seedling':
       return `seedling${models.growthLook(Math.min(building.stage ?? 0, SEEDLING_STAGES) / SEEDLING_STAGES)}`
+    case 'young-cactus':
+      return `young-cactus${models.growthLook(Math.min(building.stage ?? 0, CACTUS_STAGES) / CACTUS_STAGES)}`
     case 'fence':
       return `fence${building.connect ?? 0}${building.tied ? 't' : ''}`
     case 'gate':
       return `gate${gateRunsAcross(building.connect ?? 0)}${building.open ?? false}`
+    case 'wood-wall':
+      return `wood-wall${building.connect ?? 0}`
+    case 'wood-door':
+      return `wood-door${gateRunsAcross(building.connect ?? 0)}${building.open ?? false}`
+    case 'wood-floor':
+    case 'stone-floor':
+      return `${building.kind}${building.connect ?? 0}`
     case 'campfire':
     case 'oven':
       return `${building.kind}${building.lit ?? false}${building.smoking ? 's' : ''}`
@@ -943,10 +1024,14 @@ function buildingKey(building: BuildingView): string {
     }
     case 'rack':
       return `rack${building.rack ?? 'empty'}`
+    case 'feeder':
+      // How full, in steps of an eighth (and empty apart), so it is not made again at every bite taken from it.
+      return `feeder${feedStep(building.feed ?? 0)}`
     case 'loose':
       return `loose${building.item ?? 0}`
     case 'stump':
     case 'workbench':
+    case 'carpenter':
       return `${building.kind}${building.tool ?? ''}`
     case 'pedestal':
     case 'altar':
@@ -954,6 +1039,12 @@ function buildingKey(building: BuildingView): string {
     default:
       return building.kind
   }
+}
+
+// How full a feed trough is drawn, in FEED_STEPS steps: 0 only when it is empty, at least 1 with anything in it.
+const FEED_STEPS = 8
+function feedStep(feed: number): number {
+  return feed <= 0 ? 0 : Math.max(1, Math.min(FEED_STEPS, Math.round(feed * FEED_STEPS)))
 }
 
 // A pedestal's or an altar's model, with what is on it floating over it at `height` (made to bob and spin in
@@ -993,6 +1084,22 @@ function buildingModel(building: BuildingView): THREE.Object3D {
       return models.stump(building.tool === undefined ? undefined : getItem(building.tool).key)
     case 'workbench':
       return models.workbench(building.tool === undefined ? undefined : getItem(building.tool).key)
+    case 'carpenter':
+      return models.carpentersBench()
+    case 'table':
+      return models.table()
+    case 'chair':
+      return models.chair()
+    case 'low-table':
+      return models.lowTable()
+    case 'round-table':
+      return models.roundTable()
+    case 'skeleton-camp':
+      return models.camp()
+    case 'goblin-camp':
+      return models.goblinCamp()
+    case 'tomb':
+      return models.tomb()
     case 'campfire':
     case 'oven': {
       const fire = building.kind === 'campfire' ? models.campfire(building.lit ?? false) : models.oven(building.lit ?? false)
@@ -1003,6 +1110,8 @@ function buildingModel(building: BuildingView): THREE.Object3D {
       return models.sunflower(x, y)
     case 'seedling':
       return models.seedling(models.growthLook(Math.min(building.stage ?? 0, SEEDLING_STAGES) / SEEDLING_STAGES))
+    case 'young-cactus':
+      return models.youngCactus(models.growthLook(Math.min(building.stage ?? 0, CACTUS_STAGES) / CACTUS_STAGES))
     case 'clay':
       return models.clay(x, y)
     case 'copper-rock':
@@ -1026,7 +1135,15 @@ function buildingModel(building: BuildingView): THREE.Object3D {
     case 'rack':
       return models.rack(building.rack)
     case 'feeder':
-      return models.feeder()
+      return models.feeder(feedStep(building.feed ?? 0) / FEED_STEPS)
+    case 'wood-wall':
+      return models.woodWall(building.connect ?? 0, x, y)
+    case 'wood-door':
+      return models.woodDoor(gateRunsAcross(building.connect ?? 0), building.open ?? false)
+    case 'wood-floor':
+      return models.woodFloor(x, y, building.connect ?? 0)
+    case 'stone-floor':
+      return models.stoneFloor(x, y, building.connect ?? 0)
     case 'well':
       return models.well()
     case 'altar':
@@ -1060,11 +1177,19 @@ function buildingModel(building: BuildingView): THREE.Object3D {
   }
 }
 
+// Whether a held item is a bow (held in the left hand, its string drawn back with the right).
+function isBow(key: string): boolean {
+  return key === 'bow' || key === 'bone-longbow'
+}
+
 function monsterModel(kind: string): THREE.Group {
   if (kind === 'skeleton-archer') return models.skeletonArcher()
   if (kind === 'frost-lich') return models.frostLich()
   if (kind === 'frost-wisp') return models.frostWisp()
   if (kind === 'goblin') return models.goblin()
+  if (kind === 'goblin-archer') return models.goblinArcher()
+  if (kind === 'goblin-shaman') return models.goblinShaman()
+  if (kind === 'dust-elemental') return models.dustElemental()
   if (kind === 'mummy') return models.mummy()
   if (kind === 'bee') return models.bee()
   if (kind === 'queen-bee') return models.queenBee()
@@ -1077,11 +1202,17 @@ function animalModel(kind: string, male: boolean): THREE.Group {
   if (kind === 'deer') return models.deer(male)
   if (kind === 'wolf') return models.wolf(male)
   if (kind === 'spider') return models.spider(male)
+  if (kind === 'scarab') return models.scarab(male)
   return models.machine(0xb0a080)
 }
 
-function projectileKind(item: number): 'arrow' | 'spear' | 'stone' | 'shard' | 'icicle' {
+function projectileKind(item: number): 'arrow' | 'spear' | 'stone' | 'shard' | 'icicle' | 'ice-spear' | 'hex' | 'twister' {
   const key = getItem(item as ItemId).key
+  if (key === 'twister') return 'twister'
+  // (A staff's: the ice spear coming down, and the icicle it shoots, drawn as a shard.)
+  if (key === 'ice-spear') return 'ice-spear'
+  if (key === 'icicle-shot') return 'shard'
+  if (key === 'hex-bolt') return 'hex'
   if (key.endsWith('spear')) return 'spear'
   if (key === 'ice-shard') return 'shard'
   if (key === 'icicle') return 'icicle'
@@ -1136,6 +1267,50 @@ function poseSkeleton(body: THREE.Object3D, arm: THREE.Object3D, fury: THREE.Obj
   }
 }
 
+// A goblin's spear arm (see `goblin` in models.ts), from where it rests (the spear levelled low, forward): drawn back a
+// little to jab, then thrust out; or raised up and back to throw, then flung forward.
+// A mummy's arms: raised up over its head as it winds up a slam (`slam`), then brought down hard in front of it, a
+// little past level, and back (`smash`); for a plain blow, flicked up a little and chopped down, and back (`swipe`);
+// else held straight out in front.
+function poseMummyArms(object: THREE.Object3D, act: MonsterView['act']): void {
+  const p = Math.min(1, Math.max(0, act?.progress ?? 0))
+  let lift = 0
+  if (act?.k === 'slam') lift = MUMMY_ARMS_UP * (1 - (1 - p) ** 3)
+  if (act?.k === 'smash') lift = p < 0.3 ? MUMMY_ARMS_UP + (MUMMY_ARMS_DOWN - MUMMY_ARMS_UP) * (p / 0.3) : MUMMY_ARMS_DOWN * (1 - (p - 0.3) / 0.7)
+  if (act?.k === 'swipe') lift = p < 0.2 ? MUMMY_SWIPE_UP * (p / 0.2) : p < 0.45 ? MUMMY_SWIPE_UP + (MUMMY_ARMS_DOWN - MUMMY_SWIPE_UP) * ((p - 0.2) / 0.25) : MUMMY_ARMS_DOWN * (1 - (p - 0.45) / 0.55)
+  for (const name of ['arm-l', 'arm-r']) {
+    const arm = object.getObjectByName(name)
+    if (arm) arm.rotation.z = lift
+  }
+}
+
+function poseSpearArm(arm: THREE.Object3D, act: MonsterView['act']): void {
+  const rest = (arm.userData.rest ??= { x: arm.position.x, y: arm.position.y }) as { x: number; y: number }
+  arm.position.set(rest.x, rest.y, arm.position.z)
+  arm.rotation.set(0, 0, 0)
+  if (!act) return
+  const ease = (t: number): number => t * t * (3 - 2 * t)
+  const p = Math.min(1, Math.max(0, act.progress))
+  switch (act.k) {
+    case 'jab':
+      arm.position.x = rest.x - 0.08 * ease(p)
+      break
+    case 'thrust':
+      arm.position.x = rest.x - 0.08 + 0.3 * Math.sin(Math.PI * Math.min(1, p * 1.3))
+      break
+    case 'throw': {
+      const t = ease(p)
+      arm.position.set(rest.x - 0.12 * t, rest.y + 0.16 * t, arm.position.z)
+      arm.rotation.z = 0.55 * t
+      break
+    }
+    case 'hurl':
+      arm.position.set(rest.x - 0.12 + 0.32 * ease(p), rest.y + 0.16 * (1 - p), arm.position.z)
+      arm.rotation.z = 0.55 * (1 - p) - 0.2 * Math.sin(Math.PI * p)
+      break
+  }
+}
+
 // What placeCreature needs of an animal or a monster.
 type CreatureLook = Pick<AnimalView & MonsterView, 'id' | 'x' | 'y' | 'facing' | 'hurt' | 'dying'>
 
@@ -1167,6 +1342,106 @@ function placeCreature(kept: KeptCreature, creature: CreatureLook, scale: number
     kept.hurt = creature.hurt
     tint(object, creature.hurt)
   }
+}
+
+// Poses a deer (see `deer` in models.ts) for how fast it is going, its legs straight, swinging from hip and shoulder:
+// standing still; walking, a foot at a time, its head
+// nodding with each step; or, going fast, running in bounds, forelegs and hind legs together, stretched out and
+// sprung up off the ground, then gathered under it, its body rocking, head reaching forward and white tail raised.
+// Walking blends into running as it speeds up. Replaces the bob placeCreature gives it.
+function gaitDeer(kept: KeptCreature, deer: CreatureLook, scale: number, now: number): void {
+  const object = kept.object
+  const body = object.getObjectByName('body')
+  if (!body) return
+  const gait = (kept.gait ??= { x: deer.x, y: deer.y, at: now, pace: 0, phase: 0 })
+  const seconds = Math.min(0.25, Math.max(0, (now - gait.at) / 1000))
+  const moved = Math.min(1, Math.hypot(deer.x - gait.x, deer.y - gait.y))
+  gait.x = deer.x
+  gait.y = deer.y
+  gait.at = now
+  const speed = deer.dying === undefined && seconds > 0 ? moved / seconds : 0
+  gait.pace += (speed - gait.pace) * (1 - Math.exp(-seconds * DEER_PACE_EASE))
+  const amount = Math.min(1, gait.pace / DEER_MOVING_PACE)
+  const t = Math.min(1, Math.max(0, (gait.pace - DEER_RUN_FROM) / (DEER_RUN_TO - DEER_RUN_FROM)))
+  const run = t * t * (3 - 2 * t)
+  const walk = 1 - run
+  gait.phase = (gait.phase + (moved / scale) * (DEER_WALK_STRIDE * walk + DEER_RUN_STRIDE * run)) % (Math.PI * 2)
+  const phase = gait.phase
+  const swing = (DEER_WALK_SWING * walk + DEER_RUN_SWING * run) * amount
+  for (const leg of DEER_LEGS) {
+    const hip = body.getObjectByName(leg.name)
+    if (!hip) continue
+    const at = phase + Math.PI * 2 * (leg.walk * walk + leg.run * run)
+    hip.rotation.z = Math.sin(at) * swing
+  }
+  // Walking, a little rise with each step; running, sprung up as its legs stretch out, and rocking as they gather in.
+  const rise = 0.015 * walk * amount * Math.abs(Math.cos(phase * 2)) + 0.12 * run * amount * Math.max(0, Math.sin(phase))
+  body.position.y = 0.66 + rise
+  body.rotation.z = 0.1 * run * amount * Math.cos(phase)
+  object.position.y = 0
+  const head = body.getObjectByName('head')
+  if (head) head.rotation.z = -0.07 * walk * amount * Math.sin(phase * 2) - (0.25 + 0.08 * Math.sin(phase)) * run * amount
+  const tail = body.getObjectByName('tail')
+  if (tail) tail.rotation.z = -1.5 * run * amount
+}
+
+// Walks one on many legs (a spider, a scarab: its legs pivots named `leg-<l|r>-<i>`, front first, `legs` a side) for
+// how fast it is going: its legs in two sets, every other one, a side's front leg with the other side's second, and so
+// on, one set stepping while the other stands, each leg swinging forward about its hip lifted, and back down on the
+// ground; standing still, its legs still. Replaces the bob placeCreature gives it.
+function gaitCrawler(kept: KeptCreature, crawler: CreatureLook, scale: number, now: number, legs: number): void {
+  const gait = (kept.gait ??= { x: crawler.x, y: crawler.y, at: now, pace: 0, phase: 0 })
+  const seconds = Math.min(0.25, Math.max(0, (now - gait.at) / 1000))
+  const moved = Math.min(1, Math.hypot(crawler.x - gait.x, crawler.y - gait.y))
+  gait.x = crawler.x
+  gait.y = crawler.y
+  gait.at = now
+  const speed = crawler.dying === undefined && seconds > 0 ? moved / seconds : 0
+  gait.pace += (speed - gait.pace) * (1 - Math.exp(-seconds * DEER_PACE_EASE))
+  const amount = Math.min(1, gait.pace / CRAWLER_MOVING_PACE)
+  gait.phase = (gait.phase + (moved / scale) * CRAWLER_STRIDE) % (Math.PI * 2)
+  kept.object.position.y = 0
+  for (const [side, toward] of [['l', -1], ['r', 1]] as const) {
+    for (let i = 0; i < legs; i++) {
+      const leg = kept.object.getObjectByName(`leg-${side}-${i}`)
+      if (!leg) continue
+      const at = gait.phase + ((i + (side === 'r' ? 1 : 0)) % 2) * Math.PI
+      // Its foot forward of where it stands by -cos (so going forward while sin is above 0, when it is lifted).
+      leg.rotation.y = toward * -Math.cos(at) * CRAWLER_SWING * amount
+      leg.rotation.x = -toward * Math.max(0, Math.sin(at)) * CRAWLER_LIFT * amount
+    }
+  }
+}
+
+// A hunter biting (a wolf, a scarab): it lunges forward and back, dipping its head down into the bite as it goes.
+function poseBite(kept: KeptCreature, animal: AnimalView, scale: number): void {
+  const object = kept.object
+  if (animal.bite === undefined || animal.dying !== undefined) {
+    object.rotation.z = 0
+    return
+  }
+  const lunge = Math.sin(Math.PI * Math.min(1, animal.bite))
+  object.position.x += Math.cos(kept.angle) * BITE_LUNGE * scale * lunge
+  object.position.z += Math.sin(kept.angle) * BITE_LUNGE * scale * lunge
+  object.rotation.z = -BITE_DIP * lunge
+}
+
+// A scarab curling up to roll: its legs drawn in, rearing back and shaking; rolling, its legs in out of sight and its
+// body tumbling over and over the way it goes, lifted (ROLL_LIFT) so it does not go through the ground; else as it is.
+function poseRoller(kept: KeptCreature, roller: AnimalView, now: number): void {
+  const body = kept.object.getObjectByName('body')
+  if (!body) return
+  const act = roller.act
+  const tuck = act?.k === 'roll' ? 1 : act?.k === 'curl' ? Math.min(1, act.progress * 2) : 0
+  for (const child of kept.object.children) {
+    if (!child.name.startsWith('leg-')) continue
+    child.scale.setScalar(1 - 0.7 * tuck)
+    child.visible = tuck < 1
+  }
+  const base = (body.userData.base ??= body.position.clone()) as THREE.Vector3
+  body.rotation.z = act?.k === 'roll' ? -((now * ROLL_SPIN) % (Math.PI * 2)) : 0.35 * tuck
+  body.position.x = base.x + (act?.k === 'curl' ? Math.sin(now * 0.09) * 0.015 : 0)
+  body.position.y = base.y + (act?.k === 'roll' ? ROLL_LIFT : 0)
 }
 
 // ---- materials made from others
@@ -1248,17 +1523,19 @@ function poseArms(object: THREE.Object3D, player: PlayerView, stride: number): v
   const heldKey = player.held ? getItem(player.held as ItemId).key : ''
   const carrying = heldKey !== ''
   // A weapon or tool held in the right fist (not a bow, held in the left; not an item's picture).
-  const wielded = held instanceof THREE.Group && heldKey !== 'bow'
+  const wielded = held instanceof THREE.Group && !isBow(heldKey)
   const sling = heldKey === 'sling'
   left.rotation.z = stride
   right.rotation.z = carrying ? CARRY_ARM - stride * 0.25 : -stride
   // At rest it is raised in the fist (a sling's cords hang from it).
-  let grip = wielded && !sling ? (heldKey.endsWith('spear') || heldKey === 'oar' ? SPEAR_GRIP : REST_GRIP) : 0
+  let grip = wielded && !sling ? (heldKey.endsWith('spear') || heldKey === 'oar' || heldKey === 'skewer' || heldKey === 'permafrost' ? SPEAR_GRIP : REST_GRIP) : 0
   // Whether a sling's cords stand out to be whirled (or hang), and whether its stone has gone.
   let slingOut = false
   let slung = false
   const string = leftHand.getObjectByName('bow-string') as THREE.Line | undefined
   let draw = 0
+  let crouch = 0
+  let lean = 0
   const pose = player.pose
   const ease = (t: number): number => t * t * (3 - 2 * t)
   if (pose) {
@@ -1288,6 +1565,28 @@ function poseArms(object: THREE.Object3D, player: PlayerView, stride: number): v
         rightArm.rotation.y = 0.6 * t
         break
       }
+      case 'brace': {
+        // Gathering for a dash: crouched low and leaning in, the weapon drawn back low at the side and levelled the
+        // way it will go, the other hand out in front; trembling once it is ready.
+        const t = ease(Math.min(1, pose.progress / 0.4))
+        const shake = pose.progress >= 1 ? 0.04 * Math.sin(performance.now() * 0.09) : 0
+        right.rotation.z = 0.35 + 0.75 * t
+        rightArm.position.x = -0.14 * t
+        grip = wielded ? Math.PI / 2 - right.rotation.z + shake : 0
+        left.rotation.z = 0.9 * t
+        crouch = t
+        lean = 0.32 * t
+        break
+      }
+      case 'lunge':
+        // The dash: thrown forward, leaning hard into it, the weapon held straight out in front.
+        right.rotation.z = Math.PI / 2
+        rightArm.position.x = 0.25
+        grip = 0
+        left.rotation.z = 0.6
+        crouch = 0.6
+        lean = 0.55
+        break
       case 'spin':
         // Arm out to the side, level, as the whole player turns (see `spunFacing` in game.ts).
         right.rotation.z = Math.PI / 2 - 0.1
@@ -1333,7 +1632,7 @@ function poseArms(object: THREE.Object3D, player: PlayerView, stride: number): v
         // The arm whips forward, letting fly (a sling's cords flung out after the stone); a bow is still held out in
         // front.
         right.rotation.z = Math.PI / 2 + 0.3 * (1 - pose.progress)
-        if (heldKey === 'bow') left.rotation.z = Math.PI / 2
+        if (isBow(heldKey)) left.rotation.z = Math.PI / 2
         slingOut = pose.progress < 0.5
         slung = true
         break
@@ -1349,11 +1648,24 @@ function poseArms(object: THREE.Object3D, player: PlayerView, stride: number): v
     const stone = cords.getObjectByName('sling-stone')
     if (stone) stone.visible = !slung
   }
-  // The bow's string, drawn back as far as it is pulled.
+  // The bow's string, straight between its tips at rest, its middle drawn back as far as it is pulled.
   if (string) {
     const points = string.geometry.getAttribute('position') as THREE.BufferAttribute
-    points.setXYZ(1, 0, 0.3 * draw, 0)
+    points.setXYZ(1, 0, ((string.userData.rest as number | undefined) ?? 0) + 0.3 * draw, 0)
     points.needsUpdate = true
+  }
+  // Crouched and leaning in, gathering for a dash or dashing (as a skeleton charges): the body forward from the hips,
+  // the knees bent and the whole player lowered so the feet stay on the ground.
+  if (crouch > 0 || lean > 0) {
+    const body = object.getObjectByName('body')
+    if (body) body.rotation.z = -lean
+    for (const side of ['left', 'right']) {
+      const leg = object.getObjectByName(`leg-${side}`)
+      const knee = object.getObjectByName(`knee-${side}`)
+      if (leg) leg.rotation.z = 0.45 * crouch
+      if (knee) knee.rotation.z = -0.9 * crouch
+    }
+    object.position.y -= 0.045 * crouch
   }
 }
 

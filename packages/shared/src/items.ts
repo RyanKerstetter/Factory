@@ -32,7 +32,7 @@ export type ItemDef = {
   stack?: number
   // Words that group items, such as "seed" or "meat": what an animal eats can be named by one (see animals.ts).
   tags: readonly string[]
-  // The crop it grows into when planted in a garden plot, by the crop's key (see crops.ts), if it is a seed.
+  // The crop it grows into when planted in farmland, by the crop's key (see crops.ts), if it is a seed.
   crop?: string
   // Its picture, as a path under res/ (the client draws a stand-in in its colour where there is none).
   icon?: string
@@ -45,16 +45,19 @@ export type ItemDef = {
   // each hit does to them (see `damageAfterArmor`).
   armor?: { slot: ArmorSlot; warmth: number; defense: number }
   // Food: how much health eating one gives back; or how much it hurts (`hurts`: it is not eaten if that would kill),
-  // and whether it gives truesight (the far islands' fog lifts for whoever eats it: see `isFoggedAt`).
+  // and whether it gives truesight (the far islands' fog lifts for whoever eats it: see `isFoggedAt`), and with it
+  // how much more health its eater has at most, for good (`maxHealth`: see `playerMaxHealth` in armor-sets.ts).
   heals?: number
   hurts?: number
   truesight?: boolean
+  maxHealth?: number
 }
 
 export const ARMOR_SLOTS = ['head', 'body', 'feet'] as const
 export type ArmorSlot = (typeof ARMOR_SLOTS)[number]
 
-const CATEGORIES = ['ore', 'plant', 'mineral', 'tool', 'weapon', 'food', 'material', 'animal', 'structure', 'armor'] as const
+// A "projectile" is only drawn flying (a staff's icicle, the frost lich's ice, a goblin shaman's hex): never had.
+const CATEGORIES = ['plant', 'mineral', 'tool', 'weapon', 'food', 'material', 'animal', 'structure', 'armor', 'projectile'] as const
 export type ItemCategory = (typeof CATEGORIES)[number]
 const TOOL_KINDS = ['axe', 'pickaxe', 'knife', 'mortar'] as const
 export type ToolKind = (typeof TOOL_KINDS)[number]
@@ -68,7 +71,7 @@ export type ToolKind = (typeof TOOL_KINDS)[number]
 // the items are read, so each is checked as part of its item.
 const ITEM_FIELDS = ['id', 'key', 'name', 'category', 'color', 'mineTicks', 'weight', 'places', 'tool', 'stack', 'tags', 'crop', 'icon', 'fuel', 'bucket']
 const STAT_FILES = [
-  { file: 'food.json', data: foodData as Record<string, unknown>, fields: ['heals', 'hurts', 'truesight'] },
+  { file: 'food.json', data: foodData as Record<string, unknown>, fields: ['heals', 'hurts', 'truesight', 'maxHealth'] },
   { file: 'armor.json', data: armorData as Record<string, unknown>, fields: ['slot', 'warmth', 'defense'] },
 ] as const
 
@@ -138,6 +141,7 @@ function parseItems(data: unknown): ItemDef[] {
       ...(food?.heals !== undefined ? { heals: wholeField(food, 'heals', fail, 1) } : {}),
       ...(food?.hurts !== undefined ? { hurts: wholeField(food, 'hurts', fail, 1) } : {}),
       ...(food?.truesight === true ? { truesight: true } : {}),
+      ...(food?.maxHealth !== undefined ? { maxHealth: food.truesight === true ? wholeField(food, 'maxHealth', fail, 1) : fail('"maxHealth" (food.json) is only for a food that gives truesight') } : {}),
     }
   })
   return items
@@ -148,9 +152,6 @@ export function itemFromKey(key: unknown, fail: Fail): ItemId {
   const found = typeof key === 'string' ? byKey.get(key) : undefined
   return found ? found.id : fail(`there is no item "${String(key)}"`)
 }
-
-// The ores alone, which are what deposits are made of.
-export const ORES: readonly ItemDef[] = ITEMS.filter((item) => item.category === 'ore')
 
 export function getItem(id: ItemId): ItemDef {
   const item = byId.get(id)
@@ -165,7 +166,7 @@ export function stackLimit(id: ItemId, stack: number): number {
 
 // Items that have been renamed: the key a save made before may still have, and the key it is now (so the save keeps
 // them).
-const RENAMED: Readonly<Record<string, string>> = { twine: 'fiber' }
+const RENAMED: Readonly<Record<string, string>> = { twine: 'fiber', 'garden-plot': 'farmland', 'feed-box': 'feed-trough', steak: 'meat', 'cooked-steak': 'cooked-meat' }
 
 export function itemByKey(key: string): ItemDef | undefined {
   return byKey.get(key) ?? (Object.hasOwn(RENAMED, key) ? byKey.get(RENAMED[key]) : undefined)

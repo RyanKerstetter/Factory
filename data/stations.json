@@ -7,42 +7,54 @@
     { "category": "Materials", "inputs": { "fiber": 3 }, "output": "rope", "count": 1, "seconds": 4 }
   ] },
   "stump": { "speed": 2, "includes": ["player"], "recipes": [
+    
+    { "category": "Tools", "inputs": { "plank": 5 }, "output": "oar", "count": 1, "seconds": 4 },
     { "category": "Materials", "tool": "axe", "inputs": { "log": 1 }, "output": "plank", "count": 2, "seconds": 2 },
     { "category": "Weapons", "tool": "knife", "inputs": { "log": 1 }, "output": "wood-spear", "count": 1, "seconds": 3 },
-    { "category": "Food", "inputs": { "bread": 1, "salt": 1, "#cooked meat": 1, "fried-egg": 1 }, "output": "breakfast-sandwich", "count": 1, "seconds": 3 },
     { "category": "Weapons", "inputs": { "log": 2 }, "output": "club", "count": 1, "seconds": 3 },
     { "category": "Buildings", "inputs": { "plank": 20, "stone": 10 }, "output": "workbench", "count": 1, "seconds": 5 },
     { "category": "Buildings", "inputs": { "log": 3, "stone": 5 }, "output": "campfire", "count": 1, "seconds": 3 },
-    { "category": "Buildings", "inputs": { "leather": 3 }, "output": "sleeping-bag", "count": 1, "seconds": 3 },
     { "category": "Buildings", "inputs": { "log": 20, "rope": 10 }, "output": "raft", "count": 1, "seconds": 8 },
-    { "category": "Tools", "inputs": { "plank": 5 }, "output": "oar", "count": 1, "seconds": 4 },
+    { "category": "Buildings", "inputs": { "plank": 6, "rope": 2 }, "output": "barrel", "count": 1, "seconds": 5 },
+    { "category": "Buildings", "inputs": { "plank": 10 }, "output": "carpenters-bench", "count": 1, "seconds": 4 }
+  ] },
+  "carpenter": { "speed": 2, "recipes": [
     { "category": "Buildings", "inputs": { "plank": 2, "rope": 1 }, "output": "fence", "count": 4, "seconds": 2 },
     { "category": "Buildings", "inputs": { "plank": 3, "rope": 1 }, "output": "gate", "count": 1, "seconds": 3 },
-    { "category": "Buildings", "inputs": { "plank": 6, "rope": 2 }, "output": "barrel", "count": 1, "seconds": 5 }
+    { "category": "Buildings", "inputs": { "plank": 2 }, "output": "wood-wall", "count": 1, "seconds": 1.5 },
+    { "category": "Buildings", "inputs": { "plank": 3 }, "output": "wood-door", "count": 1, "seconds": 2 },
+    { "category": "Buildings", "inputs": { "plank": 1 }, "output": "wood-floor", "count": 4, "seconds": 1 },
+    { "category": "Buildings", "inputs": { "stone": 1 }, "output": "stone-floor", "count": 4, "seconds": 1 },
+    { "category": "Furniture", "inputs": { "plank": 4 }, "output": "table", "count": 1, "seconds": 3 },
+    { "category": "Furniture", "inputs": { "plank": 2 }, "output": "chair", "count": 1, "seconds": 2 },
+    { "category": "Furniture", "inputs": { "plank": 3 }, "output": "low-table", "count": 1, "seconds": 2 },
+    { "category": "Furniture", "inputs": { "plank": 4 }, "output": "round-table", "count": 1, "seconds": 3 }
   ] },
   "workbench": { "speed": 3, "includes": ["stump"], "recipes": [
     { "category": "Tools", "tool": "pickaxe", "inputs": { "stone": 4 }, "output": "mortar", "count": 1, "seconds": 4 },
+    { "category": "Tools", "inputs": { "plank": 3, "rope": 1 }, "output": "bucket", "count": 1, "seconds": 3 },
     { "category": "Materials", "tool": "mortar", "inputs": { "wheat": 3 }, "output": "flour", "count": 1, "seconds": 0.8 },
-    { "category": "Buildings", "inputs": { "stone": 20 }, "output": "oven", "count": 1, "seconds": 5 },
     { "category": "Weapons", "tool": "knife", "inputs": { "log": 1, "fiber": 2, "flint": 1 }, "output": "flint-spear", "count": 1, "seconds": 6 },
     { "category": "Weapons", "inputs": { "rope": 2, "leather": 1 }, "output": "sling", "count": 1, "seconds": 5 },
     { "category": "Weapons", "tool": "knife", "inputs": { "stick": 3, "rope": 1, "leather": 1 }, "output": "bow", "count": 1, "seconds": 12 },
     { "category": "Ammo", "inputs": { "flint": 1, "stick": 2, "feather": 1 }, "output": "arrow", "count": 10, "seconds": 2 },
     { "category": "Ammo", "inputs": { "stone": 1 }, "output": "sling-stone", "count": 10, "seconds": 1 },
     { "category": "Buildings", "inputs": { "plank": 8 }, "output": "chest", "count": 1, "seconds": 4 },
-    { "category": "Buildings", "inputs": { "plank": 3, "compost": 1 }, "output": "garden-plot", "count": 1, "seconds": 3 },
-    { "category": "Buildings", "inputs": { "plank": 4 }, "output": "feed-box", "count": 1, "seconds": 3 },
+    { "category": "Buildings", "inputs": { "plank": 3, "compost": 1 }, "output": "farmland", "count": 1, "seconds": 3 },
+    { "category": "Buildings", "inputs": { "plank": 4 }, "output": "feed-trough", "count": 1, "seconds": 3 },
     { "category": "Buildings", "inputs": { "stick": 6, "rope": 2 }, "output": "drying-rack", "count": 1, "seconds": 4 },
-    { "category": "Tools", "inputs": { "plank": 3, "rope": 1 }, "output": "bucket", "count": 1, "seconds": 3 },
+    { "category": "Buildings", "inputs": { "stone": 20 }, "output": "oven", "count": 1, "seconds": 5 },
+    { "category": "Buildings", "inputs": { "stone": 12, "rope": 2, "bucket": 1, "plank": 6 }, "output": "well", "count": 1, "seconds": 6 },
+    { "category": "Buildings", "inputs": { "fiber": 8, "plank": 4, "rope": 2 }, "output": "target-dummy", "count": 1, "seconds": 4 },
+    { "category": "Buildings", "inputs": { "leather": 3 }, "output": "sleeping-bag", "count": 1, "seconds": 3 },
     { "category": "Armor", "inputs": { "leather": 6, "fiber": 2 }, "output": "leather-armor", "count": 1, "seconds": 6 },
     { "category": "Armor", "inputs": { "leather": 4, "fiber": 1 }, "output": "leather-boots", "count": 1, "seconds": 4 },
     { "category": "Armor", "inputs": { "leather": 4, "fiber": 2, "fang": 5 }, "output": "wolf-helmet", "count": 1, "seconds": 6 },
-    { "category": "Buildings", "inputs": { "stone": 12, "rope": 2, "bucket": 1, "plank": 6 }, "output": "well", "count": 1, "seconds": 6 },
     { "category": "Buildings", "inputs": { "stone": 5 }, "output": "pedestal", "count": 1, "seconds": 3 },
     { "category": "Buildings", "inputs": { "stone": 20, "essence": 10, "bone": 8, "lich-core": 1 }, "output": "altar", "count": 1, "seconds": 8 },
     { "category": "Buildings", "inputs": { "lich-core": 1, "stone": 10, "essence": 15 }, "output": "waystone", "count": 1, "seconds": 8 },
-    { "category": "Buildings", "inputs": { "fiber": 8, "plank": 4, "rope": 2 }, "output": "target-dummy", "count": 1, "seconds": 4 },
-    { "category": "Buildings", "inputs": { "plank": 15, "rope": 2 }, "output": "beebox", "count": 1, "seconds": 5 }
+    { "category": "Buildings", "inputs": { "plank": 15, "rope": 2 }, "output": "beebox", "count": 1, "seconds": 5 },
+    { "category": "Food", "inputs": { "bread": 1, "salt": 1, "#cooked meat": 1, "fried-egg": 1 }, "output": "breakfast-sandwich", "count": 1, "seconds": 3 }
   ] },
   "barrel": [
     { "category": "Sealed", "liquid": "tannin", "liquidPerSolid": 1, "solids": { "dried-hide": 1 }, "output": "leather", "count": 1, "seconds": 120 },
@@ -55,12 +67,15 @@
   ],
   "altar": [
     { "inputs": { "fang": 4, "leather": 4, "essence": 8, "bone": 8, "charcoal": 4, "breakfast-sandwich": 4, "compost": 4, "feather": 8 }, "liquids": { "blood": 8 }, "output": "lich-core", "count": 1, "seconds": 15 },
-    { "inputs": { "lich-core": 1, "bone": 20, "essence": 20, "pickaxe": 1, "axe": 1, "knife": 1 }, "liquids": { "blood": 8 }, "output": "worker-skeleton", "count": 1, "seconds": 15 },
     { "inputs": { "bread": 1 }, "output": "essence", "count": 1, "seconds": 5 },
-    { "inputs": { "lich-core": 1, "essence": 20, "bone": 20, "steak": 20, "raw-chicken": 20 }, "liquids": { "blood": 16 }, "output": "truesight-flesh", "count": 1, "seconds": 15 }
+    { "inputs": { "lich-core": 1, "essence": 20, "bone": 20, "meat": 20, "raw-chicken": 20 }, "liquids": { "blood": 16 }, "output": "truesight-flesh", "count": 1, "seconds": 15 },
+    { "inputs": { "leather": 12, "lich-core": 1, "essence": 30, "bone": 20 }, "output": "skeleton-camp", "count": 1, "seconds": 15 },
+    { "inputs": { "bone": 8, "leather": 4, "lich-core": 1 }, "liquids": { "blood": 4 }, "output": "bone-helmet", "count": 1, "seconds": 15 },
+    { "inputs": { "bone": 15, "leather": 8, "lich-core": 1 }, "liquids": { "blood": 8 }, "output": "bone-chestplate", "count": 1, "seconds": 15 },
+    { "inputs": { "bone": 10, "leather": 6, "lich-core": 1 }, "liquids": { "blood": 6 }, "output": "bone-greaves", "count": 1, "seconds": 15 }
   ],
   "fire": [
-    { "input": "steak", "output": "cooked-steak", "heat": 200, "seconds": 8 },
+    { "input": "meat", "output": "cooked-meat", "heat": 200, "seconds": 8 },
     { "input": "raw-chicken", "output": "cooked-chicken", "heat": 200, "seconds": 6 },
     { "input": "egg", "output": "fried-egg", "heat": 150, "seconds": 4 },
     { "input": "leaves", "smoke": true, "heat": 100, "seconds": 15 }

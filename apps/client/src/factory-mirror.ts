@@ -29,7 +29,7 @@ export type MirrorCallbacks = {
   onWelcome?: (welcome: Welcome) => void
   onRoster?: (players: ReadonlyArray<[number, string]>) => void
   // Who the host is, and whether players can hurt each other.
-  onRoom?: (room: { host: string; pvp: boolean }) => void
+  onRoom?: (room: { host: string; pvp: boolean; items: boolean }) => void
   // A player was hurt by another, and whether it knocked them out.
   onHurt?: (hurt: { id: number; amount: number; died: boolean }) => void
   // A target dummy was hit, this hard.
@@ -193,7 +193,7 @@ export class FactoryMirror {
     } else if (event.k === 'roster') {
       this.callbacks.onRoster?.(event.players)
     } else if (event.k === 'room') {
-      this.callbacks.onRoom?.({ host: event.host, pvp: event.pvp })
+      this.callbacks.onRoom?.({ host: event.host, pvp: event.pvp, items: event.items === true })
     } else if (event.k === 'hurt') {
       this.callbacks.onHurt?.(event)
     } else if (event.k === 'dummy') {

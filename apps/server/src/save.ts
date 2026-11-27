@@ -57,9 +57,10 @@ export type WorldSave = {
   // seed grows there, its first flint's ID, how many pieces of flint, a checksum of them]. On loading, a chunk is grown
   // again with those IDs, and then what was saved for it put in place of what changed (see `chunks`).
   generation?: PlantGeneration
-  // How big the world is and how ragged its coasts are (see terrain.ts). A save from before biomes has none, and is
-  // given the default.
-  terrain?: TerrainSettings
+  // How big the world is: the radius of a biome at 100 percent, in tiles (see terrain.ts). An older save has the name
+  // of a size preset instead (`size`, read as the radius it stood for then: LEGACY_SIZE_RADIUS), and one from before
+  // biomes has none (made Medium then: see savedTerrain).
+  terrain?: TerrainSettings | { size: string }
   generated?: Array<[number, number, number, number, number, number]>
   // The key of each item number, as the world was saved with (index: the number).
   items: string[]
@@ -76,9 +77,12 @@ export type WorldSave = {
   rafts?: RaftSave
   // Everyone who has played in it, by name (lower case, which is how players are linked to their save).
   players: Record<string, PlayerSave>
-  // The host (the player who made it), and whether players can hurt each other.
+  // The host (the player who made it), whether players can hurt each other, and whether item spawning is on.
   host?: string
   pvp?: boolean
+  itemSpawning?: boolean
+  // Items on the ground only one player can pick up: [drop ID, the player's name, lower case].
+  bound?: Array<[number, string]>
 }
 
 // The keys of the items, by number, as they are now.

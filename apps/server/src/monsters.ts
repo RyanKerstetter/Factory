@@ -1,10 +1,11 @@
 import {
   attackClear,
   BUILDINGS,
-  campSites,
+  CAMP_KINDS,
+  CAMPS,
+  CAMP_ROCKS,
+  campRockSpots,
   chunkOfTile,
-  goblinCampSites,
-  tombSites,
   dungeonBlocks,
   floorDiv,
   getItem,
@@ -14,11 +15,15 @@ import {
   isInsideWorld,
   monsterDef,
   MONSTER_MASS,
+  JAB_WIDTH,
   moveBox,
   PLAYER_HALF_SIZE,
   Rng,
   SUB,
+  tileMiddle,
   TPS,
+  type CampKind,
+  type Entity,
   type FactoryWorld,
   type IsSolid,
   type ItemId,
@@ -28,7 +33,6 @@ import {
   type MonsterPosition,
   type PlayerPosition,
   type Terrain,
-  WORLD_GEN,
 } from '../../../packages/shared/src/index.ts'
 import type { BeeState } from './bees.ts'
 import type { Body } from './bodies.ts'
@@ -37,8 +41,8 @@ import { CreatureSet, type HitEffects } from './creatures.ts'
 import { pursue, sightClear, stepToward, straightClear, type Path } from './steering.ts'
 
 // The monsters (see data/monsters.json): the skeletons that keep the mountains' camps (see `tendCamps`) and guard the
-// dungeon's rooms (see dungeons.ts), the frost lich and what it calls up (see frost-lich.ts), the goblins that keep the
-// meadow's camps and the mummies the desert's tombs, and the bees out of their hives (what they do is bees.ts's: here they are only kept, and hit). Like the animals,
+// dungeon's rooms (see dungeons.ts), the frost lich and what it calls up (see frost-lich.ts), the goblins (and their
+// archers and shamans) that keep the meadow's camps and the mummies the desert's tombs, and the bees out of their hives (what they do is bees.ts's: here they are only kept, and hit). Like the animals,
 // they are the server's alone: pages are sent where they are with the players' positions, and what each one is
 // (MonsterInfo) whenever that changes.
 //
@@ -49,9 +53,10 @@ import { pursue, sightClear, stepToward, straightClear, type Path } from './stee
 // - It gives a chase up once the player is more than its `leash` from where it keeps, or out of its sight for
 //   LOST_TICKS, and goes back, not taking up another chase by itself for CALM_TICKS.
 // - It attacks (see `attack` in monsters.json): a skeleton winds up and swings its sword close in, or from further off
-//   winds up a charge and dashes through the player; an archer aims and looses an arrow; a wisp drifts after the nearest
-//   player and bursts against them; a goblin walks up to the player and hits them. A skeleton winding up, swinging or dashing is not knocked back (nor stunned) by a
-//   hit; and a boss never is. The charge and the arrow are aimed where the player was a moment before, so one who
+//   winds up a charge and dashes through the player; an archer (a skeleton's or a goblin's) aims and looses an arrow, and a goblin shaman a hex; a wisp drifts after the nearest
+//   player and bursts against them; a goblin walks up to the player and hits them. A monster winding up or making an attack (a skeleton's
+//   swing, charge or dash, a goblin's jab, a mummy's slam) is not knocked back (nor stunned) by a hit; and a boss never
+//   is. The charge and the arrow are aimed where the player was a moment before, so one who
 //   keeps moving can get out of the way.
 // - Every hit on it knocks it back a little and stuns it for a moment (see combat.ts).
 
@@ -71,40 +76,29 @@ const ARROW_FLIGHT = 1.5
 // A wisp bursting against a player knocks them back this far (units).
 const WISP_KNOCKBACK = Math.round(0.4 * SUB)
 
-// The skeletons' camps (see campSites in terrain.ts): each keeps CAMP_MIN to CAMP_MAX skeletons, CAMP_ARCHERS_MIN to
-// CAMP_ARCHERS_MAX of them archers, first put CAMP_POST tiles out from its fire. One that is killed comes back
-// CAMP_RESPAWN_TICKS later, once a player is within CAMP_ACTIVE tiles of the camp and none is within CAMP_UNSEEN tiles
-// (so they never appear in front of anyone). Looked after every CAMP_EVERY ticks. (The numbers from "camps" in
-// data/world-gen.json.)
-const CAMP_MIN = WORLD_GEN.camps.guardsMin
-const CAMP_MAX = WORLD_GEN.camps.guardsMax
-const CAMP_ARCHERS_MIN = WORLD_GEN.camps.archersMin
-const CAMP_ARCHERS_MAX = WORLD_GEN.camps.archersMax
+// The camps: one round each skeletons' tent, goblins' lean-to and mummies' tomb standing in the world (see `isCampKind`:
+// the seed grows them, and a camp made or spawned can be put down in its own land). Each keeps the monsters its kind
+// has in data/camps.json (see CAMPS), first put CAMP_POST tiles out from what keeps it. One that is killed comes back
+// its camp's `respawnSeconds` later, once a player is within CAMP_ACTIVE tiles of the camp and none is within
+// CAMP_UNSEEN tiles (so they never appear in front of anyone); and as one comes back, the camp's rocks that have been
+// broken come back too (see `refillRocks`). Broken, what keeps a camp is gone, and so is the camp: its monsters still
+// standing stay, but none comes back. Looked after every CAMP_EVERY ticks.
 const CAMP_POST = 2.2
-const CAMP_RESPAWN_TICKS = Math.round(WORLD_GEN.camps.respawnSeconds * TPS)
+// A camp's middle, where its monsters keep to (its fire), is this many tiles in front of (south of) what keeps it, which
+// stands in the way.
+const CAMP_FRONT = 2
 const CAMP_ACTIVE = 64
 const CAMP_UNSEEN = 14
 const CAMP_EVERY = TPS
-// A camp's skeletons patrol: each walks (at PATROL_PACE of its chasing speed) to a spot within PATROL_RADIUS tiles of
-// the camp's fire, stands there PATROL_WAIT_MIN to PATROL_WAIT_MAX ticks, and picks another. Of PATROL_TRIES spots it
-// takes the one furthest from the others of its camp (and where they are going), so they spread out rather than clump.
-const PATROL_RADIUS = WORLD_GEN.camps.patrolRadius
+// A camp's monsters patrol: each walks (at PATROL_PACE of its chasing speed) to a spot within its camp's `patrolRadius`
+// tiles of the camp's fire (PATROL_RADIUS for one with no camp), stands there PATROL_WAIT_MIN to PATROL_WAIT_MAX ticks,
+// and picks another. Of PATROL_TRIES spots it takes the one furthest from the others of its camp (and where they are
+// going), so they spread out rather than clump.
+const PATROL_RADIUS = CAMPS['skeleton-camp'].patrolRadius
 const PATROL_PACE = 0.4
 const PATROL_WAIT_MIN = 2 * TPS
 const PATROL_WAIT_MAX = 6 * TPS
 const PATROL_TRIES = 8
-// The goblins' camps on the meadow (see goblinCampSites in world-gen.ts, and `goblinCamps` in data/world-gen.json): kept
-// like the skeletons', by GOBLINS_MIN to GOBLINS_MAX goblins, patrolling within GOBLIN_PATROL tiles of the fire.
-const GOBLINS_MIN = WORLD_GEN.goblinCamps.goblinsMin
-const GOBLINS_MAX = WORLD_GEN.goblinCamps.goblinsMax
-const GOBLIN_PATROL = WORLD_GEN.goblinCamps.patrolRadius
-const GOBLIN_RESPAWN_TICKS = Math.round(WORLD_GEN.goblinCamps.respawnSeconds * TPS)
-// The mummies' tombs in the desert (see tombSites in world-gen.ts, and `tombs` in data/world-gen.json): kept the same
-// way, by MUMMIES_MIN to MUMMIES_MAX mummies, patrolling within MUMMY_PATROL tiles of the tomb.
-const MUMMIES_MIN = WORLD_GEN.tombs.mummiesMin
-const MUMMIES_MAX = WORLD_GEN.tombs.mummiesMax
-const MUMMY_PATROL = WORLD_GEN.tombs.patrolRadius
-const MUMMY_RESPAWN_TICKS = Math.round(WORLD_GEN.tombs.respawnSeconds * TPS)
 // Wisps that overlap push each other apart by this share of the overlap each tick.
 const WISP_PUSH = 0.35
 
@@ -132,7 +126,11 @@ export type Monster = {
   // it has hit on the way), recovering, or aiming (`at` when it started, `until` when it is done, `angle` which way).
   readyAt: number
   chargeReadyAt?: number
-  act?: { k: 'swing' | 'charge' | 'dash' | 'recover' | 'aim'; at: number; until: number; angle: number; hit?: Set<number> }
+  // A goblin's next attack, picked when it is ready (see `chance` in its spear's `throw`), kept until it has done it.
+  next?: 'jab' | 'throw'
+  act?: { k: 'swing' | 'charge' | 'dash' | 'recover' | 'aim' | 'jab' | 'throw' | 'slam'; at: number; until: number; angle: number; hit?: Set<number> }
+  // When a mummy can next slam (see `slam` in its attack).
+  slamReadyAt?: number
   // A boss's spell being cast (shown on the pages; see frost-lich.ts).
   casting?: Extract<MonsterAct, { k: 'cast' }>
   // When it came (a wisp lasts its `lifetime`).
@@ -145,6 +143,10 @@ export type Monster = {
   patrol?: { x: number; y: number; waitUntil?: number }
   // A bee: what it is doing (see bees.ts).
   bee?: BeeState
+  // A boss: every player who has hurt it in this fight (by ID), each left one of its `rewards` when it falls.
+  hurtBy?: Set<number>
+  // The tick of its last blow (a goblin's jab, a mummy's), for the pages.
+  struckAt?: number
 }
 
 // What the monsters need from the room on a tick.
@@ -163,17 +165,37 @@ export type MonsterContext = {
   // Looses something at the players (it flies through creatures): from a point, along `angle`, at `speed` units a
   // tick, for `ttl` ticks.
   shoot: (item: ItemId, x: number, y: number, angle: number, speed: number, damage: number, ttl: number) => void
+  // Looses a twister (it blows through everything, hurting each player it reaches once): from a point, along `angle`,
+  // at `speed` units a tick, for `ttl` ticks, `width` units across.
+  twister: (item: ItemId, x: number, y: number, angle: number, speed: number, damage: number, ttl: number, width: number) => void
+  // Lobs something up and over from a point to a point (units), coming down `ticks` later, `peak` units up at the top,
+  // and bursting there, hurting every player within `radius` units.
+  lob: (item: ItemId, x: number, y: number, toX: number, toY: number, ticks: number, peak: number, radius: number, damage: number) => void
   // Where a player was `ago` ticks before (or is, if that is not known), for aiming behind them.
   playerWas: (id: number, ago: number) => PlayerPosition | undefined
+  // Puts a camp's rock back on a tile (see `refillRocks`).
+  addRock?: (kind: 'rock' | 'tin-rock' | 'copper-rock', x: number, y: number) => void
 }
 
-// A camp: a skeletons' or a goblins' (or a mummies' tomb), its middle (units), how far round it they patrol (tiles), how long one killed
-// takes to come back (ticks), and its places.
-type Camp = { x: number; y: number; kind: 'skeleton' | 'goblin' | 'mummy'; patrol: number; respawn: number; places: Array<{ id: number; respawnAt: number; archer: boolean }> }
+// A camp: what keeps it (its ID, kind and tile), its middle (units: the fire, CAMP_FRONT tiles in front of what keeps
+// it), how far round it they patrol (tiles), how long one killed takes to come back (ticks), and its places (each with
+// the monster that keeps it).
+type Camp = {
+  id: number
+  kind: CampKind
+  tileX: number
+  tileY: number
+  x: number
+  y: number
+  patrol: number
+  respawn: number
+  places: Array<{ id: number; respawnAt: number; def: MonsterDef }>
+}
 
 export class Monsters extends CreatureSet<Monster> {
   private readonly rng: Rng
-  private camps: Camp[] | undefined
+  // By the ID of what keeps each.
+  private readonly camps = new Map<number, Camp>()
 
   // `keepCamps`: whether the camps are kept (off for tests that want the mountains empty).
   constructor(seed: number, private readonly keepCamps = true) {
@@ -192,6 +214,7 @@ export class Monsters extends CreatureSet<Monster> {
       maxHp: monster.maxHp,
       ...(monster.target !== 0 ? { angry: true } : {}),
       ...(act ? { act } : {}),
+      ...(monster.struckAt !== undefined ? { struck: monster.struckAt } : {}),
     }
   }
 
@@ -207,7 +230,7 @@ export class Monsters extends CreatureSet<Monster> {
 
   // The camps' middles (units), for tests and the debug view.
   campMiddles(): ReadonlyArray<{ x: number; y: number }> {
-    return this.camps ?? []
+    return [...this.camps.values()]
   }
 
   // ---- making them
@@ -256,18 +279,21 @@ export class Monsters extends CreatureSet<Monster> {
     monster.y = monster.homeY
     monster.act = undefined
     monster.casting = undefined
+    monster.hurtBy = undefined
     monster.calmUntil = tick + CALM_TICKS
   }
 
   // ---- being hit (see combat.ts)
 
   // A monster is hurt by `amount` (less its armour, never all of it), from a point, by a player (`by`): knocked back
-  // and stunned (unless it is winding up or thrusting, or is a boss), and it goes for whoever hurt it, calling the
-  // others. Gives what it drops if that killed it.
+  // and stunned (unless it is winding up or making an attack, or is a boss), and it goes for whoever hurt it, calling the
+  // others. Gives what it drops if that killed it: a boss also leaves everyone who hurt it one of its `rewards`, bound
+  // to them.
   damage(id: number, amount: number, from: PlayerPosition, tick: number, effects: HitEffects = {}, by = 0): Dropped | undefined {
     const monster = this.all.get(id)
     if (!monster) return undefined
-    const attacking = monster.act?.k === 'swing' || monster.act?.k === 'charge' || monster.act?.k === 'dash'
+    const attacking = monster.act?.k === 'swing' || monster.act?.k === 'charge' || monster.act?.k === 'dash' || monster.act?.k === 'jab' || monster.act?.k === 'slam'
+    if (monster.def.boss && by !== 0) (monster.hurtBy ??= new Set()).add(by)
     this.takeBlow(monster, amount, from, tick, effects, monster.def.boss || attacking)
     if (monster.hp > 0) {
       if (by !== 0 && !monster.def.boss && monster.def.aggroRadius > 0) {
@@ -277,10 +303,14 @@ export class Monsters extends CreatureSet<Monster> {
       }
       return undefined
     }
-    const drops: Array<[string, number]> = []
+    const drops: Dropped = []
     for (const drop of monster.def.drops) {
       const count = drop.min + this.rng.nextInt(drop.max - drop.min + 1)
       if (count > 0) drops.push([getItem(drop.item).key, count])
+    }
+    const rewards = monster.def.rewards
+    if (rewards.length > 0) {
+      for (const player of [...(monster.hurtBy ?? [])].sort((a, b) => a - b)) drops.push([getItem(rewards[this.rng.nextInt(rewards.length)]).key, 1, 'bound', player])
     }
     return drops
   }
@@ -309,6 +339,11 @@ export class Monsters extends CreatureSet<Monster> {
       this.act(context, monster, blocked)
     }
     this.spreadWisps()
+    // Ones of a kind crowding together spread apart a little (a bee over anything); not one dashing.
+    this.unclump(
+      this.list().filter((monster) => monster.act?.k !== 'dash'),
+      (monster) => (isBee(monster) ? () => false : blocked),
+    )
   }
 
   // Wisps that overlap push each other apart (they are not bodies, see `bodies`), kept out of the dungeon's walls.
@@ -412,17 +447,38 @@ export class Monsters extends CreatureSet<Monster> {
         return
       }
       const target = context.players.find((player) => player.id === monster.target)
-      if (monster.act.k === 'aim' && attack.kind === 'bow') {
-        // Aiming: it turns to follow where the player was a moment ago while it can see them, and looses at the end.
+      if (monster.act.k === 'aim' && (attack.kind === 'bow' || attack.kind === 'lob' || attack.kind === 'twister')) {
+        // Aiming: it turns to follow where the player was a moment ago while it can see them, and looses at the end (an
+        // arrow straight at them, or a spell lobbed up and over onto where they are).
         if (!target) {
           monster.act = undefined
           return
         }
         if (this.canSee(context, monster, target.position)) monster.act.angle = this.aimBehind(context, monster, target.id, attack.lead)
         if (tick < monster.act.until) return
-        context.shoot(attack.item, monster.x, monster.y, monster.act.angle, attack.speed, attack.damage, Math.ceil((attack.range * ARROW_FLIGHT) / Math.max(1, attack.speed)))
+        if (attack.kind === 'bow') {
+          context.shoot(attack.item, monster.x, monster.y, monster.act.angle, attack.speed, attack.damage, Math.ceil((attack.range * ARROW_FLIGHT) / Math.max(1, attack.speed)))
+        } else if (attack.kind === 'twister') {
+          // On to where the player was, and `linger` past it.
+          const at = context.playerWas(target.id, attack.lead) ?? target.position
+          const away = Math.hypot(at.x - monster.x, at.y - monster.y)
+          const ticks = Math.ceil(away / Math.max(1, attack.speed)) + attack.linger
+          context.twister(attack.item, monster.x, monster.y, monster.act.angle, attack.speed, attack.damage, ticks, attack.width)
+        } else {
+          const at = context.playerWas(target.id, attack.lead) ?? target.position
+          const away = Math.hypot(at.x - monster.x, at.y - monster.y)
+          context.lob(attack.item, monster.x, monster.y, at.x, at.y, attack.base + Math.ceil(away / Math.max(1, attack.speed)), attack.peak, attack.radius, attack.damage)
+        }
         monster.act = undefined
         monster.readyAt = tick + attack.cooldown
+        return
+      }
+      if (attack.kind === 'melee' && monster.act.k === 'slam') {
+        this.slam(context, monster, attack)
+        return
+      }
+      if ((attack.kind === 'spear' || attack.kind === 'melee') && (monster.act.k === 'jab' || monster.act.k === 'throw')) {
+        this.stab(context, monster, attack)
         return
       }
       if (attack.kind === 'blade') {
@@ -465,12 +521,27 @@ export class Monsters extends CreatureSet<Monster> {
       if (distance > within * 0.7) pursue(monster, monster.def.halfSize, prey.x, prey.y, monster.def.speed, within * 0.7, blocked, tick)
       return
     }
-    // A goblin or a mummy: up to the player, and hits them once it is close enough.
+    // A mummy: up to the player, and hits them once it is close enough (after its windup, if it has one); now and then,
+    // with them in front of it near enough, it slams instead.
     if (attack.kind === 'melee') {
       const within = monster.def.halfSize + PLAYER_HALF_SIZE + attack.reach
+      const slam = attack.slam
+      if (slam) {
+        monster.slamReadyAt ??= tick + slam.cooldown
+        if (tick >= monster.readyAt && tick >= monster.slamReadyAt && distance <= slam.ahead + slam.radius && this.canSee(context, monster, prey)) {
+          monster.act = { k: 'slam', at: tick, until: tick + slam.windup, angle }
+          monster.slamReadyAt = tick + slam.windup + slam.cooldown
+          return
+        }
+      }
       if (distance <= within) {
         if (tick >= monster.readyAt && this.canSee(context, monster, prey)) {
+          if (attack.windup > 0) {
+            monster.act = { k: 'jab', at: tick, until: tick + attack.windup, angle }
+            return
+          }
           monster.readyAt = tick + attack.cooldown
+          monster.struckAt = tick
           context.hurtPlayer(target.id, attack.damage, { x: monster.x, y: monster.y }, attack.knockback)
         }
         return
@@ -478,7 +549,38 @@ export class Monsters extends CreatureSet<Monster> {
       pursue(monster, monster.def.halfSize, prey.x, prey.y, monster.def.speed, Math.max(1, within - 4), blocked, tick)
       return
     }
-    if (attack.kind === 'bow') {
+    // A goblin: ready, it picks its next attack (a throw by its chance, else a jab) and keeps to it: a quick jab of its
+    // spear close in (lunging in), or a spear thrown from wherever it is within its range.
+    if (attack.kind === 'spear') {
+      const within = monster.def.halfSize + PLAYER_HALF_SIZE + attack.reach + attack.lunge
+      const ready = tick >= monster.readyAt
+      const thrown = attack.throw
+      if (ready) monster.next ??= this.rng.next() < thrown.chance ? 'throw' : 'jab'
+      if (ready && monster.next === 'throw' && distance <= thrown.range && this.canSee(context, monster, prey)) {
+        monster.act = { k: 'throw', at: tick, until: tick + thrown.windup, angle: this.aimBehind(context, monster, target.id, thrown.lead) }
+        monster.next = undefined
+        return
+      }
+      if (distance <= within) {
+        if (ready && monster.next === 'jab' && this.canSee(context, monster, prey)) {
+          monster.act = { k: 'jab', at: tick, until: tick + attack.windup, angle }
+          monster.next = undefined
+        }
+        return
+      }
+      pursue(monster, monster.def.halfSize, prey.x, prey.y, monster.def.speed, Math.max(1, within - 4), blocked, tick)
+      return
+    }
+    // A goblin shaman: where it can see the player within its range, it raises its staff to lob a spell at them.
+    if (attack.kind === 'lob') {
+      if (distance <= attack.range && this.canSee(context, monster, prey)) {
+        if (tick >= monster.readyAt) monster.act = { k: 'aim', at: tick, until: tick + attack.aim, angle }
+        return
+      }
+      pursue(monster, monster.def.halfSize, prey.x, prey.y, monster.def.speed, Math.round(attack.range * 0.75), blocked, tick)
+      return
+    }
+    if (attack.kind === 'bow' || attack.kind === 'twister') {
       const clear = distance <= attack.range && this.canSee(context, monster, prey)
       if (clear) {
         if (tick >= monster.readyAt) monster.act = { k: 'aim', at: tick, until: tick + attack.aim, angle: this.aimBehind(context, monster, target.id, attack.lead) }
@@ -523,7 +625,7 @@ export class Monsters extends CreatureSet<Monster> {
       const out = Math.sqrt(this.rng.next()) * this.patrolOf(monster) * SUB
       const x = Math.round(home.x + Math.cos(angle) * out)
       const y = Math.round(home.y + Math.sin(angle) * out)
-      if (blocked(floorDiv(x, SUB), floorDiv(y, SUB)) !== false || !straightClear(home, x, y, blocked)) continue
+      if (blocked(floorDiv(x, SUB), floorDiv(y, SUB)) !== false || !straightClear(home, x, y, blocked, monster.def.halfSize)) continue
       const score = others.reduce((nearest, other) => Math.min(nearest, Math.hypot(other.x - x, other.y - y)), Infinity)
       if (!best || score > best.score) best = { x, y, score }
     }
@@ -532,7 +634,7 @@ export class Monsters extends CreatureSet<Monster> {
 
   // How far round its camp a camp's monster patrols (tiles).
   private patrolOf(monster: Monster): number {
-    return monster.post !== undefined ? (this.camps?.[monster.post.camp]?.patrol ?? PATROL_RADIUS) : PATROL_RADIUS
+    return monster.post !== undefined ? (this.camps.get(monster.post.camp)?.patrol ?? PATROL_RADIUS) : PATROL_RADIUS
   }
 
   // The way from a monster to where a player was `lead` ticks ago (so a player who keeps moving is not where it aims).
@@ -594,6 +696,62 @@ export class Monsters extends CreatureSet<Monster> {
     if (tick >= act.until || travelled < charge.speed / 3) recover()
   }
 
+  // A goblin's spear (or a mummy's blow): a jab, once its windup is over, lunging forward (up to its `lunge`, but not
+  // into the player it is after, nor through anything in the way) and hurting everyone in a narrow strip its reach out
+  // from there the way it faces (a mummy: everyone within its reach); or a spear thrown, once it is drawn back, at
+  // where the player was a moment before (it keeps its own).
+  private stab(context: MonsterContext, monster: Monster, attack: Extract<MonsterDef['attack'], { kind: 'spear' | 'melee' }>): void {
+    const { tick } = context
+    const act = monster.act!
+    if (act.k === 'throw' && attack.kind === 'spear') {
+      const thrown = attack.throw
+      if (monster.target !== 0) {
+        const target = context.players.find((player) => player.id === monster.target)
+        if (target && this.canSee(context, monster, target.position)) act.angle = this.aimBehind(context, monster, target.id, thrown.lead)
+      }
+      if (tick < act.until) return
+      context.shoot(thrown.item, monster.x, monster.y, act.angle, thrown.speed, thrown.damage, Math.ceil((thrown.range * ARROW_FLIGHT) / Math.max(1, thrown.speed)))
+      monster.act = undefined
+      monster.readyAt = tick + thrown.cooldown
+      return
+    }
+    if (tick < act.until) return
+    if (attack.kind === 'spear' && attack.lunge > 0) {
+      const prey = context.players.find((player) => player.id === monster.target)?.position
+      const room = prey ? Math.max(0, (prey.x - monster.x) * Math.cos(act.angle) + (prey.y - monster.y) * Math.sin(act.angle) - monster.def.halfSize - PLAYER_HALF_SIZE) : attack.lunge
+      const lunge = Math.min(attack.lunge, room)
+      Object.assign(monster, moveBox(monster, Math.round(Math.cos(act.angle) * lunge), Math.round(Math.sin(act.angle) * lunge), monster.def.halfSize, this.blockedFor(context)))
+    }
+    monster.struckAt = tick
+    const reach = monster.def.halfSize + attack.reach
+    for (const player of context.players) {
+      const struck = attack.kind === 'spear' ? inSwing(monster, act.angle, reach, 0, player.position, PLAYER_HALF_SIZE, JAB_WIDTH) : Math.hypot(player.position.x - monster.x, player.position.y - monster.y) <= reach + PLAYER_HALF_SIZE
+      if (struck) context.hurtPlayer(player.id, attack.damage, { x: monster.x, y: monster.y }, attack.knockback)
+    }
+    monster.act = undefined
+    monster.readyAt = tick + attack.cooldown
+  }
+
+  // A mummy's slam, once its arms are up: brought down on the ground in front of it, hurting everyone within its radius
+  // of there.
+  private slam(context: MonsterContext, monster: Monster, attack: Extract<MonsterDef['attack'], { kind: 'melee' }>): void {
+    const { tick } = context
+    const act = monster.act!
+    const slam = attack.slam
+    if (!slam) {
+      monster.act = undefined
+      return
+    }
+    if (tick < act.until) return
+    const middle = { x: monster.x + Math.cos(act.angle) * slam.ahead, y: monster.y + Math.sin(act.angle) * slam.ahead }
+    for (const player of context.players) {
+      if (Math.hypot(player.position.x - middle.x, player.position.y - middle.y) <= slam.radius + PLAYER_HALF_SIZE) context.hurtPlayer(player.id, slam.damage, { x: Math.round(middle.x), y: Math.round(middle.y) }, slam.knockback)
+    }
+    monster.struckAt = tick
+    monster.act = undefined
+    monster.readyAt = tick + attack.cooldown
+  }
+
   // A wisp: it drifts after the nearest player (in its copy of the dungeon), and bursts against one it reaches; it is
   // gone at the end of its life.
   private drift(context: MonsterContext, monster: Monster): void {
@@ -652,55 +810,23 @@ export class Monsters extends CreatureSet<Monster> {
 
   // ---- the camps
 
-  // Each camp keeps its skeletons (or goblins, or a tomb its mummies): a place whose one was killed waits its camp's
-  // `respawn` (CAMP_RESPAWN_TICKS, GOBLIN_RESPAWN_TICKS, MUMMY_RESPAWN_TICKS), then gets a new one, once a player is near enough for it to matter and
-  // none near enough to see it appear.
+  // Each camp keeps its monsters: a place whose one was killed waits its camp's `respawn` (CAMP_RESPAWN_TICKS,
+  // GOBLIN_RESPAWN_TICKS, MUMMY_RESPAWN_TICKS), then gets a new one, once a player is near enough for it to matter and
+  // none near enough to see it appear; and with it the camp's rocks that were broken come back. A camp is kept for as
+  // long as what keeps it stands.
   private tendCamps(context: MonsterContext): void {
-    this.camps ??= [
-      ...campSites(context.terrain).map((site): Camp => {
-        const count = CAMP_MIN + (hashInts(context.seed, site.x, site.y, 721) % (CAMP_MAX - CAMP_MIN + 1))
-        const archers = Math.min(count, CAMP_ARCHERS_MIN + (hashInts(context.seed, site.x, site.y, 722) % (CAMP_ARCHERS_MAX - CAMP_ARCHERS_MIN + 1)))
-        // The archers' places, spread round the ring.
-        const archerSlots = new Set(Array.from({ length: archers }, (_, i) => Math.floor(((i + 0.5) * count) / archers)))
-        return {
-          x: site.x * SUB + SUB / 2,
-          y: site.y * SUB + SUB / 2,
-          kind: 'skeleton',
-          patrol: PATROL_RADIUS,
-          respawn: CAMP_RESPAWN_TICKS,
-          places: Array.from({ length: count }, (_, slot) => ({ id: 0, respawnAt: 0, archer: archerSlots.has(slot) })),
-        }
-      }),
-      ...goblinCampSites(context.terrain).map((site): Camp => {
-        const count = GOBLINS_MIN + (hashInts(context.seed, site.x, site.y, 741) % (GOBLINS_MAX - GOBLINS_MIN + 1))
-        return {
-          x: site.x * SUB + SUB / 2,
-          y: site.y * SUB + SUB / 2,
-          kind: 'goblin',
-          patrol: GOBLIN_PATROL,
-          respawn: GOBLIN_RESPAWN_TICKS,
-          places: Array.from({ length: count }, () => ({ id: 0, respawnAt: 0, archer: false })),
-        }
-      }),
-      ...tombSites(context.terrain).map((site): Camp => {
-        const count = MUMMIES_MIN + (hashInts(context.seed, site.x, site.y, 761) % (MUMMIES_MAX - MUMMIES_MIN + 1))
-        return {
-          x: site.x * SUB + SUB / 2,
-          y: site.y * SUB + SUB / 2,
-          kind: 'mummy',
-          patrol: MUMMY_PATROL,
-          respawn: MUMMY_RESPAWN_TICKS,
-          places: Array.from({ length: count }, () => ({ id: 0, respawnAt: 0, archer: false })),
-        }
-      }),
-    ]
-    const skeleton = monsterDef('skeleton')
-    const archer = monsterDef('skeleton-archer')
-    const goblin = monsterDef('goblin')
-    const mummy = monsterDef('mummy')
-    this.camps.forEach((camp, index) => {
+    const standing = new Set<number>()
+    for (const kind of CAMP_KINDS) {
+      for (const entity of context.world.ofKind(kind)) {
+        standing.add(entity.id)
+        if (!this.camps.has(entity.id)) this.camps.set(entity.id, this.makeCamp(context.seed, entity))
+      }
+    }
+    for (const id of [...this.camps.keys()]) if (!standing.has(id)) this.camps.delete(id)
+    const blocked = this.blockedFor(context)
+    for (const camp of [...this.camps.values()].sort((a, b) => a.id - b.id)) {
       const near = (radius: number): boolean => context.players.some((player) => Math.hypot(player.position.x - camp.x, player.position.y - camp.y) <= radius * SUB)
-      const ring = CAMP_POST
+      const due: number[] = []
       for (const [slot, place] of camp.places.entries()) {
         if (place.id !== 0) {
           if (this.all.has(place.id)) continue
@@ -708,18 +834,68 @@ export class Monsters extends CreatureSet<Monster> {
           place.respawnAt = context.tick + camp.respawn
         }
         if (context.tick < place.respawnAt || !near(CAMP_ACTIVE) || near(CAMP_UNSEEN)) continue
-        if (!context.isGrown(chunkOfTile(floorDiv(camp.x, SUB), floorDiv(camp.y, SUB)))) continue
-        const angle = (slot / camp.places.length) * Math.PI * 2 + index
-        const x = Math.round(camp.x + Math.cos(angle) * ring * SUB)
-        const y = Math.round(camp.y + Math.sin(angle) * ring * SUB)
-        const def = camp.kind === 'goblin' ? goblin : camp.kind === 'mummy' ? mummy : place.archer ? archer : skeleton
-        const guard = this.spawn(def, x, y, { post: { camp: index, slot } })
-        // It keeps to the camp as a whole: it patrols round the fire, and chases a player no further than its leash from it.
+        if (!context.isGrown(chunkOfTile(camp.tileX, camp.tileY))) continue
+        due.push(slot)
+      }
+      // The rocks first (on their own spots, clear of anyone), then the monsters (clear of the rocks).
+      if (due.length > 0) this.refillRocks(context, camp)
+      for (const slot of due) {
+        const place = camp.places[slot]
+        // Its post on the ring round the camp (or a little round from it, where that is in the way).
+        let spot: { x: number; y: number } | undefined
+        for (let turn = 0; turn < 8 && !spot; turn++) {
+          const angle = (slot / camp.places.length) * Math.PI * 2 + camp.id + turn * 0.4
+          const x = Math.round(camp.x + Math.cos(angle) * CAMP_POST * SUB)
+          const y = Math.round(camp.y + Math.sin(angle) * CAMP_POST * SUB)
+          if (blocked(floorDiv(x, SUB), floorDiv(y, SUB)) === false) spot = { x, y }
+        }
+        if (!spot) continue
+        const guard = this.spawn(place.def, spot.x, spot.y, { post: { camp: camp.id, slot } })
+        // It keeps to the camp as a whole: it patrols round it, and chases a player no further than its leash from it.
         guard.homeX = camp.x
         guard.homeY = camp.y
         place.id = guard.id
       }
-    })
+    }
+  }
+
+  // A camp round what keeps it: how many of each kind keep it (see CAMPS), by a hash of the seed and where it is; the
+  // first kind's places round the ring, and the others' spread evenly between them.
+  private makeCamp(seed: number, keeper: Entity): Camp {
+    const { x, y } = keeper
+    const kind = keeper.kind as CampKind
+    const def = CAMPS[kind]
+    const salt = 721 + CAMP_KINDS.indexOf(kind) * 20
+    const counts = def.monsters.map((monster, i) => ({ def: monsterDef(monster.kind), count: monster.min + (hashInts(seed, x, y, salt + i) % (monster.max - monster.min + 1)) }))
+    const [first, ...rest] = counts
+    const others = rest.flatMap(({ def: other, count }) => Array.from({ length: count }, () => other))
+    const total = first.count + others.length
+    const defs = Array.from({ length: total }, () => first.def)
+    others.forEach((other, i) => (defs[Math.floor(((i + 0.5) * total) / others.length)] = other))
+    return {
+      id: keeper.id,
+      kind,
+      tileX: x,
+      tileY: y,
+      ...tileMiddle(x, y + CAMP_FRONT),
+      patrol: def.patrolRadius,
+      respawn: def.respawn,
+      places: defs.map((place) => ({ id: 0, respawnAt: 0, def: place })),
+    }
+  }
+
+  // A camp's rocks (see CAMP_ROCKS and campRockSpots in world-gen.ts), each put back on its spot if it was broken: where
+  // that is open ground, with nothing on it and nobody standing there.
+  private refillRocks(context: MonsterContext, camp: Camp): void {
+    if (!context.addRock) return
+    const { rock, count } = CAMP_ROCKS[camp.kind]
+    for (const spot of campRockSpots(context.seed, camp.tileX, camp.tileY, count)) {
+      if (context.world.entityAt(spot.x, spot.y) || context.world.floorAt(spot.x, spot.y) || groundBlocks(context.terrain, spot.x, spot.y)) continue
+      const middle = tileMiddle(spot.x, spot.y)
+      const on = (at: { x: number; y: number }): boolean => Math.abs(at.x - middle.x) < SUB && Math.abs(at.y - middle.y) < SUB
+      if ([...this.all.values()].some(on) || context.players.some((player) => on(player.position))) continue
+      context.addRock(rock, spot.x, spot.y)
+    }
   }
 }
 

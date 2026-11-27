@@ -1,5 +1,6 @@
 import monstersData from '../../../data/monsters.json' with { type: 'json' }
 import { failIn, fieldsOf, numberField, onlyFields, secondsField, speedField, textField, tilesField, wholeField, type Fail, type Fields } from './data-check.ts'
+import { SUB, TPS } from './constants.ts'
 import { itemFromKey, type ItemId } from './items.ts'
 
 // The monsters, from data/monsters.json: the skeletons that keep the mountains' camps and guard the dungeon, the
@@ -10,7 +11,9 @@ import { itemFromKey, type ItemId } from './items.ts'
 // In the file, for each kind:
 // - `hp`, and `armor`: how much it takes off every hit on it (see damageAfterArmor; never all of it).
 // - `speed`: how fast it goes after a player, in tiles a second (twice that going home); `size`: how big it is drawn,
-//   in tiles; `halfSize`: how far it reaches from its middle to each side, in tiles, for walking into things.
+//   in tiles; `halfSize`: how far it reaches from its middle to each side, in tiles, for walking into things;
+//   `unclump`: how hard others of its kind push it away when they come closer than its `size` (see the server's
+//   `unclump` in creatures.ts), in tiles a second, right on top of each other (less the further apart; 0: not at all).
 // - `aggroRadius`: how close (in tiles) a player it can see must come for it to go for them; `leash`: how far from
 //   where it keeps (its camp, its post) it chases a player before it gives up and goes back.
 // - `boss`: fought in its own hall (see dungeons.ts), its health over the top of the screen; never knocked back.
@@ -29,8 +32,31 @@ import { itemFromKey, type ItemId } from './items.ts'
 //     an arrow (`item`) at `speed` tiles a second for `damage`, which flies through other monsters; then it waits
 //     `cooldown` seconds. It aims where the player was `lead` seconds before, so one who keeps moving is missed.
 //   - "touch": it drifts after the nearest player and bursts against them for `damage`; it lasts `lifetime` seconds.
-//   - "melee" (a goblin): it walks up to the player and hits them for `damage` once it is within `reach` tiles of them
-//     (its size and theirs between), every `cooldown` seconds, knocking them back `knockback` tiles.
+//   - "melee" (a mummy): it walks up to the player and hits them for `damage` once it is within `reach` tiles of them
+//     (its size and theirs between), `windup` seconds after it starts (0: at once), every `cooldown` seconds,
+//     knocking them back `knockback` tiles. With `slam`, now and then (every `cooldown` seconds of the slam's, the
+//     first that long into a fight) it slams instead, once the player is within `ahead` and `radius` tiles of it:
+//     its arms raised for `windup` seconds, the way to them fixed as it starts (nothing stops it), then brought down on
+//     the ground `ahead` tiles in front of it, hurting everyone within `radius` tiles of there for `damage` and
+//     knocking them back `knockback` tiles.
+//   - "spear" (a goblin): close in (within `reach` and `lunge` tiles, its size and theirs between) it jabs, quick,
+//     with little to warn of it, and nothing stopping it once it starts (no knockback or stun while it winds up):
+//     `windup` seconds, then it lunges up to `lunge` tiles forward (not into the player) and everyone in a narrow
+//     strip (JAB_WIDTH) `reach` tiles out from there the way it faces takes `damage` and is knocked back `knockback`
+//     tiles; then `cooldown` seconds. Or it throws its spear (`throw`): each time it is ready to attack it picks
+//     which, a throw `chance` of the time (0.3: three throws in ten) and a jab the rest, and sticks to it until it has
+//     done it. A throw is from anywhere within `range` tiles where it can see the player: it draws back for `windup`
+//     seconds, aiming where the player was `lead` seconds before, and throws a spear (`item`, drawn only: it keeps its
+//     own) at `speed` tiles a second for `damage`; then `cooldown` seconds before its next attack.
+//   - "twister" (a dust elemental): it comes within `range` of the player where it can see them, gathers itself for
+//     `aim` seconds and looses a twister (`item`) at where they were `lead` seconds before, at `speed` tiles a second:
+//     `width` tiles across, it goes through everything (it is wind), hurting each player it passes through once for
+//     `damage`, and blows on `linger` seconds past where it was aimed before it dies away; then it waits `cooldown`.
+//   - "lob" (a goblin shaman): within `range` of the player where it can see them, it raises its staff for `aim`
+//     seconds and lobs a spell (`item`) up and over at where the player is (or was `lead` seconds before), which comes
+//     down `base` seconds plus a second for every `speed` tiles away it is (so one close by can still be got out of
+//     the way of), `peak` tiles up at the top of its arc, and bursts where it lands, hurting everyone within `radius`
+//     tiles for `damage`; then it waits `cooldown` seconds.
 //   - "sting" (a worker bee): it flies (over anything) after whoever angered its hive and stings them for `damage`
 //     once it is on them, every `cooldown` seconds; its `leash` is how far from its hive it chases.
 //   - "queen" (a queen bee): no attack; she flies off to find a new hive when hers is gone (see bees.ts).
@@ -50,6 +76,8 @@ import { itemFromKey, type ItemId } from './items.ts'
 //     - `summon`: `base` skeleton archers for one player, and `perExtraPlayer` more for each player after the first, round the edge of the hall, `chance` of the time once
 //       those it called last are dead and it has cast `afterCasts` times since.
 // - `drops`: what it drops when killed, `min` to `max` of each item.
+// - `rewards` (a boss): what it leaves each player who hurt it when it is killed (even one who fell in the fight): one
+//   of these items, picked at random for each, which only that player can pick up.
 export type BladeSwing = { reach: number; arc: number; windup: number; damage: number; knockback: number }
 export type BladeCharge = {
   from: number
@@ -66,11 +94,17 @@ export type BladeCharge = {
   // charging again for its `cooldown`.
   chance: number
 }
+// A mummy's slam (see "melee" above): units and ticks.
+export type MeleeSlam = { windup: number; ahead: number; radius: number; damage: number; knockback: number; cooldown: number }
+export type SpearThrow = { range: number; windup: number; lead: number; speed: number; damage: number; cooldown: number; chance: number; item: ItemId }
 export type MonsterAttack =
   | { kind: 'blade'; swing: BladeSwing; charge: BladeCharge; recover: number; cooldown: number }
   | { kind: 'bow'; range: number; aim: number; lead: number; cooldown: number; speed: number; damage: number; item: ItemId }
   | { kind: 'touch'; damage: number; lifetime: number }
-  | { kind: 'melee'; reach: number; damage: number; cooldown: number; knockback: number }
+  | { kind: 'melee'; reach: number; windup: number; damage: number; cooldown: number; knockback: number; slam?: MeleeSlam }
+  | { kind: 'spear'; reach: number; lunge: number; windup: number; damage: number; cooldown: number; knockback: number; throw: SpearThrow }
+  | { kind: 'twister'; range: number; aim: number; lead: number; cooldown: number; speed: number; damage: number; width: number; linger: number; item: ItemId }
+  | { kind: 'lob'; range: number; aim: number; lead: number; cooldown: number; base: number; speed: number; peak: number; radius: number; damage: number; item: ItemId }
   | { kind: 'sting'; damage: number; cooldown: number }
   | { kind: 'queen' }
   | ({ kind: 'spells' } & LichSpells)
@@ -97,6 +131,8 @@ export type MonsterDef = {
   // Units a tick.
   speed: number
   size: number
+  // Units a tick (see `unclump` above).
+  unclump: number
   // Units.
   halfSize: number
   aggroRadius: number
@@ -104,13 +140,14 @@ export type MonsterDef = {
   boss: boolean
   attack: MonsterAttack
   drops: ReadonlyArray<{ item: ItemId; min: number; max: number }>
+  rewards: readonly ItemId[]
 }
 
 // What a monster is doing that the pages show: winding up a swing or a charge (and which way), dashing, aiming its bow
-// (and which way), or casting a spell (the frost lich: which one, see frost-lich.ts), for `ticks` from tick `at`
+// or a spell (and which way), drawing back to jab or to throw a spear, raising its arms to slam (a mummy), or casting a spell (the frost lich: which one, see frost-lich.ts), for `ticks` from tick `at`
 // (which also tells one such from the next).
 export type MonsterAct =
-  | { k: 'swing' | 'charge' | 'dash' | 'aim'; angle: number; ticks: number; at: number }
+  | { k: 'swing' | 'charge' | 'dash' | 'aim' | 'jab' | 'throw' | 'slam'; angle: number; ticks: number; at: number }
   | { k: 'cast'; spell: LichSpell; ticks: number; at: number }
 
 // How hard a monster is to push about, against a player's PLAYER_MASS (see the server's bodies.ts; a boss never
@@ -123,18 +160,25 @@ export type LichSpell = 'icicles' | 'shards' | 'blizzard' | 'wisps' | 'summon'
 
 // What a monster near the player is, sent when it comes near and whenever that changes (its health out of `maxHp`, a
 // boss's being more with more players fighting it).
-export type MonsterInfo = { id: number; kind: string; hp: number; maxHp: number; angry?: boolean; act?: MonsterAct }
+// (`struck`: the tick of its last blow, a goblin's jab or a mummy's, for the pages to show where it landed.)
+export type MonsterInfo = { id: number; kind: string; hp: number; maxHp: number; angry?: boolean; act?: MonsterAct; struck?: number }
+
+// How wide a goblin's jab reaches across, in units (a spear's point: a narrow strip).
+export const JAB_WIDTH = Math.round(0.5 * SUB)
 
 // Where a monster is, in units, as it is sent with the players' positions: [id, x, y].
 export type MonsterPosition = [number, number, number]
 
-const MONSTER_FIELDS = ['id', 'name', 'hp', 'armor', 'speed', 'size', 'halfSize', 'aggroRadius', 'leash', 'boss', 'attack', 'drops']
+const MONSTER_FIELDS = ['id', 'name', 'hp', 'armor', 'speed', 'size', 'halfSize', 'unclump', 'aggroRadius', 'leash', 'boss', 'attack', 'drops', 'rewards']
 // The fields of each kind of attack, besides `kind`.
 const ATTACK_FIELDS: Readonly<Record<MonsterAttack['kind'], readonly string[]>> = {
   blade: ['swing', 'charge', 'recover', 'cooldown'],
   bow: ['range', 'aim', 'lead', 'cooldown', 'speed', 'damage', 'item'],
   touch: ['damage', 'lifetime'],
-  melee: ['reach', 'damage', 'cooldown', 'knockback'],
+  melee: ['reach', 'windup', 'damage', 'cooldown', 'knockback', 'slam'],
+  spear: ['reach', 'lunge', 'windup', 'damage', 'cooldown', 'knockback', 'throw'],
+  lob: ['range', 'aim', 'lead', 'cooldown', 'base', 'speed', 'peak', 'radius', 'damage', 'item'],
+  twister: ['range', 'aim', 'lead', 'cooldown', 'speed', 'damage', 'width', 'linger', 'item'],
   sting: ['damage', 'cooldown'],
   queen: [],
   spells: ['castEvery', 'castTime', 'firstCast', 'closeRange', 'blizzard', 'wisps', 'icicles', 'shards', 'summon'],
@@ -170,6 +214,7 @@ function parseMonsters(data: unknown): MonsterDef[] {
       armor: numberField(raw, 'armor', fail),
       speed: speedField(raw, 'speed', fail),
       size: numberField(raw, 'size', fail),
+      unclump: speedField(raw, 'unclump', fail, 0),
       halfSize: tilesField(raw, 'halfSize', fail),
       aggroRadius: tilesField(raw, 'aggroRadius', fail),
       leash: tilesField(raw, 'leash', fail),
@@ -180,6 +225,11 @@ function parseMonsters(data: unknown): MonsterDef[] {
         onlyFields(drop, ['item', 'min', 'max'], fail, '"drops": ')
         return { item: itemFromKey(drop.item, fail), min: numberField(drop, 'min', fail), max: numberField(drop, 'max', fail) }
       }),
+      rewards: (() => {
+        if (raw.rewards === undefined) return []
+        if (raw.boss !== true || !Array.isArray(raw.rewards)) fail('"rewards" is a list of item keys, for a boss')
+        return (raw.rewards as unknown[]).map((key) => itemFromKey(key, fail))
+      })(),
     }
   })
 }
@@ -207,7 +257,7 @@ function attackOf(a: Fields, fail: Fail): MonsterAttack {
           from: tilesField(charge, 'from', fail),
           near: tilesField(charge, 'near', fail),
           windup: secondsField(charge, 'windup', fail),
-          lead: secondsField(charge, 'lead', fail),
+          lead: Math.round(numberField(charge, 'lead', fail, 0) * TPS),
           distance: tilesField(charge, 'distance', fail),
           speed: speedField(charge, 'speed', fail),
           width: tilesField(charge, 'width', fail),
@@ -225,7 +275,7 @@ function attackOf(a: Fields, fail: Fail): MonsterAttack {
         kind,
         range: tilesField(a, 'range', fail),
         aim: secondsField(a, 'aim', fail),
-        lead: secondsField(a, 'lead', fail),
+        lead: Math.round(numberField(a, 'lead', fail, 0) * TPS),
         cooldown: secondsField(a, 'cooldown', fail),
         speed: speedField(a, 'speed', fail),
         damage: numberField(a, 'damage', fail, 1),
@@ -237,9 +287,61 @@ function attackOf(a: Fields, fail: Fail): MonsterAttack {
       return {
         kind,
         reach: tilesField(a, 'reach', fail),
+        windup: Math.round(numberField(a, 'windup', fail, 0, 0) * TPS),
         damage: numberField(a, 'damage', fail, 1),
         cooldown: secondsField(a, 'cooldown', fail),
         knockback: tilesField(a, 'knockback', fail, 0),
+        ...(a.slam !== undefined ? { slam: slamOf(fieldsOf(a.slam, '"attack.slam"', fail), fail) } : {}),
+      }
+    case 'spear': {
+      const thrown = fieldsOf(a.throw, '"attack.throw"', fail)
+      onlyFields(thrown, ['range', 'windup', 'lead', 'speed', 'damage', 'cooldown', 'chance', 'item'], fail, '"attack.throw": ')
+      return {
+        kind,
+        reach: tilesField(a, 'reach', fail),
+        lunge: tilesField(a, 'lunge', fail, 0),
+        windup: Math.round(numberField(a, 'windup', fail, 0, 0) * TPS),
+        damage: numberField(a, 'damage', fail, 1),
+        cooldown: secondsField(a, 'cooldown', fail),
+        knockback: tilesField(a, 'knockback', fail, 0),
+        throw: {
+          range: tilesField(thrown, 'range', fail),
+          windup: secondsField(thrown, 'windup', fail),
+          lead: Math.round(numberField(thrown, 'lead', fail, 0) * TPS),
+          speed: speedField(thrown, 'speed', fail),
+          damage: numberField(thrown, 'damage', fail, 1),
+          cooldown: secondsField(thrown, 'cooldown', fail),
+          chance: Math.min(1, numberField(thrown, 'chance', fail, 0, 1)),
+          item: itemFromKey(thrown.item, fail),
+        },
+      }
+    }
+    case 'twister':
+      return {
+        kind,
+        range: tilesField(a, 'range', fail),
+        aim: secondsField(a, 'aim', fail),
+        lead: Math.round(numberField(a, 'lead', fail, 0, 0) * TPS),
+        cooldown: secondsField(a, 'cooldown', fail),
+        speed: speedField(a, 'speed', fail),
+        damage: numberField(a, 'damage', fail, 1),
+        width: tilesField(a, 'width', fail),
+        linger: secondsField(a, 'linger', fail),
+        item: itemFromKey(a.item, fail),
+      }
+    case 'lob':
+      return {
+        kind,
+        range: tilesField(a, 'range', fail),
+        aim: secondsField(a, 'aim', fail),
+        lead: Math.round(numberField(a, 'lead', fail, 0, 0) * TPS),
+        cooldown: secondsField(a, 'cooldown', fail),
+        base: secondsField(a, 'base', fail),
+        speed: speedField(a, 'speed', fail),
+        peak: tilesField(a, 'peak', fail),
+        radius: tilesField(a, 'radius', fail),
+        damage: numberField(a, 'damage', fail, 1),
+        item: itemFromKey(a.item, fail),
       }
     case 'sting':
       return { kind, damage: numberField(a, 'damage', fail, 1), cooldown: secondsField(a, 'cooldown', fail) }
@@ -298,5 +400,17 @@ function spellsOf(a: Fields, fail: Fail): LichSpells {
       base: wholeField(summon, 'base', fail),
       perExtraPlayer: wholeField(summon, 'perExtraPlayer', fail),
     },
+  }
+}
+
+function slamOf(slam: Fields, fail: Fail): MeleeSlam {
+  onlyFields(slam, ['windup', 'ahead', 'radius', 'damage', 'knockback', 'cooldown'], fail, '"attack.slam": ')
+  return {
+    windup: secondsField(slam, 'windup', fail),
+    ahead: tilesField(slam, 'ahead', fail, 0),
+    radius: tilesField(slam, 'radius', fail),
+    damage: numberField(slam, 'damage', fail, 1),
+    knockback: tilesField(slam, 'knockback', fail, 0),
+    cooldown: secondsField(slam, 'cooldown', fail),
   }
 }

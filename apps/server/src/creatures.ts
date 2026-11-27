@@ -21,6 +21,8 @@ import type { Dropped } from './commands.ts'
 export const MAX_REWIND_TICKS = 15
 // A knocked back creature slides, slowing by this many percent a tick (so a knockback adds up to about what it says).
 const KNOCK_SLOWING = 25
+// The squares (units across) creatures are sorted into to find which are near each other to unclump (see `unclump`): wider than any creature's `size`.
+const UNCLUMP_CELL = 2 * SUB
 
 // How a hit moves and holds what it hits: knocked back this many units, stunned for this many ticks.
 export type HitEffects = { knockback?: number; stun?: number }
@@ -71,7 +73,7 @@ export type Creature = {
   vx: number
   vy: number
   stunnedUntil: number
-  def: { halfSize: number; armor: number }
+  def: { halfSize: number; armor: number; size: number; unclump: number }
 }
 
 export abstract class CreatureSet<C extends Creature> implements Creatures {
@@ -161,8 +163,8 @@ export abstract class CreatureSet<C extends Creature> implements Creatures {
   }
 
   // A blow lands on one: it loses `amount` less its armour (never all of it), and, unless it is `steady` (a boss, a
-  // skeleton in the middle of its thrust), is knocked back away from `from` and stunned. If that kills it, it is gone,
-  // noted as killed. Gives the damage dealt.
+  // monster in the middle of its own attack), is knocked back away from `from` and stunned. If that kills it, it is
+  // gone, noted as killed. Gives the damage dealt.
   protected takeBlow(creature: C & { hp: number }, amount: number, from: PlayerPosition, tick: number, effects: HitEffects, steady = false): number {
     const dealt = damageAfterArmor(amount, creature.def.armor)
     creature.hp -= dealt
@@ -183,6 +185,68 @@ export abstract class CreatureSet<C extends Creature> implements Creatures {
     }
     if (effects.stun) creature.stunnedUntil = Math.max(creature.stunnedUntil, tick + effects.stun)
     return dealt
+  }
+
+  // Ones of the same kind (the same def) that have come closer together than a body's length (their `size`) push each
+  // other apart, each away from the other, harder the closer they are, up to their `unclump` (units a tick) right on
+  // top of each other; so a crowd spreads out a little by itself rather than standing in a heap. Each is kept out of
+  // what it cannot walk into (`blockedFor`). Only those in `crowd` (the ones that moved this tick, and not in the
+  // middle of a dash or a roll) take part. One that is stunned (just hit) is not pushed: the other moves away from it
+  // by the whole push instead, so one knocked back into another of its kind is not pushed back onto whoever hit it.
+  protected unclump(crowd: readonly C[], blockedFor: (creature: C) => IsSolid): void {
+    const cell = UNCLUMP_CELL
+    const grid = new Map<string, C[]>()
+    for (const creature of crowd) {
+      if (creature.def.unclump <= 0) continue
+      const key = `${floorDiv(creature.x, cell)},${floorDiv(creature.y, cell)}`
+      const here = grid.get(key)
+      if (here) here.push(creature)
+      else grid.set(key, [creature])
+    }
+    const pushes = new Map<C, { x: number; y: number }>()
+    const add = (creature: C, x: number, y: number): void => {
+      const push = pushes.get(creature)
+      if (push) {
+        push.x += x
+        push.y += y
+      } else pushes.set(creature, { x, y })
+    }
+    for (const a of crowd) {
+      if (a.def.unclump <= 0) continue
+      const gx = floorDiv(a.x, cell)
+      const gy = floorDiv(a.y, cell)
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          for (const b of grid.get(`${gx + dx},${gy + dy}`) ?? []) {
+            if (b.id <= a.id || b.def !== a.def) continue
+            const apart = a.def.size * SUB
+            let ux = b.x - a.x
+            let uy = b.y - a.y
+            let distance = Math.hypot(ux, uy)
+            if (distance >= apart) continue
+            if (distance < 1) {
+              // Right on top of each other: apart along a way picked from their IDs.
+              const angle = a.id * 1.7 + b.id * 2.3
+              ux = Math.cos(angle)
+              uy = Math.sin(angle)
+              distance = 1
+            }
+            const aHeld = a.stunnedUntil > this.tickNow
+            const bHeld = b.stunnedUntil > this.tickNow
+            if (aHeld && bHeld) continue
+            const strength = a.def.unclump * (1 - distance / apart)
+            const share = aHeld || bHeld ? 1 : 0.5
+            if (!aHeld) add(a, (-ux / distance) * strength * share, (-uy / distance) * strength * share)
+            if (!bHeld) add(b, (ux / distance) * strength * share, (uy / distance) * strength * share)
+          }
+        }
+      }
+    }
+    for (const [creature, push] of pushes) {
+      const x = Math.round(push.x)
+      const y = Math.round(push.y)
+      if (x !== 0 || y !== 0) Object.assign(creature, moveBox(creature, x, y, creature.def.halfSize, blockedFor(creature)))
+    }
   }
 
   // A knocked back one slides on, slowing, kept out of what it cannot walk into.

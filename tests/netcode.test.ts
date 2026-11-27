@@ -8,6 +8,7 @@ import {
   countOf,
   EAST,
   fromRaft,
+  itemId,
   KEY_RIGHT,
   PLAYER_SPAWN,
   ReliableReceiver,
@@ -15,9 +16,15 @@ import {
   SOUTH,
   stepPlayer,
   SUB,
+  TPS,
   WEST,
+  withPush,
   type ChestEntity,
 } from '../packages/shared/src/index.ts'
+
+// Any two kinds of item.
+const STONE = itemId('stone')
+const LOG = itemId('log')
 import { differingChunks, run, TestClient } from './helpers.ts'
 
 // A random number generator with a seed, so a failing run can be run again.
@@ -31,14 +38,42 @@ function seeded(seed: number): () => number {
 
 // The factory's tests build near the spawn with no plants in the way (the world grows none in these rooms).
 // The factory's tests build a few chunks out from the spawn: a big, round forest keeps it all on land.
-const FACTORY = { plants: false, terrain: { size: 'huge' } } as const
+const FACTORY = { plants: false, terrain: { radius: 160 } } as const
 
 // Starts a production line with no ore to mine (deposits are off for now): the player is given some iron and puts it
 // into a chest at the start of the line, where an extractor pulls it out. Gives the source chest's tile.
 function stockedChest(client: TestClient, x: number, y: number, count: number): void {
-  client.player.inventory.slots[0] = { item: 1, count }
+  client.player.inventory.slots[0] = { item: STONE, count }
   client.command({ k: 'build', x, y, kind: 'chest', dir: EAST })
 }
+
+test('an attack is made just after the input it was made at is played, before any later one (the step forward it takes), however the inputs have queued up', () => {
+  const room = new GameRoom('ORDER', 7, { plants: false })
+  const client = new TestClient(room, 'Fighter')
+  run(room, [client], 3)
+  client.player.inventory.slots[0] = { item: itemId('wood-spear'), count: 1 }
+  // Where the server had the player as each attack was made.
+  const madeAt: number[] = []
+  const rawRun = (room as unknown as { run: (queued: { command: { k: string } }, tick: number) => void }).run.bind(room)
+  ;(room as unknown as { run: typeof rawRun }).run = (queued, tick) => {
+    if (queued.command.k === 'attack') madeAt.push(client.player.lastPlayedInput)
+    rawRun(queued, tick)
+  }
+  // A burst of inputs all at once (walking, then an attack's step forward): played two a tick to catch up. The attack
+  // was made after the second.
+  const first = client.player.lastPlayedInput + 1
+  const inputs: Array<[number, number]> = [[first, KEY_RIGHT], [first + 1, KEY_RIGHT], [first + 2, KEY_RIGHT]]
+  for (let i = 0; i < 3; i++) inputs.push([first + 3 + i, withPush(0, 0, SUB / 5)])
+  room.receiveInputs(client.player, inputs)
+  client.command({ k: 'attack', slot: 0, x: client.player.position.x + SUB, y: client.player.position.y, at: first + 1 }, room.tick)
+  run(room, [client], 8)
+  assert.deepEqual(madeAt, [first + 1], 'made just after its input, before the next')
+  // One made at an input that never comes is made anyway, a little late.
+  client.player.attackReadyAt = 0
+  client.command({ k: 'attack', slot: 0, x: client.player.position.x + SUB, y: client.player.position.y, at: first + 999 }, room.tick)
+  run(room, [client], TPS)
+  assert.equal(madeAt.length, 2, 'not held for ever')
+})
 
 test('the reliable stream hands messages on in order, once, whatever the wire does', () => {
   const random = seeded(7)
@@ -69,11 +104,11 @@ test('a client building a production line sees the same factory as the server', 
   client.command({ k: 'build', x: 5, y: 0, kind: 'chest', dir: EAST })
   run(room, [client], 5)
   const source = room.world.entityAt(2, 0)!
-  client.command({ k: 'put', id: source.id, item: 1, max: 6 })
+  client.command({ k: 'put', id: source.id, item: STONE, max: 6 })
   run(room, [client], 200)
   assert.equal(client.results.filter((result) => result.ok).length, 5)
   assert.deepEqual(differingChunks(room, client), [])
-  assert.equal(countOf((room.world.entityAt(5, 0) as ChestEntity).inv, 1), 6, 'all six went down the line')
+  assert.equal(countOf((room.world.entityAt(5, 0) as ChestEntity).inv, STONE), 6, 'all six went down the line')
   assert.equal(client.desyncReports, 0)
 })
 
@@ -101,7 +136,7 @@ test('a client that simulates one side of a chunk edge gets the link results and
   // Fill the loop's start with items straight on the server, as if a miner had put them there.
   const start = room.world.entityAt(edge - 3, y)
   assert.ok(start && start.kind === 'belt')
-  start.lane.push({ item: 1, pos: 0, prev: 0 })
+  start.lane.push({ item: STONE, pos: 0, prev: 0 })
   // That change was made behind the log's back, so the builder is sent the chunk again.
   room.resendChunk(builder.player, chunkOfTile(edge - 3, y))
   const watcher = new TestClient(room, 'Watcher')
@@ -115,7 +150,7 @@ test('a client that simulates one side of a chunk edge gets the link results and
   assert.equal(watcher.linkResults, 2)
   assert.equal(builder.linkResults, 0)
   const chest = watcher.mirror.world.entityAt(edge - 4, y + 1) as ChestEntity
-  assert.equal(countOf(chest.inv, 1), 1, 'the item reached the chest in the copy of the watcher')
+  assert.equal(countOf(chest.inv, STONE), 1, 'the item reached the chest in the copy of the watcher')
 })
 
 test('the factory stays in step over a lossy, shuffling wire', () => {
@@ -129,7 +164,7 @@ test('the factory stays in step over a lossy, shuffling wire', () => {
   for (let x = 4; x < 8; x++) client.command({ k: 'build', x, y: 0, kind: 'belt', dir: EAST })
   client.command({ k: 'build', x: 8, y: 0, kind: 'chest', dir: EAST })
   run(room, [client], 60)
-  client.command({ k: 'put', id: room.world.entityAt(2, 0)!.id, item: 1, max: 20 })
+  client.command({ k: 'put', id: room.world.entityAt(2, 0)!.id, item: STONE, max: 20 })
   run(room, [client], 600)
   assert.equal(client.results.filter((result) => result.ok).length, 8, 'every command went through')
   assert.ok(client.mirror.simTick > room.tick - 30, `the client kept up (${client.mirror.simTick} of ${room.tick})`)
@@ -145,20 +180,20 @@ test('take and put move items between a chest and the player, clamped to what th
   run(room, [client], 5)
   const chest = room.world.entityAt(2, 0) as ChestEntity
   // Give the chest some ore through the same path a command would.
-  chest.inv.slots[0] = { item: 1, count: 30 }
+  chest.inv.slots[0] = { item: STONE, count: 30 }
   room.resendChunk(client.player, chunkOfTile(2, 0))
   run(room, [client], 5)
-  client.command({ k: 'take', id: chest.id, item: 1, max: 50 })
+  client.command({ k: 'take', id: chest.id, item: STONE, max: 50 })
   run(room, [client], 5)
   const take = client.results.at(-1)!
   assert.equal(take.ok, true)
   assert.equal(take.moved, 30)
-  assert.equal(countOf(client.inventory!, 1), 30)
-  client.command({ k: 'put', id: chest.id, item: 1, max: 10 })
+  assert.equal(countOf(client.inventory!, STONE), 30)
+  client.command({ k: 'put', id: chest.id, item: STONE, max: 10 })
   run(room, [client], 5)
   assert.equal(client.results.at(-1)!.moved, 10)
-  assert.equal(countOf((client.mirror.world.entity(chest.id) as ChestEntity).inv, 1), 10)
-  assert.equal(countOf(client.inventory!, 1), 20)
+  assert.equal(countOf((client.mirror.world.entity(chest.id) as ChestEntity).inv, STONE), 10)
+  assert.equal(countOf(client.inventory!, STONE), 20)
   assert.deepEqual(differingChunks(room, client), [])
 })
 
@@ -169,11 +204,11 @@ test('a client whose copy goes wrong reports it and is sent the chunk again', ()
   client.command({ k: 'build', x: 1, y: 1, kind: 'chest', dir: EAST })
   run(room, [client], 5)
   const local = client.mirror.world.entityAt(1, 1) as ChestEntity
-  local.inv.slots[0] = { item: 2, count: 5 }
+  local.inv.slots[0] = { item: LOG, count: 5 }
   run(room, [client], 70)
   assert.equal(client.desyncReports, 1)
   assert.deepEqual(differingChunks(room, client), [])
-  assert.equal(countOf((client.mirror.world.entityAt(1, 1) as ChestEntity).inv, 2), 0)
+  assert.equal(countOf((client.mirror.world.entityAt(1, 1) as ChestEntity).inv, LOG), 0)
 })
 
 test('replaying unanswered inputs on the server position lands where the prediction was', () => {

@@ -35,13 +35,7 @@
     "warmest": 6,
     "coldest": -24,
     "apartFromDungeon": 30,
-    "clearing": 4,
-    "guardsMin": 4,
-    "guardsMax": 5,
-    "archersMin": 1,
-    "archersMax": 2,
-    "patrolRadius": 11,
-    "respawnSeconds": 150
+    "clearing": 4
   },
   "dungeon": {
     "share": 0.84,
@@ -55,18 +49,10 @@
     "shelfFacing": 6,
     "shelfJoin": 9
   },
-  "map": {
-    "reveal": 12
-  },
   "meadow": {
     "rivers": 3,
     "riverWidth": 2,
     "clayChance": 18,
-    "rockCell": 14,
-    "rockChance": 40,
-    "rocksMin": 1,
-    "rocksMax": 4,
-    "copperChance": 20,
     "sunflowerCell": 9,
     "sunflowerChance": 40,
     "sunflowersMin": 2,
@@ -83,25 +69,16 @@
     "sandCell": 11,
     "sandChance": 50,
     "sandMin": 3,
-    "sandMax": 7,
-    "tinScatter": 3
+    "sandMax": 7
   },
   "goblinCamps": {
     "cell": 40,
     "chance": 60,
-    "clearing": 4,
-    "goblinsMin": 3,
-    "goblinsMax": 5,
-    "patrolRadius": 10,
-    "respawnSeconds": 150
+    "clearing": 4
   },
   "tombs": {
     "cell": 40,
     "chance": 60,
-    "clearing": 4,
-    "mummiesMin": 3,
-    "mummiesMax": 4,
-    "patrolRadius": 10,
-    "respawnSeconds": 150
+    "clearing": 4
   }
 }

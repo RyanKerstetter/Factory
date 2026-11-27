@@ -26,9 +26,9 @@ export type StreamEvent =
   | { k: 'welcome'; tick: number; playerId: number; seed: number; code: string; name?: string; terrain?: TerrainSettings }
   // Who is in the game, sent whenever it changes. Not part of the simulation, so used as soon as it arrives.
   | { k: 'roster'; players: Array<[number, string]> }
-  // Who the host is (the player who made the game, who can change its settings) and whether players can hurt each
-  // other; sent on joining and whenever it changes.
-  | { k: 'room'; host: string; pvp: boolean }
+  // Who the host is (the player who made the game, who can change its settings), whether players can hurt each other,
+  // and whether item spawning is on; sent on joining and whenever it changes.
+  | { k: 'room'; host: string; pvp: boolean; items?: boolean }
   // A player was hurt by another (`amount`), and whether that knocked them out (back to the spawn, healed).
   | { k: 'hurt'; id: number; amount: number; died: boolean }
   // A target dummy was hit, this hard (it never breaks: this is only to show the number).
@@ -128,7 +128,8 @@ export function eventPhase(event: StreamEvent): EventPhase {
 // Where everyone is, once a tick: [player ID, x, y] in units. `t` is the server's tick, `s` the number of the last log
 // message sent before it (so a page that has every log message up to `s` has the whole log up to `t`), and `a` the
 // last of this page's movement inputs the server has played. `n` is where the animals near the player are, `m` the
-// monsters, `j` what is in flight near it (arrows, stones, spells: [id, item, x, y, 1 once it has stopped]), `h` the
+// monsters, `j` what is in flight near it (arrows, stones, spells: [id, item, x, y, 1 once it has stopped], and for
+// something lobbed up and over, a goblin shaman's hex, how high it is, in units), `h` the
 // player's own health, and `b` how warm their body is, in tenths of a °C (see cold.ts). `r` is where the rafts near the
 // player are ([id, x, y, angle in thousandths of a radian, the player leading it on a rope or 0, the fence it is tied
 // to or 0]: see rafts.ts), `q` which players are aboard which raft
@@ -143,7 +144,7 @@ export type StateMessage = {
   p: Array<[number, number, number]>
   n?: AnimalPosition[]
   m?: MonsterPosition[]
-  j?: Array<[number, number, number, number, number]>
+  j?: Array<[number, number, number, number, number] | [number, number, number, number, number, number]>
   h?: number
   b?: number
   r?: Array<[number, number, number, number, number, number]>

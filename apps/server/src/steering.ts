@@ -10,13 +10,26 @@ export const PATH_EVERY = 12
 // A way round something (tile middles, in units, next first), what it leads to, and when it was found.
 export type Path = { steps: Array<{ x: number; y: number }>; toX: number; toY: number; at: number }
 
-// Whether nothing that blocks lies on the straight way from one point to another (looked at every half tile).
-export function straightClear(from: { x: number; y: number }, x: number, y: number, blocked: IsSolid): boolean {
+// Whether nothing that blocks lies on the straight way from one point to another (looked at every half tile), for
+// something `half` units across each way from its middle: every tile its body sweeps over on the way (from where it
+// is), not only those its middle crosses. (Its middle missing a rock's or a building's corner is not enough: its body
+// catches on it and, the way on nearly straight, its step to the side rounds to nothing, so it stands there; or it
+// slides off, turns back into it, and is stuck there turning to and fro.)
+export function straightClear(from: { x: number; y: number }, x: number, y: number, blocked: IsSolid, half = 0): boolean {
   const steps = Math.ceil(Math.hypot(x - from.x, y - from.y) / (SUB / 2))
+  let lastX = from.x
+  let lastY = from.y
   for (let i = 1; i <= steps; i++) {
-    const tileX = floorDiv(Math.round(from.x + ((x - from.x) * i) / steps), SUB)
-    const tileY = floorDiv(Math.round(from.y + ((y - from.y) * i) / steps), SUB)
-    if (blocked(tileX, tileY) !== false) return false
+    const px = Math.round(from.x + ((x - from.x) * i) / steps)
+    const py = Math.round(from.y + ((y - from.y) * i) / steps)
+    // The body here and where it was at the last point looked at, and everything between.
+    for (let tileY = floorDiv(Math.min(py, lastY) - half, SUB); tileY <= floorDiv(Math.max(py, lastY) + half, SUB); tileY++) {
+      for (let tileX = floorDiv(Math.min(px, lastX) - half, SUB); tileX <= floorDiv(Math.max(px, lastX) + half, SUB); tileX++) {
+        if (blocked(tileX, tileY) !== false) return false
+      }
+    }
+    lastX = px
+    lastY = py
   }
   return true
 }
@@ -83,13 +96,13 @@ export function stepToward(walker: Walker, halfSize: number, x: number, y: numbe
 // Goes towards a point, round what is in the way, a step at `speed` units a tick (see `followTo`). Gives whether it is
 // within `near` of the point.
 export function pursue(walker: Walker, halfSize: number, x: number, y: number, speed: number, near: number, blocked: IsSolid, tick: number): boolean {
-  return followTo(walker, x, y, near, blocked, tick, (tx, ty, within) => stepToward(walker, halfSize, tx, ty, speed, within, blocked))
+  return followTo(walker, x, y, near, blocked, tick, (tx, ty, within) => stepToward(walker, halfSize, tx, ty, speed, within, blocked), halfSize)
 }
 
-// Goes towards a point, round what is in the way: straight there while nothing blocks the way, and otherwise along a
-// way round (found again every PATH_EVERY ticks, or when the point moves to another tile). `step` takes one step towards
-// a point, giving whether it was already within `near` of it (an animal's counts how long it has been stuck). Gives
-// whether the walker is within `near` of the point.
+// Goes towards a point, round what is in the way: straight there while nothing blocks the way (of a body `half` units
+// across each way), and otherwise along a way round (found again every PATH_EVERY ticks, or when the point moves to
+// another tile). `step` takes one step towards a point, giving whether it was already within `near` of it (an animal's
+// counts how long it has been stuck). Gives whether the walker is within `near` of the point.
 export function followTo(
   walker: Walker,
   x: number,
@@ -98,8 +111,9 @@ export function followTo(
   blocked: IsSolid,
   tick: number,
   step: (x: number, y: number, near: number) => boolean,
+  half = 0,
 ): boolean {
-  if (straightClear(walker, x, y, blocked)) {
+  if (straightClear(walker, x, y, blocked, half)) {
     walker.path = undefined
     return step(x, y, near)
   }

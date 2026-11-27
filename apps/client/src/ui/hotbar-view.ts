@@ -1,4 +1,4 @@
-import { BODY_MAX, COLD_AT, DEADLY_COLD_AT, FREEZING_AT, getItem, HOTBAR_SLOTS, isFilled, PLAYER_MAX_HEALTH, type Slot } from '../../../../packages/shared/src/index.ts'
+import { BODY_MAX, COLD_AT, DEADLY_COLD_AT, FREEZING_AT, getItem, HOTBAR_SLOTS, isFilled, type Slot } from '../../../../packages/shared/src/index.ts'
 import { showIcon } from './icons.ts'
 import { itemTip } from './item-tip.ts'
 import { element, pixelImage } from './dom.ts'
@@ -10,8 +10,9 @@ export type HotbarState = {
   selected: number
   // The key for each hotbar slot, as the player has bound it ("1"), or an empty string.
   keys: readonly string[]
-  // The player's health, out of PLAYER_MAX_HEALTH, and how warm their body is, in °C (see cold.ts).
+  // The player's health, out of `maxHealth` (see playerMaxHealth), and how warm their body is, in °C (see cold.ts).
   health: number
+  maxHealth: number
   body: number
   // The food slot, its key, and how far through the eating cooldown the player is (1: ready to eat).
   food: Slot
@@ -59,7 +60,7 @@ export function createHotbarView(container: HTMLElement, onSelect: (slot: number
 
   let shown = ''
   return {
-    update({ slots, selected, keys, health, body, food, foodKey: eatKey, foodReady }) {
+    update({ slots, selected, keys, health, maxHealth, body, food, foodKey: eatKey, foodReady }) {
       // The body's warmth, from deadly cold (empty) to as warm as it gets (full).
       const low = DEADLY_COLD_AT - 5
       bodyFill.style.transform = `scaleX(${Math.max(0.02, Math.min(1, (body - low) / (BODY_MAX - low)))})`
@@ -78,7 +79,7 @@ export function createHotbarView(container: HTMLElement, onSelect: (slot: number
       foodIcon.style.filter = `grayscale(${(1 - ready).toFixed(2)}) brightness(${(0.6 + 0.4 * ready).toFixed(2)})`
       foodShade.style.transform = `scaleY(${(1 - ready).toFixed(3)})`
       foodSlot.classList.toggle('is-ready', ready >= 1 && hasFood)
-      healthFill.style.transform = `scaleX(${Math.max(0, Math.min(1, health / PLAYER_MAX_HEALTH))})`
+      healthFill.style.transform = `scaleX(${Math.max(0, Math.min(1, health / Math.max(1, maxHealth)))})`
       if (healthText.textContent !== `${health}`) healthText.textContent = `${health}`
       const key = `${selected}|${keys.join(',')}|${slots
         .slice(0, HOTBAR_SLOTS)

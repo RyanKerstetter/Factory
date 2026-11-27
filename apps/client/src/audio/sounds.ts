@@ -34,6 +34,7 @@ export function animalSound(kind: string): SoundId {
   if (kind === 'deer') return 'animal/deer'
   if (kind === 'wolf') return 'animal/wolf'
   if (kind === 'spider') return 'animal/spider'
+  if (kind === 'scarab') return 'animal/scarab'
   return 'animal/cow'
 }
 
@@ -74,12 +75,19 @@ export const SOUND_VOLUME: Readonly<Record<SoundId, number>> = {
   'warp/arrive': 1,
   'trap/click': 1,
   'trap/spikes': 1,
+  // A goblin shaman lobbing a hex, and it bursting where it lands.
+  'hex/cast': 0.9,
+  'hex/burst': 1,
   // Creatures crying out when hurt.
   'animal/cow': 1,
   'animal/chicken': 1,
   'animal/deer': 1,
   'animal/wolf': 1,
   'animal/spider': 1,
+  'animal/scarab': 1,
+  // A scarab curling up to roll, and rolling.
+  'animal/curl': 0.8,
+  'animal/roll': 0.9,
   'animal/goblin': 1,
   'animal/mummy': 1,
   'animal/bee': 0.7,
@@ -98,6 +106,9 @@ export const SOUND_VOLUME: Readonly<Record<SoundId, number>> = {
   // A skeleton raising its sword to swing, and crouching to charge.
   'monster/raise': 0.9,
   'monster/charge': 1,
+  // A wooden door swinging open (a creak and its latch), and shutting (its latch and a thump).
+  'door/open': 0.8,
+  'door/close': 0.8,
   // Everything else.
   plant: 1,
   rustle: 0.6,
@@ -210,6 +221,19 @@ const FOOTSTEPS: Record<Surface, Recipe> = {
 }
 
 const RECIPES = {
+  // A wooden door swinging open: the latch lifting, then a short creak of its hinge, rising.
+  'door/open': (context, out, at, noise) => {
+    burst(context, out, noise, { at, length: 0.025, gain: 0.3, filter: 'bandpass', frequency: 2600 * vary(0.1), q: 4, attack: 0.001 })
+    tone(context, out, { at: at + 0.03, type: 'sawtooth', from: 300 * vary(0.08), to: 430, length: 0.22, gain: 0.05 })
+    burst(context, out, noise, { at: at + 0.03, length: 0.22, gain: 0.08, filter: 'bandpass', frequency: 900, to: 1400, q: 6, attack: 0.04 })
+  },
+  // A wooden door shutting: a hollow knock as it meets its frame, a low thump, and the latch dropping.
+  'door/close': (context, out, at, noise) => {
+    tone(context, out, { at, type: 'triangle', from: 180 * vary(0.08), to: 100, length: 0.12, gain: 0.5 })
+    tone(context, out, { at, type: 'sine', from: 85, to: 50, length: 0.16, gain: 0.55 })
+    burst(context, out, noise, { at, length: 0.04, gain: 0.25, filter: 'lowpass', frequency: 700 })
+    burst(context, out, noise, { at: at + 0.06, length: 0.02, gain: 0.3, filter: 'bandpass', frequency: 2800 * vary(0.1), q: 4, attack: 0.001 })
+  },
   // A fist on a trunk: a hollow knock (a short, falling note with a woody click on top) and a low thump under it.
   'punch/wood': (context, out, at, noise) => {
     tone(context, out, { at, type: 'triangle', from: 210 * vary(0.1), to: 120, length: 0.1, gain: 0.55 })
@@ -312,6 +336,22 @@ const RECIPES = {
     burst(context, out, noise, { at, length: 0.22, gain: 0.22, filter: 'highpass', frequency: 3200 * vary(0.1), attack: 0.02 })
     burst(context, out, noise, { at: at + 0.03, length: 0.12, gain: 0.1, filter: 'bandpass', frequency: 5200, q: 2, attack: 0.01 })
   },
+  // A hurt scarab: a hard, hollow knock on its shell and a dry click.
+  'animal/scarab': (context, out, at, noise) => {
+    tone(context, out, { at, type: 'triangle', from: 520 * vary(0.1), to: 300, length: 0.07, gain: 0.22 })
+    burst(context, out, noise, { at, length: 0.05, gain: 0.2, filter: 'bandpass', frequency: 1800 * vary(0.15), q: 3 })
+    burst(context, out, noise, { at: at + 0.06, length: 0.03, gain: 0.12, filter: 'highpass', frequency: 4000 })
+  },
+  // A scarab curling up: quick dry clicks of its legs drawing in, and a scrape of shell.
+  'animal/curl': (context, out, at, noise) => {
+    for (let i = 0; i < 4; i++) burst(context, out, noise, { at: at + i * 0.035 * vary(0.2), length: 0.02, gain: 0.12, filter: 'bandpass', frequency: 3000 * vary(0.25), q: 4 })
+    burst(context, out, noise, { at: at + 0.1, length: 0.12, gain: 0.08, filter: 'bandpass', frequency: 1400, to: 2200, q: 2, attack: 0.04 })
+  },
+  // A scarab rolling: a low rumble over the ground, ticking as its shell turns over.
+  'animal/roll': (context, out, at, noise) => {
+    burst(context, out, noise, { at, length: 0.45, gain: 0.22, filter: 'lowpass', frequency: 260, attack: 0.03 })
+    for (let i = 0; i < 6; i++) burst(context, out, noise, { at: at + i * 0.07, length: 0.02, gain: 0.1, filter: 'bandpass', frequency: 1100 * vary(0.2), q: 3 })
+  },
   'animal/goblin': (context, out, at) => {
     tone(context, out, { at, type: 'sawtooth', from: 620 * vary(0.1), to: 900, length: 0.08, gain: 0.12 })
     tone(context, out, { at: at + 0.08, type: 'sawtooth', from: 880 * vary(0.1), to: 420, length: 0.16, gain: 0.12 })
@@ -343,8 +383,8 @@ const RECIPES = {
     tone(context, out, { at: at + 0.05, type: 'triangle', from: 780, to: 1560, length: 0.8, gain: 0.06 })
     burst(context, out, noise, { at, length: 0.9, gain: 0.08, filter: 'bandpass', frequency: 3200, to: 5200, q: 3, attack: 0.3 })
   },
-  // A waystone charging (WARP_SECONDS long): a hum rising under it, a shimmer swelling, and a chime as each pair of its
-  // lights comes on (see `warpLightAt`), higher each time.
+  // A waystone charging (WARP_SECONDS long): a hum rising under it, a shimmer swelling, and a chime as each of its marks
+  // lights up (see `warpLightAt`), higher each time.
   'warp/charge': (context, out, at, noise) => {
     tone(context, out, { at, type: 'sine', from: 110, to: 220, length: WARP_SECONDS, gain: 0.14 })
     tone(context, out, { at, type: 'triangle', from: 220, to: 440, length: WARP_SECONDS, gain: 0.04 })
@@ -369,6 +409,18 @@ const RECIPES = {
   'trap/click': (context, out, at, noise) => {
     burst(context, out, noise, { at, length: 0.03, gain: 0.35, filter: 'bandpass', frequency: 2600, q: 3, attack: 0.001 })
     tone(context, out, { at, type: 'triangle', from: 900, to: 600, length: 0.05, gain: 0.12 })
+  },
+  // A hex lobbed: a hollow, rising warble, and a breath of air as it goes up.
+  'hex/cast': (context, out, at, noise) => {
+    tone(context, out, { at, type: 'triangle', from: 220 * vary(0.06), to: 520, length: 0.32, gain: 0.16 })
+    tone(context, out, { at: at + 0.04, type: 'sine', from: 330 * vary(0.06), to: 780, length: 0.28, gain: 0.08 })
+    burst(context, out, noise, { at, length: 0.3, gain: 0.08, filter: 'bandpass', frequency: 900, to: 2400, q: 1.2, attack: 0.06 })
+  },
+  // A hex bursting on the ground: a deep thump, a sizzling hiss, and crackling sparks.
+  'hex/burst': (context, out, at, noise) => {
+    tone(context, out, { at, type: 'sine', from: 150 * vary(0.08), to: 45, length: 0.28, gain: 0.55 })
+    burst(context, out, noise, { at, length: 0.35, gain: 0.3, filter: 'bandpass', frequency: 2600, to: 900, q: 0.8, attack: 0.003 })
+    crackles(context, out, noise, at + 0.03, 0.3, 10, 0.25)
   },
   'trap/spikes': (context, out, at, noise) => {
     burst(context, out, noise, { at, length: 0.12, gain: 0.45, filter: 'bandpass', frequency: 1800, to: 3600, q: 1.5, attack: 0.002 })

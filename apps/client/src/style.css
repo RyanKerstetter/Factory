@@ -347,12 +347,15 @@ kbd {
   letter-spacing: 0.04em;
 }
 
-/* The build bar. */
+/* The build bar, centred by layout rather than moved back by half its width (which can leave it half a pixel off the
+   screen's pixels, and its pixel-art icons then drawn crooked). */
 .hotbar-wrap {
   position: absolute;
   bottom: 0.9rem;
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
+  right: 0;
+  width: max-content;
+  margin: 0 auto;
   display: grid;
   justify-items: center;
   gap: 0.45rem;
@@ -469,11 +472,13 @@ kbd {
 }
 
 /* The inventory and the open building. */
+/* Centred by layout (a little above the middle), not by a transform: see .hotbar-wrap. */
 .panels {
   position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -55%);
+  inset: 0 0 10% 0;
+  width: max-content;
+  height: max-content;
+  margin: auto;
   display: flex;
   align-items: flex-start;
   gap: 0.75rem;
@@ -978,6 +983,26 @@ kbd {
    under it. */
 .recipe-book {
   width: 22rem;
+}
+
+/* Item spawning: a search box and how many a click takes, over every item in the game. */
+.item-spawner-controls {
+  display: flex;
+  gap: 0.4rem;
+  margin-bottom: 0.5rem;
+}
+
+.item-spawner-search {
+  flex: 1;
+  min-width: 0;
+}
+
+.item-spawner-amount {
+  width: 5rem;
+}
+
+.item-spawner-list {
+  max-height: 28rem;
 }
 
 .recipe-list {

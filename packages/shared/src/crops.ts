@@ -2,7 +2,7 @@ import cropsData from '../../../data/crops.json' with { type: 'json' }
 import { failIn, fieldsOf, onlyFields, textField, wholeField } from './data-check.ts'
 import { getItem, itemFromKey, type ItemId } from './items.ts'
 
-// What grows in a garden plot, from data/crops.json. A seed is planted in a plot with a right click (an item names its
+// What grows in farmland, from data/crops.json. A seed is planted in a plot with a right click (an item names its
 // crop with `crop`); the crop grows a step on each of the plot's random ticks (about 11 seconds each, on average), and
 // is grown after `growTicks` of them. Breaking a grown crop gives `produceMin` to `produceMax` of its produce and
 // `seedsMin` to `seedsMax` seeds; breaking one that is still growing gives its seed back. A crop's number is part of a

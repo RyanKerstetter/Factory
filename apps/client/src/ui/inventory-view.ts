@@ -3,6 +3,7 @@ import type { LiquidTone } from '../liquids.ts'
 import { iconUrl, showIcon } from './icons.ts'
 import { itemTip } from './item-tip.ts'
 import { button, element, pixelImage } from './dom.ts'
+import { createItemSpawner } from './item-spawner.ts'
 import { createRecipeBook, type BookEntry, type RecipeBook } from './recipe-book.ts'
 
 // What goes in each of the inventory's special slots, drawn faintly in it while it is empty (outlines on a 24 by 24
@@ -60,12 +61,14 @@ export type MachineView = {
 // The player's whole inventory (its first HOTBAR_SLOTS slots are the hotbar, shown as a row of their own), which
 // hotbar slot is picked, and the building that is open, if any; with no building open, the recipes to craft.
 // `crafting`: what is being made by hand (with no building open), how far along (0 to 1), and how many are waiting.
+// `spawning`: the host has item spawning on, so every item can be taken out of nothing (a panel at the left).
 export type PanelsView = {
   player: readonly Slot[]
   selected: number
   building?: BuildingPanelView
   recipes?: readonly BookEntry[]
   crafting?: { name: string; fraction: number; queued: number }
+  spawning?: boolean
 }
 
 export type PanelHandlers = {
@@ -87,6 +90,8 @@ export type PanelHandlers = {
   // A chest: sort it, top up its stacks from the inventory, or name it.
   chest: (id: number, action: 'sort' | 'stash') => void
   rename: (id: number, name: string) => void
+  // Take `count` of an item out of nothing (item spawning on).
+  give: (item: ItemId, count: number) => void
   close: () => void
 }
 
@@ -291,20 +296,27 @@ export function createInventoryPanels(container: HTMLElement, handlers: PanelHan
     else if (!building && slot && wear(index, slot)) return
     else if (!building && isFilled(slot)) quickMove(index, slot, max)
   }
-  // Moves a stack from the hotbar to the inventory, or from the inventory to the hotbar: onto a stack of its kind with
-  // room, or else into the first empty slot (from the top).
+  // Moves a stack from the hotbar to the inventory, or from the inventory to the hotbar, all of it (up to `max`) that
+  // there is room for: onto the stacks of its kind with room (from the top), and the rest into the first empty slot.
   const quickMove = (index: number, slot: Slot, max: number): void => {
     const player = current?.player ?? []
     const toHotbar = index >= HOTBAR_SLOTS
     const first = toHotbar ? 0 : HOTBAR_SLOTS
     const last = toHotbar ? HOTBAR_SLOTS : AMMO_SLOT
-    let target = -1
-    for (let i = first; i < last && target < 0; i++) {
+    const limit = stackLimit(slot.item, STACK_SIZE)
+    let left = Math.min(max, slot.count)
+    for (let i = first; i < last && left > 0; i++) {
       const other = player[i]
-      if (other && other.count > 0 && other.item === slot.item && other.count < stackLimit(slot.item, STACK_SIZE)) target = i
+      if (!other || other.count === 0 || other.item !== slot.item || other.count >= limit) continue
+      const moved = Math.min(left, limit - other.count)
+      handlers.slot({ id: 0, i: index }, { id: 0, i }, moved)
+      left -= moved
     }
-    for (let i = first; i < last && target < 0; i++) if ((player[i]?.count ?? 0) === 0) target = i
-    if (target >= 0) handlers.slot({ id: 0, i: index }, { id: 0, i: target }, Math.min(max, slot.count))
+    for (let i = first; i < last && left > 0; i++) {
+      if ((player[i]?.count ?? 0) !== 0) continue
+      handlers.slot({ id: 0, i: index }, { id: 0, i }, left)
+      left = 0
+    }
   }
   // Puts on the armour in a slot (swapping out what was worn there), or takes off what is worn there into the first
   // empty slot. Gives whether it was armour.
@@ -614,6 +626,8 @@ export function createInventoryPanels(container: HTMLElement, handlers: PanelHan
     buildingGrids = []
     book = undefined
     handGauge = undefined
+    // Item spawning on: every item, at the left.
+    const spawner = view.spawning ? [createItemSpawner((item, count) => handlers.give(item, count)).root] : []
     if (building?.machine) {
       const machine = building.machine
       const column = element('div', 'panel-column', machinePanel(building, machine), inventoryPanel(view))
@@ -621,11 +635,11 @@ export function createInventoryPanels(container: HTMLElement, handlers: PanelHan
         book = createRecipeBook(machine.recipes.title, machine.recipes.action, (recipe, times) => {
           if (current?.building) handlers.recipe(current.building.id, recipe, times)
         })
-        root.replaceChildren(column, book.root)
-      } else root.replaceChildren(column)
+        root.replaceChildren(...spawner, column, book.root)
+      } else root.replaceChildren(...spawner, column)
       return
     }
-    const panels: HTMLElement[] = []
+    const panels: HTMLElement[] = [...spawner]
     if (building) {
       const body: Node[] = []
       if (building.mining) {
@@ -695,7 +709,7 @@ export function createInventoryPanels(container: HTMLElement, handlers: PanelHan
       const machineKey = machine
         ? JSON.stringify([machine.inputs, machine.outputs, machine.gauges.map((gauge) => gauge.label), machine.buttons.map((spec) => spec.id), machine.recipes?.title])
         : ''
-      const key = `${building?.id}|${building?.name}|${building?.kind}|${building?.slots.length}|${building?.acceptsDeposits}|${machineKey}|${view.player.length}|${!!view.recipes}`
+      const key = `${building?.id}|${building?.name}|${building?.kind}|${building?.slots.length}|${building?.acceptsDeposits}|${machineKey}|${view.player.length}|${!!view.recipes}|${!!view.spawning}`
       if (key !== layout) {
         layout = key
         endDrag()

@@ -25,6 +25,10 @@ import {
   dungeonSlotAt,
   EAT_COOLDOWN_TICKS,
   fenceMask,
+  FENCE_N,
+  FENCE_E,
+  FENCE_S,
+  FENCE_W,
   fitsIn,
   FOOD_SLOT,
   frostOf,
@@ -39,6 +43,8 @@ import {
   inventoryTotals,
   isBeltLike,
   isFilled,
+  nearWaystone,
+  stackLimit,
   isHittable,
   isInDungeons,
   isStation,
@@ -67,16 +73,21 @@ import {
   NO_ITEM,
   opposite,
   PLAYER_HALF_SIZE,
+  JAB_WIDTH,
+  LICH_SPELLS,
   PLAYER_MASS,
   PLAYER_MAX_HEALTH,
+  playerMaxHealth,
   PLAYER_REACH,
   playerInventory as playerInventoryOf,
   RACK_INPUT,
   RACK_OUTPUT,
   rackRefusal,
+  rackRecipe,
   RECIPES,
   PLAYER_CRAFT_SPEED,
-  raftOnTile,
+  raftAt,
+  floorDiv,
   raftFits,
   onRaft,
   overlapsSolid,
@@ -108,6 +119,9 @@ import {
   waterAt,
   weaponIn,
   weaponOf,
+  WEAPONS,
+  MONSTERS,
+  mineTicksOf,
   type AnimalInfo,
   type ChunkSnapshot,
   type Command,
@@ -126,10 +140,11 @@ import { connect, connectLocal, type ConnectionHandlers } from './connection.ts'
 import { diffChunkSnapshots } from './desync-diff.ts'
 import { FactoryMirror } from './factory-mirror.ts'
 import { HeldKeys, isMovementAction, isTypingIn } from './input.ts'
-import { attackArea, attackDurationMs, attackPose, attackSwish, chargePose } from './attack-shapes.ts'
+import { attackArea, attackDurationMs, attackPose, attackSwish, chargePose, windupMs } from './attack-shapes.ts'
 import { CreatureTracks } from './creature-tracks.ts'
 import { RaftTracks } from './raft-tracks.ts'
-import { blizzardMarks, castMarks, hitboxMarks, icicleMark } from './ground-marks.ts'
+import { blizzard, frostBurst, frostGathering, poisonBurst } from './clouds.ts'
+import { castMarks, hitboxMarks } from './ground-marks.ts'
 import { LocalPlayer } from './local-player.ts'
 import { machineProgress, machineView } from './machine-views.ts'
 import { Prediction } from './prediction.ts'
@@ -147,6 +162,7 @@ import type {
   PlayerView,
   PlayerPose,
   RitualView,
+  Swish,
   TrapView,
   WarpFlashView,
   WarpView,
@@ -235,11 +251,27 @@ const TRAP_DOWN_MS = 220
 // How many hp each notch on a boss's health bar marks off.
 const BOSS_NOTCH = 50
 
-// The frost lich's icicles: how long one takes to fall (as the server's ICICLE_TICKS), and how wide a ring shows where
-// it will land (its reach, in tiles).
+// What falls from above, by item: the frost lich's icicles, and a staff's ice spear (see `blast` in weapons.ts). How
+// long one takes to fall, and how far round where it lands it hurts (tiles), shown by cold mist gathering there.
 const ICICLE = itemByKey('icicle')?.id ?? -1
-const ICICLE_FALL_MS = 1200
-const ICICLE_RING = 0.9
+// What a monster lobs (a goblin shaman's hex), by item: how far round where it lands it hurts (tiles), its poison
+// billowing out that far for HEX_BURST_MS. Ice landing (see FALLING) sends frost flowing out as far as it hurts for
+// FROST_BURST_MS. A goblin's jab or throw going is drawn for MONSTER_STRIKE_MS.
+const HEX_REACH: ReadonlyMap<number, number> = new Map(MONSTERS.flatMap((def) => (def.attack.kind === 'lob' ? [[def.attack.item, def.attack.radius / SUB] as const] : [])))
+const HEX_BURST_MS = 1100
+const FROST_BURST_MS = 800
+const MONSTER_STRIKE_MS = 260
+// How long a hunter's bite lunge is drawn (a wolf, a scarab).
+const BITE_MS = 280
+// How far short of a contact hit's reach a melee lunge stops (units: see `lungeRoom`).
+const LUNGE_SHORT = Math.round(0.1 * SUB)
+const FALLING: ReadonlyMap<number, { ms: number; ring: number }> = new Map([
+  [ICICLE, { ms: 1200, ring: 0.9 }],
+  ...[...WEAPONS.values()].flatMap((weapon) => {
+    const charged = weapon.charged
+    return charged?.kind === 'blast' && charged.projectile ? [[charged.projectile, { ms: ((charged.delay ?? 0) * 1000) / TPS, ring: (charged.radius ?? 0) / SUB }] as const] : []
+  }),
+])
 // How heavy the snow is inside the ice crypt: a few flakes drifting down, out of the wind.
 const DUNGEON_FLURRY = 0.12
 // How far round the player the debug view shows what is solid (tiles), and the colours of the bodies' hitboxes.
@@ -319,6 +351,21 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   const shotItems = new Map<number, number>()
   // The tick each one stopped on (it is drawn flying until then, and then not at all).
   const shotStopped = new Map<number, number>()
+  // How high each thing lobbed up and over was on the last few ticks the server sent ([tick, units]).
+  const shotLifts = new Map<number, Array<[number, number]>>()
+  // How high it is at a tick (drawn between them; on the ground before the first and after the last).
+  const liftAt = (id: number, tick: number): number => {
+    const heights = shotLifts.get(id)
+    if (!heights || heights.length === 0) return 0
+    if (tick <= heights[0][0]) return heights[0][1]
+    for (let i = 1; i < heights.length; i++) {
+      const [t1, h1] = heights[i]
+      if (tick > t1) continue
+      const [t0, h0] = heights[i - 1]
+      return h0 + ((h1 - h0) * (tick - t0)) / Math.max(1, t1 - t0)
+    }
+    return heights[heights.length - 1][1]
+  }
   // When each icicle was first seen (it is drawn falling from then), and those that have shattered.
   const shotSeen = new Map<number, number>()
   const shattered = new Set<number>()
@@ -369,7 +416,11 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   }
   const waystonePanel = createWaystonePanel(hudRoot, {
     rename: (id, waystoneName) => send({ k: 'rename', id, name: waystoneName }),
-    travel: (from, to) => travel(from, to),
+    // Picking where to go sets off, and the panel closes.
+    travel: (from, to) => {
+      travel(from, to)
+      closePanels()
+    },
     close: () => closePanels(),
   })
   const panels = createInventoryPanels(hudRoot, {
@@ -386,6 +437,10 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       sounds.play('pickup')
     },
     rename: (id, chestName) => send({ k: 'rename', id, name: chestName }),
+    give: (item, count) => {
+      send({ k: 'give', item, count })
+      sounds.play('pickup')
+    },
     slot: (from, to, count) => {
       send({ k: 'slot', from, to, count })
       sounds.play('move')
@@ -405,7 +460,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   })
   const debugOverlay = createDebugOverlay(hudRoot)
   // The room's settings: who the host is, and whether players can hurt each other (the host can change it).
-  let room = { host: '', pvp: true }
+  let room = { host: '', pvp: true, items: false }
   const roomListeners = new Set<() => void>()
   // When each player was last hurt by another, by ID, to flash them red.
   const playerHitAt = new Map<number, number>()
@@ -418,9 +473,10 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       // asked for stands in for the one the server gave them.
       get: () => {
         const me = welcomed ? (roster.get(mirror.playerId) ?? name) : name
-        return { host: room.host, pvp: room.pvp, isHost: room.host !== '' && room.host.toLowerCase() === me.toLowerCase() }
+        return { host: room.host, pvp: room.pvp, items: room.items, isHost: room.host !== '' && room.host.toLowerCase() === me.toLowerCase() }
       },
       setPvp: (on) => send({ k: 'pvp', on }),
+      setItems: (on) => send({ k: 'items', on }),
       subscribe: (listener) => {
         roomListeners.add(listener)
         return () => roomListeners.delete(listener)
@@ -480,9 +536,24 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       numbers.push({ x: dummy.x + 0.5, y: dummy.y + 0.5, text: `-${amount}`, at: now })
     },
     onAnimal: (info) => {
-      const lost = animalTracks.told(info, performance.now())
+      const now = performance.now()
+      const before = animalTracks.info.get(info.id)
+      const lost = animalTracks.told(info, now)
+      if (info.act && animalActHeard.get(info.id)?.at !== info.act.at) animalActHeard.set(info.id, { at: info.act.at, heardAt: now })
+      // A bite: seen (its lunge, see `animalBites`), with nothing drawn for it.
+      if (info.bit !== undefined && before !== undefined && before.bit !== info.bit) animalBites.set(info.id, now)
       const spot = animalTracks.spot(info.id)
       if (lost > 0 && spot) creatureHurt(spot, lost, animalSound(info.kind))
+      // A scarab curling up is heard; rolling, it is heard, with a red streak along the way it rolls.
+      const started = info.act !== undefined && before?.act?.at !== info.act.at
+      if (!started || !spot) return
+      const from = tilesOf(spot)
+      if (info.act?.k === 'curl') sounds.play('animal/curl', from)
+      const roll = animalDef(info.kind).hunt?.roll
+      if (info.act?.k === 'roll' && roll) {
+        sounds.play('animal/roll', from)
+        enemySwishes.push({ ...from, angle: info.act.angle, shape: 'band', arc: 0, inner: 0, outer: Math.min(roll.distance, info.act.ticks * roll.speed) / SUB, width: roll.width / SUB, distance: 0, at: now, ms: info.act.ticks * TICK_MS })
+      }
     },
     onGear: ({ id, held, armor }) => {
       gear.set(id, { held, armor })
@@ -496,8 +567,8 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       if (them) {
         const from = { ...tilesOf(them), other: true }
         if (charged === 1) sounds.play(chargedSound(weapon), from)
-        else if (weapon.basic === 'shot') {
-          sounds.play('attack/draw', from)
+        else if (weapon.basic === 'shot' || weapon.basic === 'cast') {
+          if (weapon.basic === 'shot') sounds.play('attack/draw', from)
           setTimeout(() => {
             if (!disposed) sounds.play('attack/shoot', from)
           }, weapon.windup * TICK_MS)
@@ -517,16 +588,39 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       // its charge (a red streak along it, and dust kicked up behind); the lich starting a spell is heard.
       const from = tilesOf(spot)
       const started = info.act !== undefined && before?.act?.at !== info.act.at
-      if (before?.act?.k === 'aim' && info.act?.k !== 'aim' && lost === 0) sounds.play('attack/shoot', from)
+      if (before?.act?.k === 'aim' && info.act?.k !== 'aim' && lost === 0) sounds.play(monsterDef(info.kind).attack.kind === 'lob' ? 'hex/cast' : 'attack/shoot', from)
+      // A goblin's jab or throw going, once it is drawn back, or a mummy's slam coming down once its arms are up: heard,
+      // and its arms seen going (see `monsterStrikes`).
+      for (const [drawn, going] of [['jab', 'thrust'], ['throw', 'hurl'], ['slam', 'smash']] as const) {
+        if (before?.act?.k !== drawn || info.act?.k === drawn) continue
+        monsterStrikes.set(info.id, { k: going, at: now, angle: before.act.angle })
+        sounds.play(drawn === 'jab' ? 'attack/jab' : drawn === 'slam' ? 'attack/slam' : 'attack/thrust', from)
+      }
+      if (started && info.act?.k === 'slam') sounds.play('monster/raise', from)
       if (started && info.act?.k === 'swing') sounds.play('monster/raise', from)
       if (started && info.act?.k === 'charge') sounds.play('monster/charge', from)
+      const attack = monsterDef(info.kind).attack
       if (before?.act?.k === 'swing' && info.act?.k !== 'swing') {
         sounds.play('attack/swing', from)
-        monsterSwishes.push({ kind: 'swing', monster: info.kind, ...from, angle: before.act.angle, at: now })
+        if (attack.kind === 'blade') enemySwishes.push({ ...from, angle: before.act.angle, shape: 'arc', arc: attack.swing.arc, inner: 0.3, outer: (attack.swing.reach + PLAYER_HALF_SIZE) / SUB, width: 0, distance: 0, at: now, ms: MONSTER_SWISH_MS })
       }
       if (started && info.act?.k === 'dash') {
         sounds.play('attack/dash', from)
-        monsterSwishes.push({ kind: 'dash', monster: info.kind, ...from, angle: info.act.angle, at: now })
+        if (attack.kind === 'blade') enemySwishes.push({ ...from, angle: info.act.angle, shape: 'band', arc: 0, inner: 0, outer: attack.charge.distance / SUB, width: attack.charge.width / SUB, distance: 0, at: now, ms: MONSTER_SWISH_MS })
+      }
+      // A blow landing (a goblin's jab, a mummy's slam): a red streak over the strip its jab covered, from where it
+      // started its lunge; a red ring on the ground in front of a mummy where its slam came down, as far as it reached. (A
+      // mummy's plain blow shows nothing.)
+      if (info.struck !== undefined && before !== undefined && before.struck !== info.struck) {
+        const half = monsterDef(info.kind).halfSize
+        if (attack.kind === 'spear') {
+          const angle = before.act && 'angle' in before.act ? before.act.angle : monsterTracks.facingOf(info.id)
+          enemySwishes.push({ ...from, angle, shape: 'band', arc: 0, inner: 0, outer: (half + attack.lunge + attack.reach) / SUB, width: JAB_WIDTH / SUB, distance: 0, at: now, ms: MONSTER_SWISH_MS })
+        }
+        if (attack.kind === 'melee' && before.act?.k !== 'slam') monsterStrikes.set(info.id, { k: 'swipe', at: now, angle: monsterTracks.facingOf(info.id) })
+        if (attack.kind === 'melee' && attack.slam && before.act?.k === 'slam') {
+          enemySwishes.push({ ...from, angle: before.act.angle, shape: 'ring', arc: 0, inner: 0, outer: (attack.slam.radius + PLAYER_HALF_SIZE) / SUB, width: 0, distance: attack.slam.ahead / SUB, at: now, ms: MONSTER_SWISH_MS })
+        }
       }
       if (info.act?.k === 'cast' && before?.act?.at !== info.act.at) sounds.play('cast', from)
     },
@@ -594,6 +688,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       }
     },
     onAnimalGone: (id, died) => {
+      animalActHeard.delete(id)
       // Killed: the blow's number rises off it, and it falls over (its drops show once it has: see visibleDrops).
       const gone = animalTracks.gone(id, died, performance.now())
       if (gone && died !== undefined) creatureHurt(gone.spot, died, animalSound(gone.info.kind))
@@ -690,9 +785,16 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       animalTracks.update(state.t, state.n ?? [])
       monsterTracks.update(state.t, state.m ?? [])
       shotTracks.update(state.t, (state.j ?? []).map(([id, , x, y]): [number, number, number] => [id, x, y]), -1)
-      for (const [id, item, , , stopped] of state.j ?? []) {
+      for (const [id, item, , , stopped, lift] of state.j ?? []) {
         shotItems.set(id, item)
         if (stopped && !shotStopped.has(id)) shotStopped.set(id, state.t)
+        // How high something lobbed is, tick by tick (the last few), to draw it between them.
+        if (lift !== undefined) {
+          const heights = shotLifts.get(id) ?? []
+          heights.push([state.t, lift])
+          if (heights.length > 4) heights.shift()
+          shotLifts.set(id, heights)
+        }
       }
       if (state.h !== undefined) health = state.h
       if (state.b !== undefined) bodyTenths = state.b
@@ -804,8 +906,19 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   // the server, counting in ticks, always agrees it was held long enough.
   let charging: { slot: number; weapon: Weapon; since: number; ready: boolean } | undefined
   const chargeMs = (weapon: Weapon): number => (weapon.charged?.charge ?? CHARGE_TICKS) * TICK_MS + 40
-  // Monsters' attacks landing, drawn for a moment where they were made (tiles): a skeleton's swing, its dash.
-  const monsterSwishes: Array<{ kind: 'swing' | 'dash'; monster: string; x: number; y: number; angle: number; at: number }> = []
+  // Enemies' attacks landing, drawn in red for a moment (`ms`) where they were made (tiles), tracing what each covered:
+  // a skeleton's swing and its dash, a goblin's jab, a mummy's slam, a scarab's roll.
+  const enemySwishes: Array<Omit<Swish, 'progress' | 'tint'> & { at: number; ms: number }> = []
+  // When the page heard of what each animal is doing (a scarab curling up or rolling), to tell how far through it is.
+  const animalActHeard = new Map<number, { at: number; heardAt: number }>()
+  // When each hunter last bit (a wolf, a scarab), to draw it lunging for BITE_MS.
+  const animalBites = new Map<number, number>()
+  // A goblin's jab or throw just made (the arm going, after its windup), or a mummy's slam coming down, by monster:
+  // drawn for MONSTER_STRIKE_MS.
+  const monsterStrikes = new Map<number, { k: 'thrust' | 'hurl' | 'smash' | 'swipe'; at: number; angle: number }>()
+  // Hexes bursting where they landed (poison) and ice that has landed (frost), to draw (see clouds.ts), each its own
+  // `seed` (the shot's ID).
+  const bursts: Array<{ kind: 'poison' | 'frost'; x: number; y: number; at: number; reach: number; seed: number }> = []
   let lastDustAt = 0
   // What each other player holds and wears (see the `gear` event), and the slot this page last told the server it holds.
   const gear = new Map<number, { held: number; armor: number[] }>()
@@ -835,9 +948,10 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     const angle = Math.atan2(aim.y - local.position.y, aim.x - local.position.x)
     // With the tick the creatures are drawn at, so the server judges the attack against where they are seen.
     const seen = Math.max(0, Math.round(lastRemoteTick))
-    send({ k: 'attack', slot: selectedSlot, x: aim.x, y: aim.y, seen, ...(charged ? { charged: 1 as const } : {}) })
-    // A charged shot was drawn while the button was held: it flies at once.
-    const windup = charged ? 0 : weapon.windup * TICK_MS
+    // With the last input made, so the server makes it from where the player stands now, before the step it takes them.
+    send({ k: 'attack', slot: selectedSlot, x: aim.x, y: aim.y, seen, at: local.lastInput, ...(charged ? { charged: 1 as const } : {}) })
+    // How long before it goes (a charged shot was drawn while the button was held: it flies at once, as its windup is 0).
+    const windup = windupMs(weapon, charged)
     const cooldown = charged && weapon.charged ? weapon.charged.cooldown : weapon.cooldown
     attackReadyAt = now + windup + cooldown * TICK_MS
     attackSlowUntil = now + windup + ATTACK_SLOW_TICKS * TICK_MS
@@ -848,25 +962,69 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     flashes.push({ id: mirror.playerId, weapon, angle, at: now, charged, from: tilesOf(local.position) })
     const lunge = lungeOf(weapon, charged)
     if (lunge) {
+      // A step forward stops short of walking into what hits on contact; a dash runs through as it is meant to.
+      const dash = charged && weapon.charged?.kind === 'dash'
+      const distance = dash ? lunge.distance : lungeRoom(angle, lunge.distance)
       pushes.length = 0
-      for (let i = 0; i < lunge.ticks; i++) pushes.push({ angle, speed: lunge.distance / lunge.ticks })
+      if (distance > 0) for (let i = 0; i < lunge.ticks; i++) pushes.push({ angle, speed: distance / lunge.ticks })
+    }
+    // What it hits shows (and is heard) once its windup is over.
+    const after = (go: () => void): void => {
+      if (windup <= 0) go()
+      else
+        setTimeout(() => {
+          if (!disposed) go()
+        }, windup)
     }
     if (charged) {
-      sounds.play(chargedSound(weapon))
-      const area = attackArea(weapon, true)
-      if (area) showHits(area, angle, now)
+      after(() => {
+        sounds.play(chargedSound(weapon))
+        const area = attackArea(weapon, true)
+        if (area) showHits(area, angle, performance.now())
+      })
       return
     }
-    if (weapon.basic === 'shot') {
-      sounds.play('attack/draw')
-      setTimeout(() => {
-        if (!disposed) sounds.play('attack/shoot')
-      }, windup)
+    if (weapon.basic === 'shot' || weapon.basic === 'cast') {
+      if (weapon.basic === 'shot') sounds.play('attack/draw')
+      after(() => sounds.play('attack/shoot'))
     } else {
-      sounds.play(attackSound(weapon))
-      const area = attackArea(weapon, false)
-      if (area) showHits(area, angle, now)
+      after(() => {
+        sounds.play(attackSound(weapon))
+        const area = attackArea(weapon, false)
+        if (area) showHits(area, angle, performance.now())
+      })
     }
+  }
+
+  // How far a melee attack's step forward (its `distance`, along `angle`) can go before it would take the player
+  // within the reach of something that hits on contact, with no windup: a mummy's blow, a wolf's or scarab's bite (one
+  // after a player). It stops LUNGE_SHORT short of that reach (none at all if they are in it already and stepping
+  // towards it), so a lunge never walks them into a hit. Judged where the creatures are drawn.
+  const lungeRoom = (angle: number, distance: number): number => {
+    const ux = Math.cos(angle)
+    const uy = Math.sin(angle)
+    const from = local.position
+    let room = distance
+    const limit = (x: number, y: number, reach: number): void => {
+      const dx = x - from.x
+      const dy = y - from.y
+      const along = dx * ux + dy * uy
+      if (along <= 0) return
+      const across = Math.abs(dx * uy - dy * ux)
+      const r = reach + LUNGE_SHORT
+      if (across >= r) return
+      room = Math.min(room, Math.max(0, along - Math.sqrt(r * r - across * across)))
+    }
+    const tick = Math.round(lastRemoteTick)
+    for (const track of monsterTracks.at(tick)) {
+      const def = monsterDef(track.info.kind)
+      if (def.attack.kind === 'melee') limit(track.x, track.y, def.halfSize + PLAYER_HALF_SIZE + def.attack.reach)
+    }
+    for (const track of animalTracks.at(tick)) {
+      const hunt = animalDef(track.info.kind).hunt
+      if (hunt && track.info.angry) limit(track.x, track.y, animalDef(track.info.kind).halfSize + PLAYER_HALF_SIZE + hunt.reach)
+    }
+    return room
   }
 
   // The attack button pressed down with a weapon that has a charged attack: nothing is swung yet; it starts charging
@@ -905,13 +1063,16 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   }
   // Rock and what is like it (copper, tin, clay) knock like stone; what is green or soft (sunflowers, cacti, sand, a
   // cobweb, a wild hive's comb) rustles; the rest knocks like wood. Each sparks in its own colour.
-  const STONY: ReadonlySet<string> = new Set(['rock', 'copper-rock', 'tin-rock', 'clay'])
-  const SOFT: ReadonlySet<string> = new Set(['bush', 'grass', 'plot', 'sunflower', 'seedling', 'cactus', 'sand', 'cobweb', 'hive'])
+  const STONY: ReadonlySet<string> = new Set(['rock', 'copper-rock', 'tin-rock', 'clay', 'tomb'])
+  const SOFT: ReadonlySet<string> = new Set(['bush', 'grass', 'plot', 'sunflower', 'seedling', 'cactus', 'young-cactus', 'sand', 'cobweb', 'hive', 'skeleton-camp', 'goblin-camp'])
   const SPARKS: Readonly<Record<string, number>> = {
     rock: 0xb9bcc2,
     'copper-rock': 0xd27a3c,
     'tin-rock': 0xdcdfd4,
-    clay: 0xa8644a,
+    tomb: 0xd2b47a,
+    'skeleton-camp': 0x8a5a3a,
+    'goblin-camp': 0x8a5a3a,
+    clay: 0xa49a9a,
     sand: 0xe3cd94,
     cobweb: 0xf2f2ee,
     hive: 0xe8a020,
@@ -943,20 +1104,21 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   // a punch (see weaponOf).
   const pressAttack = (): void => attack(heldWeapon())
 
-  // Whether the picked slot holds something put down or planted with the right button (so a drag goes on doing it).
+  // Whether the picked slot holds something put down, planted or hung on a drying rack with the right button (so a drag
+  // goes on doing it).
   const holdsPlaceable = (): boolean => {
     const held = predictedInventory().slots[selectedSlot]
     const item = held && held.count > 0 ? getItem(held.item) : undefined
-    return item !== undefined && (item.places !== undefined || item.crop !== undefined)
+    return item !== undefined && (item.places !== undefined || item.crop !== undefined || rackRecipe(item.id) !== undefined)
   }
 
-  // Where a raft put down on a tile goes (its middle on the tile's), as the page sees it, or why it cannot: out of
-  // reach, or not all on open water clear of the other rafts.
-  const raftSpot = (x: number, y: number): { pose: RaftPose } | { why: Refusal } => {
-    if (!isWithinReach(local.position, x, y)) return { why: 'reach' }
+  // Where a raft put down at a point (in tiles: the mouse's) goes (its middle there), as the page sees it, or why it
+  // cannot: out of reach, or not all on open water clear of the other rafts.
+  const raftSpot = (point: { x: number; y: number }): { pose: RaftPose } | { why: Refusal } => {
+    if (!isWithinReach(local.position, Math.floor(point.x), Math.floor(point.y))) return { why: 'reach' }
     const terrain = mirror.terrain
     const others = raftTracks.posesAt(lastRemoteTick).map((raft) => raft.pose)
-    const pose = raftOnTile(x, y)
+    const pose = raftAt(point.x * SUB, point.y * SUB)
     return terrain && raftFits(pose, (tx, ty) => waterAt(terrain, tx, ty), others) ? { pose } : { why: 'raftWater' }
   }
 
@@ -969,6 +1131,8 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   // Tying something to a fence: the fence right clicked first, kept until the next right click (on an animal or a raft
   // to tie it to the fence, or anywhere else to give up).
   let tyingTo: number | undefined
+  // Whether each wooden door in view was open when last drawn, by ID, to sound it swinging open or shut.
+  const doorsOpen = new Map<number, boolean>()
   // A right click on a fence: untie what is tied to it, or start tying something to it.
   const fenceClicked = (id: number): void => {
     tyingTo = undefined
@@ -1015,7 +1179,8 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   const place = (x: number, y: number, quiet: boolean): void => {
     if (!welcomed || inFog(x, y)) return
     const there = mirror.world.entityAt(x, y)
-    if (there?.kind === 'gate') {
+    // A gate or a wooden door: kept open, or shut.
+    if (there?.kind === 'gate' || there?.kind === 'wood-door') {
       if (!quiet) send({ k: 'toggle', id: there.id })
       return
     }
@@ -1023,7 +1188,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       if (!quiet) fenceClicked(there.id)
       return
     }
-    // A bucket or compost is used on what it is pointed at: a pond, a barrel, a garden plot.
+    // A bucket or compost is used on what it is pointed at: a pond, a barrel, farmland.
     const using = predictedInventory().slots[selectedSlot]
     const tool = using && using.count > 0 ? getItem(using.item) : undefined
     // A bucket fills at a pond or a well (fresh water) or the sea (salt water), empties into a barrel or onto a plot, or is
@@ -1038,8 +1203,9 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       if (!quiet) sleepIn(there.id)
       return
     }
-    // A waystone: its panel, to name it and travel from it.
+    // A waystone: its panel, to name it and travel from it, from within WAYSTONE_REACH of it.
     if (there?.kind === 'waystone') {
+      if (!quiet && !nearWaystone(local.position, there.x, there.y)) return void hud.toast(REFUSALS.reach, 'error')
       if (!quiet) {
         inventoryOpen = false
         openBuilding = undefined
@@ -1047,13 +1213,20 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       }
       return
     }
-    // A drying rack has no panel: what is held (a hide) is hung on it, if nothing is on it yet. What has dried on it comes
-    // off with a hit, as a grown crop does (see the server's `hit`).
+    // A drying rack has no panel: what is held (a hide) is hung on it, if nothing is on it yet (also while the button is
+    // held down and dragged across racks, as seeds are planted, passing quietly over those it cannot go on). What has
+    // dried on it pops off onto the ground, with a right click or a hit, as a grown crop does (see the server's `hit`).
     if (there?.kind === 'rack') {
+      if (there.inv.slots[RACK_OUTPUT].count > 0) {
+        if (!quiet) send({ k: 'punch', id: there.id, slot: selectedSlot })
+        return
+      }
       const held = predictedInventory().slots[selectedSlot]
-      if (quiet || !held || held.count === 0) return
-      const refused = rackRefusal(there, held.item)
-      if (refused) return void hud.toast(REFUSALS[refused], 'error')
+      if (!held || held.count === 0) return
+      // As it will be once what was just hung on it arrives (so a drag back over it does not hang another).
+      const inv = prediction.predictInventories(playerInventory, mirror.world).buildings.get(there.id) ?? there.inv
+      const refused = rackRefusal({ ...there, inv }, held.item)
+      if (refused) return void (quiet ? undefined : hud.toast(REFUSALS[refused], 'error'))
       send({ k: 'put', id: there.id, item: held.item, max: 1, slot: selectedSlot })
       sounds.play('move')
       return
@@ -1071,9 +1244,9 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     // A raft goes down on the water, on the player's rope.
     if (isRaftItem(held.item)) {
       if (quiet) return
-      const spot = raftSpot(x, y)
+      const spot = pointer ? raftSpot(view.pick(pointer)) : { why: 'raftWater' as const }
       if ('why' in spot) return void hud.toast(REFUSALS[spot.why], 'error')
-      send({ k: 'place', x, y, slot: selectedSlot })
+      send({ k: 'place', x: floorDiv(spot.pose.x, SUB), y: floorDiv(spot.pose.y, SUB), slot: selectedSlot, at: { x: spot.pose.x, y: spot.pose.y } })
       sounds.play('plant')
       return
     }
@@ -1268,6 +1441,13 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
   window.addEventListener('contextmenu', onContextMenu)
   const disposeTooltips = createTooltips(hudRoot)
   window.addEventListener('pointerup', onPointerUp)
+  // Closing the tab while playing (Ctrl+W, which a page cannot take for itself, or the tab's ×) or reloading asks first:
+  // the browser's own "Leave site?".
+  const onBeforeUnload = (event: BeforeUnloadEvent): void => {
+    event.preventDefault()
+    event.returnValue = ''
+  }
+  window.addEventListener('beforeunload', onBeforeUnload)
   window.addEventListener('keydown', onKeyDown)
   window.addEventListener('keyup', onKeyUp)
   window.addEventListener('blur', onBlur)
@@ -1539,7 +1719,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     if (machine !== undefined) return machine
     if (!opened || opened.kind !== 'miner') return 0
     const digging = roomFor(opened.inv, opened.ore, 1) > 0
-    return (opened.progress + (digging ? alpha : 0)) / getItem(opened.ore).mineTicks
+    return (opened.progress + (digging ? alpha : 0)) / mineTicksOf(opened.ore)
   }
 
   // The debug view's hitboxes (F3): each body's round space, which no other body can stand in (players yellow, animals
@@ -1558,7 +1738,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     for (let i = flashes.length - 1; i >= 0; i--) if (now - flashes[i].at > attackDurationMs(flashes[i].weapon, flashes[i].charged)) flashes.splice(i, 1)
     while (sparks.length > 0 && now - sparks[0].at > SPARK_MS) sparks.shift()
     while (numbers.length > 0 && now - numbers[0].at > NUMBER_MS) numbers.shift()
-    const view: AttackView = { marks: [], swishes: [], shots: [], sparks: [], numbers: [] }
+    const view: AttackView = { marks: [], swishes: [], shots: [], sparks: [], numbers: [], puffs: [] }
     // The swish behind each weapon as it swings, from where its player is now, tracing what the attack covers.
     const where = new Map(remotes.positionsAt(tick).map((remote) => [remote.id, tilesOf(remote)]))
     where.set(mirror.playerId, { x, y })
@@ -1568,16 +1748,9 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       const swish = from ? attackSwish(flash.weapon, from.x, from.y, flash.angle, now - flash.at, flash.charged) : undefined
       if (swish) view.swishes.push(swish)
     }
-    // Monsters' attacks landing: a red swish where a skeleton's swing cut, a red streak along its dash.
-    for (let i = monsterSwishes.length - 1; i >= 0; i--) if (now - monsterSwishes[i].at > MONSTER_SWISH_MS) monsterSwishes.splice(i, 1)
-    for (const swish of monsterSwishes) {
-      const attack = monsterDef(swish.monster).attack
-      if (attack.kind !== 'blade') continue
-      const progress = (now - swish.at) / MONSTER_SWISH_MS
-      const base = { x: swish.x, y: swish.y, angle: swish.angle, inner: 0, distance: 0, tint: 0xff5a4a, progress }
-      if (swish.kind === 'swing') view.swishes.push({ ...base, shape: 'arc', arc: attack.swing.arc, inner: 0.3, outer: (attack.swing.reach + PLAYER_HALF_SIZE) / SUB, width: 0 })
-      else view.swishes.push({ ...base, shape: 'band', arc: 0, outer: attack.charge.distance / SUB, width: attack.charge.width / SUB })
-    }
+    // Enemies' attacks landing, in red, tracing what each covered (see `enemySwishes`).
+    for (let i = enemySwishes.length - 1; i >= 0; i--) if (now - enemySwishes[i].at > enemySwishes[i].ms) enemySwishes.splice(i, 1)
+    for (const { at, ms, ...swish } of enemySwishes) view.swishes.push({ ...swish, tint: 0xff5a4a, progress: (now - at) / ms })
     for (const spark of sparks) view.sparks.push({ x: spark.x, y: spark.y, age: (now - spark.at) / SPARK_MS, color: spark.color })
     if (debug) view.marks.push(...hitboxes(x, y, tick))
     // A skeleton's attacks show nothing on the ground as they come (its pose and its sounds give them away); dust is
@@ -1594,12 +1767,14 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
         if (act.k === 'dash' && dust) sparks.push({ x: cx - Math.cos(act.angle) * 0.3, y: cy - Math.sin(act.angle) * 0.3, at: now, color: 0xb8a68a })
       }
       if (act.k === 'cast') view.marks.push(...castMarks(cx, cy, act.spell, progress))
+      // A blizzard coming: its snow gathering round the lich, as far as it will blow, thicker as the cast goes on.
+      if (act.k === 'cast' && act.spell === 'blizzard') view.puffs.push(...blizzard(cx, cy, LICH_SPELLS.blizzard.radius / SUB, 0.15 + 0.45 * progress, now, info.id))
     }
     // Each blizzard blowing.
     for (let i = blizzards.length - 1; i >= 0; i--) if (now > blizzards[i].until) blizzards.splice(i, 1)
-    for (const blizzard of blizzards) {
-      const fade = Math.min(1, (now - blizzard.at) / 250, (blizzard.until - now) / 400)
-      view.marks.push(...blizzardMarks(blizzard.x, blizzard.y, blizzard.radius, fade, now))
+    for (const blowing of blizzards) {
+      const fade = Math.min(1, (now - blowing.at) / 250, (blowing.until - now) / 400)
+      view.puffs.push(...blizzard(blowing.x, blowing.y, blowing.radius, fade, now, Math.round(blowing.at)))
     }
     for (const number of numbers) view.numbers.push({ x: number.x, y: number.y, text: number.text, age: (now - number.at) / NUMBER_MS })
     const present = new Set<number>()
@@ -1609,30 +1784,46 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       const stopped = shotStopped.get(shot.id)
       // Drawn flying until the tick it stopped on (it is drawn in the past, so it reaches what it hit), then gone.
       if (item === undefined || (stopped !== undefined && tick >= stopped)) {
-        // An icicle shatters where it lands.
-        if (item === ICICLE && !shattered.has(shot.id)) {
+        // A hex bursts where it lands, its poison billowing out as far as it hurts.
+        if (item !== undefined && HEX_REACH.has(item) && !shattered.has(shot.id)) {
           shattered.add(shot.id)
-          sparks.push({ ...tilesOf(shot), at: now, color: 0xcfeaff })
-          sounds.play('punch/stone', tilesOf(shot))
+          const at = tilesOf(shot)
+          bursts.push({ kind: 'poison', ...at, at: now, reach: HEX_REACH.get(item)!, seed: shot.id })
+          sounds.play('hex/burst', at)
+        }
+        // Ice shatters where it lands, its frost flowing out as far as it hurts.
+        if (item !== undefined && FALLING.has(item) && !shattered.has(shot.id)) {
+          shattered.add(shot.id)
+          const at = tilesOf(shot)
+          bursts.push({ kind: 'frost', ...at, at: now, reach: FALLING.get(item)!.ring, seed: shot.id })
+          sounds.play('punch/stone', at)
         }
         continue
       }
-      if (item === ICICLE) {
-        // Falling from above, over where it will land: a ring on the ground there, filling as it comes down.
+      const falling = FALLING.get(item)
+      if (falling) {
+        // Falling from above, over where it will land: cold mist gathering on the ground there, as far as it will hurt,
+        // thicker as it comes down.
         if (!shotSeen.has(shot.id)) shotSeen.set(shot.id, now)
-        const fall = Math.min(1, (now - shotSeen.get(shot.id)!) / ICICLE_FALL_MS)
+        const fall = Math.min(1, (now - shotSeen.get(shot.id)!) / falling.ms)
         const { x: landX, y: landY } = tilesOf(shot)
-        view.marks.push(icicleMark(landX, landY, ICICLE_RING, fall))
+        view.puffs.push(...frostGathering(landX, landY, falling.ring, fall, now, shot.id))
         view.shots.push({ id: shot.id, item, x: landX, y: landY, angle: 0, fall })
         continue
       }
-      view.shots.push({ id: shot.id, item, ...tilesOf(shot), angle: Math.atan2(shot.dy, shot.dx) })
+      view.shots.push({ id: shot.id, item, ...tilesOf(shot), angle: Math.atan2(shot.dy, shot.dx), ...(shotLifts.has(shot.id) ? { lift: liftAt(shot.id, tick) / SUB } : {}) })
+    }
+    for (let i = bursts.length - 1; i >= 0; i--) if (now - bursts[i].at > (bursts[i].kind === 'poison' ? HEX_BURST_MS : FROST_BURST_MS)) bursts.splice(i, 1)
+    for (const burst of bursts) {
+      if (burst.kind === 'poison') view.puffs.push(...poisonBurst(burst.x, burst.y, burst.reach, (now - burst.at) / HEX_BURST_MS, burst.seed))
+      else view.puffs.push(...frostBurst(burst.x, burst.y, burst.reach, (now - burst.at) / FROST_BURST_MS, burst.seed))
     }
     for (const id of shotItems.keys()) {
       if (present.has(id)) continue
       shotItems.delete(id)
       shotStopped.delete(id)
       shotSeen.delete(id)
+      shotLifts.delete(id)
       shattered.delete(id)
     }
     return view
@@ -1676,11 +1867,20 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
         y: track.y / SUB,
         size: def.size,
         baby,
-        facing: animalTracks.facingOf(track.id, Math.PI),
+        facing: info.act ? info.act.angle : animalTracks.facingOf(track.id, Math.PI),
         hovered: false,
         hurt: animalTracks.isHurt(track.id, now),
         angry: info.angry === true,
         male: info.sex === 'm',
+      }
+      if (info.act) {
+        const heard = animalActHeard.get(info.id)
+        view.act = { k: info.act.k, progress: heard ? Math.min(1, (now - heard.heardAt) / Math.max(1, info.act.ticks * TICK_MS)) : 0 }
+      }
+      const bitAt = animalBites.get(track.id)
+      if (bitAt !== undefined) {
+        if (now - bitAt < BITE_MS) view.bite = (now - bitAt) / BITE_MS
+        else animalBites.delete(track.id)
       }
       const leader = ropeEnd(info.leader, info.post ?? 0, tick)
       if (leader) view.leader = leader
@@ -1729,8 +1929,16 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       const def = monsterDef(info.kind)
       // An attack faces its way; a boss, which never moves, faces the player.
       const act = info.act
-      const facing =
-        act && act.k !== 'cast' ? act.angle : def.boss ? Math.atan2(local.position.y - track.y, local.position.x - track.x) : monsterTracks.facingOf(track.id)
+      const strike = monsterStrikes.get(track.id)
+      const striking = !act && strike && now - strike.at < MONSTER_STRIKE_MS ? strike : undefined
+      if (strike && !striking) monsterStrikes.delete(track.id)
+      const facing = striking
+        ? striking.angle
+        : act && act.k !== 'cast'
+          ? act.angle
+          : def.boss
+            ? Math.atan2(local.position.y - track.y, local.position.x - track.x)
+            : monsterTracks.facingOf(track.id)
       views.push({
         id: track.id,
         kind: info.kind,
@@ -1741,6 +1949,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
         hurt: monsterTracks.isHurt(track.id, now),
         angry: info.angry === true && !def.boss,
         ...(act ? { act: { k: act.k, progress: actProgress(info, now), ...(act.k === 'cast' ? { spell: act.spell } : {}) } } : {}),
+        ...(striking ? { act: { k: striking.k, progress: (now - striking.at) / MONSTER_STRIKE_MS } } : {}),
       })
     }
     for (const dead of monsterTracks.falling(now)) {
@@ -1881,9 +2090,15 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     const walkers = [local.position, ...remotes.positionsAt(remoteTick)]
     const tied = tiedFences()
     const viewOf = (entity: Entity): BuildingView => {
-      if (entity.kind === 'fence' || entity.kind === 'gate') {
+      if (entity.kind === 'fence' || entity.kind === 'gate' || entity.kind === 'wood-wall' || entity.kind === 'wood-door') {
         const connect = fenceMask((x, y) => mirror.world.entityAt(x, y)?.kind, entity.x, entity.y)
-        const open = entity.kind === 'gate' && gateIsOpen(entity, walkers)
+        const open = (entity.kind === 'gate' || entity.kind === 'wood-door') && gateIsOpen(entity, walkers)
+        // A door that has just swung open or shut is heard (not one first seen, open or shut as it already was).
+        if (entity.kind === 'wood-door') {
+          const was = doorsOpen.get(entity.id)
+          if (was !== undefined && was !== open) sounds.play(open ? 'door/open' : 'door/close', { x: entity.x + 0.5, y: entity.y + 0.5 })
+          doorsOpen.set(entity.id, open)
+        }
         return { ...entity, connect, open, ...(tied.has(entity.id) ? { tied: true } : {}) }
       }
       if ('lit' in entity) return { ...entity, lit: entity.lit === 1, ...(isSmoking(entity) ? { smoking: true } : {}) }
@@ -1903,9 +2118,21 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
         const rack = entity.inv.slots[RACK_OUTPUT].count > 0 ? 'done' : entity.inv.slots[RACK_INPUT].count > 0 ? 'drying' : 'empty'
         return { ...entity, rack }
       }
-      if (entity.kind === 'stump' || entity.kind === 'workbench') {
+      if (entity.kind === 'stump' || entity.kind === 'workbench' || entity.kind === 'carpenter') {
         const tool = entity.inv.slots[STATION_LAYOUT[entity.kind].tool]
         return isFilled(tool) ? { ...entity, tool: tool.item } : entity
+      }
+      // A floor: which sides have a floor beside them (it reaches out a little on the others: see `woodFloor`).
+      if (entity.kind === 'wood-floor' || entity.kind === 'stone-floor') {
+        const floored = (x: number, y: number): boolean => mirror.world.floorAt(x, y) !== undefined
+        const { x, y } = entity
+        return { ...entity, connect: (floored(x, y - 1) ? FENCE_N : 0) | (floored(x + 1, y) ? FENCE_E : 0) | (floored(x, y + 1) ? FENCE_S : 0) | (floored(x - 1, y) ? FENCE_W : 0) }
+      }
+      if (entity.kind === 'feeder') {
+        // How full it is: each slot's share of a full stack of what is in it, taken together.
+        const slots = entity.inv.slots
+        const filled = slots.reduce((sum, slot) => sum + (isFilled(slot) ? Math.min(1, slot.count / stackLimit(slot.item, entity.inv.stack)) : 0), 0)
+        return { ...entity, feed: slots.length > 0 ? filled / slots.length : 0 }
       }
       if (entity.kind === 'plot') {
         const stage = entity.crop !== 0 ? cropStage(entity.crop, entity.growth) : undefined
@@ -2038,8 +2265,9 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       const held = inventory.slots[selectedSlot]
       const kind = held && held.count > 0 ? getItem(held.item).places : undefined
       if (held && held.count > 0 && isRaftItem(held.item)) {
-        const spot = raftSpot(hover.x, hover.y)
-        raftGhost = 'pose' in spot ? { x: spot.pose.x / SUB, y: spot.pose.y / SUB, valid: true } : { x: hover.x + 0.5, y: hover.y + 0.5, valid: false }
+        const point = view.pick(pointer!)
+        const spot = raftSpot(point)
+        raftGhost = 'pose' in spot ? { x: spot.pose.x / SUB, y: spot.pose.y / SUB, valid: true } : { x: point.x, y: point.y, valid: false }
       }
       if (kind) {
         const valid = !prediction.occupies(hover.x, hover.y) && checkPlace(mirror.world, local.position, inventory, selectedSlot, hover.x, hover.y, mirror.terrain).ok
@@ -2062,8 +2290,9 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       if (entity) removing.push({ x: entity.x, y: entity.y })
     }
     const opened = openBuilding !== undefined ? mirror.world.entity(openBuilding) : undefined
-    // A named chest under the mouse shows its name.
-    const hovered = hover ? mirror.world.entityAt(hover.x, hover.y) : undefined
+    // A named chest under the mouse shows its name, whatever is held (not only when the tile lights up).
+    const under = pointer && !pause.isOpen ? tileUnderPointer() : undefined
+    const hovered = under && !inFog(under.x, under.y) ? mirror.world.entityAt(under.x, under.y) : undefined
     const named = hovered?.kind === 'chest' && hovered.name ? { x: hovered.x, y: hovered.y, name: hovered.name } : undefined
     return {
       ...(hover ? { hover } : {}),
@@ -2149,6 +2378,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       selected: selectedSlot,
       keys: HOTBAR_ACTIONS.map((action) => settings.keyLabel(action)),
       health,
+      maxHealth: playerMaxHealth(predicted.player, truesight),
       body: bodyTenths / 10,
       food: predicted.player.slots[FOOD_SLOT] ?? { item: NO_ITEM, count: 0 },
       foodKey: settings.keyLabel('eat'),
@@ -2159,9 +2389,9 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     // Walked off well out of reach of what is open: it closes.
     if (opened && openBuilding !== undefined && Math.sqrt(distanceToTileSquared(local.position.x, local.position.y, opened.x, opened.y)) > PLAYER_REACH * CLOSE_AWAY) closePanels()
     panels.show(inventoryOpen || opened ? panelsView(opened, predicted) : undefined)
-    // A waystone's panel: closed when it is gone or walked away from (or arrived away from).
+    // A waystone's panel: closed when it is gone or walked away from (out of WAYSTONE_REACH, or arrived away from).
     const stone = openWaystone !== undefined ? mirror.world.entity(openWaystone) : undefined
-    const stoneOpen = stone?.kind === 'waystone' && Math.sqrt(distanceToTileSquared(local.position.x, local.position.y, stone.x, stone.y)) <= PLAYER_REACH * CLOSE_AWAY
+    const stoneOpen = stone?.kind === 'waystone' && nearWaystone(local.position, stone.x, stone.y)
     if (!stoneOpen) openWaystone = undefined
     waystonePanel.show(stoneOpen && stone.kind === 'waystone' ? waystoneView(stone) : undefined)
     // A work station only works while someone has it open, so the server is told which one this player has.
@@ -2255,7 +2485,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
       hud.toast(REFUSALS.wouldKill, 'error')
       return void sounds.play('craft/fail')
     }
-    if (!food.hurts && health >= PLAYER_MAX_HEALTH) return void sounds.play('craft/fail')
+    if (!food.hurts && health >= playerMaxHealth(predictedInventory(), truesight)) return void sounds.play('craft/fail')
     send({ k: 'eat', slot: FOOD_SLOT })
     eatReadyAt = now + EAT_COOLDOWN_TICKS * TICK_MS
     if (food.truesight) expectingSight = true
@@ -2309,12 +2539,19 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
 
   const panelsView = (opened: Entity | undefined, predicted: ReturnType<Prediction['predictInventories']>): PanelsView => {
     if (!opened || !hasInventory(opened)) {
-      return { player: predicted.player.slots, selected: selectedSlot, recipes: craftingBook(predicted.player), ...(handCrafting() ? { crafting: handCrafting() } : {}) }
+      return {
+        player: predicted.player.slots,
+        selected: selectedSlot,
+        recipes: craftingBook(predicted.player),
+        ...(handCrafting() ? { crafting: handCrafting() } : {}),
+        ...(room.items ? { spawning: true } : {}),
+      }
     }
     const def = BUILDINGS[opened.kind]
     return {
       player: predicted.player.slots,
       selected: selectedSlot,
+      ...(room.items ? { spawning: true } : {}),
       building: {
         id: opened.id,
         kind: opened.kind,
@@ -2401,14 +2638,14 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     ]
   }
 
-  // The garden plot under the mouse: its crop, and how watered it is.
+  // The farmland under the mouse: its crop, and how watered it is.
   const plotLines = (): string[] => {
     const hover = pointer ? tileUnderPointer() : undefined
     const plot = hover ? mirror.world.entityAt(hover.x, hover.y) : undefined
     if (plot?.kind !== 'plot') return []
     const crop = getCrop(plot.crop)
     const grown = crop ? `${crop.name} ${Math.floor((plot.growth * 100) / growthNeeded(crop.growTicks))}% grown` : 'nothing planted'
-    return ['', `Garden plot   ${grown}`, plot.water > 0 ? `watered (${Math.ceil((plot.water * WATER_FALL_EVERY) / TPS)} s left)` : 'dry']
+    return ['', `Farmland   ${grown}`, plot.water > 0 ? `watered (${Math.ceil((plot.water * WATER_FALL_EVERY) / TPS)} s left)` : 'dry']
   }
 
   // The animal under the mouse, and its genetics.
@@ -2438,6 +2675,7 @@ export async function startGame({ container, code, name, onLeave, local: solo }:
     window.removeEventListener('contextmenu', onContextMenu)
     disposeTooltips()
     map.dispose()
+    window.removeEventListener('beforeunload', onBeforeUnload)
     window.removeEventListener('keydown', onKeyDown)
     window.removeEventListener('keyup', onKeyUp)
     window.removeEventListener('blur', onBlur)

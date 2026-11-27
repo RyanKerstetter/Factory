@@ -4,8 +4,10 @@ import { failIn, fieldsOf, onlyFields, wholeField } from './data-check.ts'
 // Everything that stands on a tile: the factory's buildings; what is found in the world (trees, bushes, rocks, grass,
 // flint, and the saplings and berry sprouts planted from acorns and berries; on the meadow sunflowers, clay, copper rocks
 // and beehives; in the desert cacti, sand and tin rocks; the cobwebs spiders spin); what players put up (fences, gates,
-// the stations and machines, garden plots, feed boxes, sleeping bags, bee boxes); and the dungeon's ice door. Each
-// takes one tile.
+// the stations and machines, farmland, feed troughs, sleeping bags, bee boxes, wooden walls, doors and floors); and the
+// dungeon's ice door; and what keeps each camp (the skeletons' tent, the goblins' lean-to, the mummies' tomb: see
+// `isCampKind`). Each takes one tile, but for a wooden floor, which lies under whatever stands on its tile (see
+// `isFloorKind`).
 export type BuildingKind =
   | 'miner'
   | 'extractor'
@@ -42,10 +44,23 @@ export type BuildingKind =
   | 'copper-rock'
   | 'tin-rock'
   | 'cactus'
+  | 'young-cactus'
   | 'sand'
   | 'cobweb'
   | 'hive'
   | 'beebox'
+  | 'wood-wall'
+  | 'wood-door'
+  | 'wood-floor'
+  | 'stone-floor'
+  | 'carpenter'
+  | 'table'
+  | 'chair'
+  | 'low-table'
+  | 'round-table'
+  | 'skeleton-camp'
+  | 'goblin-camp'
+  | 'tomb'
 
 export type BuildingDef = {
   kind: BuildingKind
@@ -167,7 +182,7 @@ const BUILDING_DEFS: Record<BuildingKind, BuildingDef> = {
     kind: 'sunflower',
     code: 30,
     name: 'Sunflower',
-    description: 'Bees gather from it. Break it for its seeds, which grow without a garden plot.',
+    description: 'Bees gather from it. Break it for its seeds, which grow without farmland.',
   },
   seedling: {
     ...NATURAL,
@@ -208,9 +223,16 @@ const BUILDING_DEFS: Record<BuildingKind, BuildingDef> = {
     kind: 'cactus',
     code: 35,
     name: 'Cactus',
-    description: 'Break it for a cactus to plant again: it only grows on sand.',
+    description: 'Break it for a few cactus to plant again: it only grows on sand.',
     solid: true,
     blocksAnimals: true,
+  },
+  'young-cactus': {
+    ...NATURAL,
+    kind: 'young-cactus',
+    code: 52,
+    name: 'Young cactus',
+    description: 'A cactus planted on sand. It grows into a cactus in time; punch it to dig it back up.',
   },
   sand: {
     ...NATURAL,
@@ -224,7 +246,8 @@ const BUILDING_DEFS: Record<BuildingKind, BuildingDef> = {
     kind: 'cobweb',
     code: 37,
     name: 'Cobweb',
-    description: 'Spun by a spider. Break it for string.',
+    description: 'Spun by a spider. Walking through it is slow. Break it for string.',
+    slowsPlayers: true,
   },
   hive: {
     ...NATURAL,
@@ -359,7 +382,7 @@ const BUILDING_DEFS: Record<BuildingKind, BuildingDef> = {
     ...PLACED,
     kind: 'plot',
     code: 14,
-    name: 'Garden plot',
+    name: 'Farmland',
     description: 'Plant a seed in it with a right click. Break the crop when it is grown for the harvest and more seeds.',
   },
   workbench: {
@@ -401,15 +424,131 @@ const BUILDING_DEFS: Record<BuildingKind, BuildingDef> = {
     ...MACHINE,
     kind: 'feeder',
     code: 15,
-    name: 'Feed box',
+    name: 'Feed trough',
     description: 'Animals nearby eat what they like from it, which leaves them well fed and ready to breed.',
+  },
+  'wood-wall': {
+    ...PLACED,
+    kind: 'wood-wall',
+    code: 40,
+    name: 'Wooden wall',
+    description: 'Keeps everything out. Joins up with the wooden walls and doors beside it.',
+    solid: true,
+    blocksAnimals: true,
+  },
+  'wood-door': {
+    ...PLACED,
+    kind: 'wood-door',
+    code: 41,
+    name: 'Wooden door',
+    description: 'Opens when a player comes through it; right click to keep it open or shut. Animals only get through while it is open.',
+    blocksAnimals: true,
+  },
+  'wood-floor': {
+    ...PLACED,
+    kind: 'wood-floor',
+    code: 42,
+    name: 'Wooden floor',
+    description: 'Covers the ground. Anything can be put down on it; take it up with an axe once its tile is clear.',
+  },
+  carpenter: {
+    ...MACHINE,
+    kind: 'carpenter',
+    code: 44,
+    name: "Carpenter's bench",
+    description: 'Makes fences, walls, doors, floors and furniture. Pick a recipe at the side and press Craft; it works while you stay at it.',
+  },
+  table: {
+    ...PLACED,
+    kind: 'table',
+    code: 45,
+    name: 'Table',
+    description: 'A wooden table.',
+    solid: true,
+    blocksAnimals: true,
+  },
+  chair: {
+    ...PLACED,
+    kind: 'chair',
+    code: 46,
+    name: 'Chair',
+    description: 'A wooden chair.',
+    solid: true,
+    blocksAnimals: true,
+  },
+  'low-table': {
+    ...PLACED,
+    kind: 'low-table',
+    code: 47,
+    name: 'Low table',
+    description: 'A low wooden table.',
+    solid: true,
+    blocksAnimals: true,
+  },
+  'round-table': {
+    ...PLACED,
+    kind: 'round-table',
+    code: 48,
+    name: 'Round table',
+    description: 'A round wooden table on a single post.',
+    solid: true,
+    blocksAnimals: true,
+  },
+  'skeleton-camp': {
+    ...NATURAL,
+    kind: 'skeleton-camp',
+    code: 49,
+    name: 'Skeleton camp',
+    description: 'The tent the skeletons keep: they come back to it while it stands. Bring it down with an axe to end the camp, for leather.',
+    solid: true,
+    blocksAnimals: true,
+  },
+  'goblin-camp': {
+    ...NATURAL,
+    kind: 'goblin-camp',
+    code: 50,
+    name: 'Goblin camp',
+    description: 'The lean-to the goblins keep: they come back to it while it stands. Bring it down with an axe to end the camp, for leather.',
+    solid: true,
+    blocksAnimals: true,
+  },
+  tomb: {
+    ...NATURAL,
+    kind: 'tomb',
+    code: 51,
+    name: 'Tomb',
+    description: 'The tomb the mummies keep: they come back to it while it stands. Break it with a pickaxe to end it, for leather.',
+    solid: true,
+    blocksAnimals: true,
+  },
+  'stone-floor': {
+    ...PLACED,
+    kind: 'stone-floor',
+    code: 43,
+    name: 'Stone floor',
+    description: 'Covers the ground with flagstones. Anything can be put down on it; take it up with a pickaxe once its tile is clear.',
   },
 }
 
+// What lies under whatever stands on its tile rather than taking the tile: a wooden or a stone floor. A tile has at
+// most one floor and one thing on it (see Chunk).
+export function isFloorKind(kind: BuildingKind): boolean {
+  return kind === 'wood-floor' || kind === 'stone-floor'
+}
+
+// What keeps a camp of monsters (see the server's monsters.ts): the skeletons' tent (grown in the mountains, or put down
+// from a skeleton camp made at an altar), the goblins' lean-to, the mummies' tomb. While it stands its monsters come
+// back after they are killed, and its rocks with them; broken, the camp is gone.
+export type CampKind = 'skeleton-camp' | 'goblin-camp' | 'tomb'
+export const CAMP_KINDS: readonly CampKind[] = ['skeleton-camp', 'goblin-camp', 'tomb']
+export function isCampKind(kind: string): kind is CampKind {
+  return kind === 'skeleton-camp' || kind === 'goblin-camp' || kind === 'tomb'
+}
+
 // The kinds whose hits are in data/buildings.json: everything that is hit (natural or breakable) and keeps its hits,
-// which is all of them but saplings, berry sprouts, sunflower seedlings and loose flint (one hit each, always) and the
+// which is all of them but saplings, berry sprouts, sunflower seedlings, young cacti and loose flint (one hit each, always) and the
 // target dummy (which never breaks).
-const ONE_HIT: readonly BuildingKind[] = ['sapling', 'sprout', 'seedling', 'loose']
+const ONE_HIT: readonly BuildingKind[] = ['sapling', 'sprout', 'seedling', 'young-cactus', 'loose']
 const UNBREAKABLE: readonly BuildingKind[] = ['dummy']
 export const HP_FROM_DATA: readonly BuildingKind[] = (Object.keys(BUILDING_DEFS) as BuildingKind[]).filter(
   (kind) => (BUILDING_DEFS[kind].natural || BUILDING_DEFS[kind].breakable) && !ONE_HIT.includes(kind) && !UNBREAKABLE.includes(kind),
@@ -452,7 +591,7 @@ export function isBuildingKind(value: unknown): value is BuildingKind {
 // lip between them to catch on (a stump a hair wider than the workbench beside it). Pick the nearest one to the model
 // and fit the model to it. (Players also slip round a corner they only just catch: CORNER_SLIP in movement.ts.)
 export const FOOTPRINT = {
-  // Most things put down: the stations, fires, chests, feed boxes, the well, the altar; and rocks (copper and tin too) and clay.
+  // Most things put down: the stations, fires, chests, feed troughs, the well, the altar; and rocks (copper and tin too) and clay.
   block: [0.1, 0.1, 0.9, 0.9],
   // Small round things: a barrel, a pedestal, a beehive.
   small: [0.17, 0.17, 0.83, 0.83],
@@ -461,6 +600,8 @@ export const FOOTPRINT = {
   trunk: [0.28, 0.28, 0.72, 0.72],
   // A thin frame across the tile, post to post (the drying rack: nobody walks through under the hide).
   frame: [0.07, 0.42, 0.93, 0.58],
+  // A table, nearly all of the tile, as its top is.
+  furniture: [0.04, 0.06, 0.96, 0.94],
 } as const satisfies Record<string, readonly [number, number, number, number]>
 
 // What part of its tile a solid building stands in the way with: its trunk, its body, its frame, rather than the whole
@@ -471,6 +612,11 @@ export const BUILDING_BOUNDS: Partial<Record<BuildingKind, ReadonlyArray<readonl
   chest: [FOOTPRINT.block],
   stump: [FOOTPRINT.block],
   workbench: [FOOTPRINT.block],
+  carpenter: [FOOTPRINT.block],
+  table: [FOOTPRINT.furniture],
+  chair: [FOOTPRINT.small],
+  'low-table': [FOOTPRINT.furniture],
+  'round-table': [FOOTPRINT.furniture],
   campfire: [FOOTPRINT.block],
   oven: [FOOTPRINT.block],
   well: [FOOTPRINT.block],
@@ -488,4 +634,7 @@ export const BUILDING_BOUNDS: Partial<Record<BuildingKind, ReadonlyArray<readonl
   barrel: [FOOTPRINT.small],
   rack: [FOOTPRINT.frame],
   feeder: [FOOTPRINT.block],
+  'skeleton-camp': [FOOTPRINT.block],
+  'goblin-camp': [FOOTPRINT.block],
+  tomb: [FOOTPRINT.block],
 }

@@ -42,6 +42,10 @@ import {
   waterAt,
   WEAPONS,
   WORLD_SIZE_KEYS,
+  cleanTerrain,
+  DEFAULT_TERRAIN,
+  savedTerrain,
+  WORLD_SIZES,
   shelfWidthAt,
   coastAround,
   COAST_REACH,
@@ -84,7 +88,7 @@ function mountainTile(terrain: Terrain, coldest: number): { x: number; y: number
 test('the forest is round the spawn, the mountains are an island of their own a short way over the sea, and the sea is all round them', () => {
   for (const size of WORLD_SIZE_KEYS) {
     for (const seed of [1, 7, 12345]) {
-      const terrain = terrainOf(seed, { size })
+      const terrain = terrainOf(seed, { radius: WORLD_SIZES[size].radius })
       assert.equal(biomeAt(terrain, 0, 0)?.key, 'forest', `${size}/${seed}: spawn in the forest`)
       // From the forest to the mountains: forest, then sea (a short way: more where a bay faces the other island), then
       // mountain, with no forest past the sea or mountain before it.
@@ -108,7 +112,7 @@ test('the forest is round the spawn, the mountains are an island of their own a 
 
 test('the two islands can never touch: their coasts, wandering out as far as they can every way round, stay apart', () => {
   for (const size of WORLD_SIZE_KEYS) {
-    const terrain = terrainOf(3, { size })
+    const terrain = terrainOf(3, { radius: WORLD_SIZES[size].radius })
     const [a, b] = terrain.sites
     const outline = (site: typeof a): Array<{ x: number; y: number }> =>
       Array.from({ length: 720 }, (_, i) => {
@@ -129,7 +133,7 @@ test('the two islands can never touch: their coasts, wandering out as far as the
 
 test('the shallow shelf joins the two islands, so it shows the way over; the open sea elsewhere is deep', () => {
   for (const seed of [1, 7, 12345]) {
-    const terrain = terrainOf(seed, { size: 'medium' })
+    const terrain = terrainOf(seed, { radius: 70 })
     const line = crossing(terrain)
     for (const tile of line) {
       if (isSeaAt(terrain, tile.x, tile.y)) assert.equal(shelfWidthAt(terrain, tile.x, tile.y), Infinity, `${seed}: shallow all the way over`)
@@ -148,14 +152,24 @@ test('the shallow shelf joins the two islands, so it shows the way over; the ope
 })
 
 test('the land is the same from the same seed and size, and bigger presets make bigger biomes', () => {
-  assert.deepEqual(terrainOf(5, { size: 'large' }).sites, terrainOf(5, { size: 'large' }).sites)
-  const radius = (size: (typeof WORLD_SIZE_KEYS)[number]): number => terrainOf(5, { size }).sites[0].radius
+  assert.deepEqual(terrainOf(5, { radius: 110 }).sites, terrainOf(5, { radius: 110 }).sites)
+  const radius = (size: (typeof WORLD_SIZE_KEYS)[number]): number => terrainOf(5, { radius: WORLD_SIZES[size].radius }).sites[0].radius
   assert.ok(radius('small') < radius('medium') && radius('medium') < radius('large') && radius('large') < radius('huge'))
+})
+
+test('a world keeps its radius; an older save, with the name of a size preset or nothing at all, keeps the size it was made with', () => {
+  assert.deepEqual(cleanTerrain({ radius: 70 }), { radius: 70 })
+  assert.deepEqual(cleanTerrain(undefined), DEFAULT_TERRAIN)
+  assert.deepEqual(cleanTerrain({ radius: 1.5 }), DEFAULT_TERRAIN)
+  assert.deepEqual(cleanTerrain({ radius: 100_000 }), DEFAULT_TERRAIN)
+  for (const [size, radius] of [['small', 70], ['medium', 110], ['large', 160], ['huge', 220]] as const) assert.deepEqual(cleanTerrain({ size }), { radius })
+  assert.deepEqual(savedTerrain(undefined), { radius: 110 })
+  assert.deepEqual(savedTerrain({ radius: 45 }), { radius: 45 })
 })
 
 test('the forest has no ponds (no biome has them now), and where a biome has them, they never run into the sea', () => {
   for (const seed of [1, 7, 21]) {
-    const terrain = terrainOf(seed, { size: 'small' })
+    const terrain = terrainOf(seed, { radius: 70 })
     const forest = terrain.sites[0]
     for (let y = forest.y - forest.radius; y <= forest.y + forest.radius; y += 2) {
       for (let x = forest.x - forest.radius; x <= forest.x + forest.radius; x += 2) {
@@ -165,7 +179,7 @@ test('the forest has no ponds (no biome has them now), and where a biome has the
   }
   // The same land with ponds turned on for the forest (as another biome may have them).
   for (const seed of [1, 7, 21, 99]) {
-    const plain = terrainOf(seed, { size: 'small' })
+    const plain = terrainOf(seed, { radius: 70 })
     const terrain = { ...plain, sites: plain.sites.map((site) => ({ ...site, biome: { ...site.biome, ponds: true } })) }
     const forest = terrain.sites[0]
     const reach = forest.radius + forest.bump + 2
@@ -237,7 +251,7 @@ test('a player who stays in the deep cold is slowed, and then hurt', () => {
 })
 
 test('the ice crypt is colder than the snow outside it, and the wolf helmet with leather keeps a player from slowing in it', () => {
-  const terrain = terrainOf(7, { size: 'small' })
+  const terrain = terrainOf(7, { radius: 70 })
   const entrance = dungeonEntrance(terrain)!
   const outside = airTemperatureAt(terrain, entrance.x, entrance.y)
   assert.ok(outside < DEADLY_COLD_AT, `deadly cold at the way in (${outside.toFixed(1)})`)
@@ -338,7 +352,7 @@ const WATCH_TICKS = 8
 
 
 test('whether a tile is on the shelf is the same however it is worked out (the ground, the map and the rafts all agree)', () => {
-  const terrain = terrainOf(7, { size: 'medium' })
+  const terrain = terrainOf(7, { radius: 70 })
   const [a, b] = terrain.sites
   // A stretch of coast facing the other island, and some open sea off the far side.
   const spots = [

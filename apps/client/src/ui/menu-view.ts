@@ -1,5 +1,5 @@
 import {
-  DEFAULT_TERRAIN,
+  DEFAULT_WORLD_SIZE,
   GAME_TITLE,
   WORLD_SIZE_KEYS,
   WORLD_SIZES,
@@ -79,8 +79,8 @@ export function createMenuView(
     option.value = size
     sizeSelect.append(option)
   }
-  sizeSelect.value = DEFAULT_TERRAIN.size
-  const terrain = (): TerrainSettings => ({ size: sizeSelect.value as WorldSize })
+  sizeSelect.value = DEFAULT_WORLD_SIZE
+  const terrain = (): TerrainSettings => ({ radius: WORLD_SIZES[sizeSelect.value as WorldSize].radius })
   const sizeLabel = label('World size', sizeSelect)
   const createButton = button('btn btn-primary', 'Create game', () => handlers.onCreate(playerName(), worldInput.value, seedInput.value, terrain()))
   onEnter(worldInput, createButton)

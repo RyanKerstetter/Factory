@@ -1,0 +1,4 @@
+{
+  "leather": { "name": "Leather", "pieces": ["leather-armor", "wolf-helmet", "leather-boots"], "attack": 3 },
+  "bone": { "name": "Bone", "pieces": ["bone-helmet", "bone-chestplate", "bone-greaves"], "health": 25, "healOnHit": 2 }
+}

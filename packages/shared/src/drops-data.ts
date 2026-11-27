@@ -11,10 +11,11 @@ import { itemFromKey, type ItemId } from './items.ts'
 //   `punchesPerBranch` punches (or knife hits) knock a `branch` loose (`branchWithKnife` with a knife), as long as it
 //   is punched.
 // - `bush`, `rock`: `broken` when it is gone; and so on the meadow and in the desert `clay`, `copper-rock`, `tin-rock`,
-//   `sand`, `cactus` and a `sunflower` (a sunflower seedling `dug` back up gives the sunflower's `dug`), and a spider's
+//   `sand`, `cactus` (a young cactus `dug` back up gives its `dug`) and a `sunflower` (a sunflower seedling `dug` back up gives the sunflower's `dug`), and a spider's
 //   `cobweb`.
 // - `grass`: `pulled` by hand, `cut` with a knife.
 // - `sapling`, `sprout`: `dug` back up.
+// - `skeleton-camp`, `goblin-camp`, `tomb`: `broken`, what keeps a camp (and the camp with it).
 
 export type DropEntry = { item: ItemId; min: number; max: number; chance: number }
 export type DropList = readonly DropEntry[]
@@ -30,9 +31,12 @@ export type DropTables = {
   'copper-rock': { broken: DropList }
   'tin-rock': { broken: DropList }
   sand: { broken: DropList }
-  cactus: { broken: DropList }
+  cactus: { broken: DropList; dug: DropList }
   sunflower: { broken: DropList; dug: DropList }
   cobweb: { broken: DropList }
+  'skeleton-camp': { broken: DropList }
+  'goblin-camp': { broken: DropList }
+  tomb: { broken: DropList }
 }
 
 const SHAPE: Readonly<Record<keyof DropTables, readonly string[]>> = {
@@ -46,9 +50,12 @@ const SHAPE: Readonly<Record<keyof DropTables, readonly string[]>> = {
   'copper-rock': ['broken'],
   'tin-rock': ['broken'],
   sand: ['broken'],
-  cactus: ['broken'],
+  cactus: ['broken', 'dug'],
   sunflower: ['broken', 'dug'],
   cobweb: ['broken'],
+  'skeleton-camp': ['broken'],
+  'goblin-camp': ['broken'],
+  tomb: ['broken'],
 }
 
 export const DROP_TABLES: Readonly<DropTables> = parseDrops(dropsData)

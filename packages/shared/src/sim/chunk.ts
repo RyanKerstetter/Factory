@@ -1,3 +1,4 @@
+import { isFloorKind } from '../buildings.ts'
 import { CHUNK_SIZE, RANDOM_TICKS_PER_CHUNK } from '../constants.ts'
 import { localTileIndex } from '../geometry.ts'
 import { hashInts } from '../rng.ts'
@@ -19,9 +20,12 @@ function insertById(list: Entity[], entity: Entity): void {
 
 // One chunk's buildings. They are walked in order of their IDs, always, and a chunk only ever touches its own
 // buildings: whatever crosses to another building goes through a port and a link (see FactoryWorld.exchange).
+// A tile holds one building, and under it one floor (a wooden floor: see `isFloorKind`), kept apart, so what is on a
+// tile (`at`) is never its floor (`floorAt`).
 export class Chunk {
   private readonly byId = new Map<number, Entity>()
   private readonly byTile = new Map<number, Entity>()
+  private readonly floorByTile = new Map<number, Entity>()
   // The buildings in ID order, which is the order everything here goes through them in.
   private ordered: Entity[] = []
   // Those of them that do something every tick (see `stepsEachTick`), in ID order too: everything else (trees, rocks,
@@ -47,12 +51,22 @@ export class Chunk {
     return this.byTile.get(localTileIndex(x, y))
   }
 
+  floorAt(x: number, y: number): Entity | undefined {
+    return this.floorByTile.get(localTileIndex(x, y))
+  }
+
+  // Where a building of a kind is kept by its tile: with the floors, or with what stands on tiles.
+  private layer(kind: Entity['kind']): Map<number, Entity> {
+    return isFloorKind(kind) ? this.floorByTile : this.byTile
+  }
+
   add(entity: Entity): void {
     if (this.byId.has(entity.id)) throw new Error(`Chunk ${this.id} already has building ${entity.id}.`)
     const tile = localTileIndex(entity.x, entity.y)
-    if (this.byTile.has(tile)) throw new Error(`Chunk ${this.id} already has a building at ${entity.x},${entity.y}.`)
+    const layer = this.layer(entity.kind)
+    if (layer.has(tile)) throw new Error(`Chunk ${this.id} already has a ${isFloorKind(entity.kind) ? 'floor' : 'building'} at ${entity.x},${entity.y}.`)
     this.byId.set(entity.id, entity)
-    this.byTile.set(tile, entity)
+    layer.set(tile, entity)
     insertById(this.ordered, entity)
     if (stepsEachTick(entity.kind)) insertById(this.stepped, entity)
   }
@@ -61,7 +75,7 @@ export class Chunk {
     const entity = this.byId.get(id)
     if (!entity) return undefined
     this.byId.delete(id)
-    this.byTile.delete(localTileIndex(entity.x, entity.y))
+    this.layer(entity.kind).delete(localTileIndex(entity.x, entity.y))
     this.ordered.splice(this.ordered.indexOf(entity), 1)
     const stepped = this.stepped.indexOf(entity)
     if (stepped >= 0) this.stepped.splice(stepped, 1)
@@ -72,9 +86,9 @@ export class Chunk {
   // has grown into a tree).
   replace(entity: Entity): void {
     const old = this.byId.get(entity.id)
-    if (!old || old.x !== entity.x || old.y !== entity.y) throw new Error(`Chunk ${this.id} cannot replace building ${entity.id}.`)
+    if (!old || old.x !== entity.x || old.y !== entity.y || isFloorKind(old.kind) !== isFloorKind(entity.kind)) throw new Error(`Chunk ${this.id} cannot replace building ${entity.id}.`)
     this.byId.set(entity.id, entity)
-    this.byTile.set(localTileIndex(entity.x, entity.y), entity)
+    this.layer(entity.kind).set(localTileIndex(entity.x, entity.y), entity)
     this.ordered[this.ordered.indexOf(old)] = entity
     const stepped = this.stepped.indexOf(old)
     if (stepped >= 0) this.stepped.splice(stepped, 1)

@@ -1,14 +1,14 @@
-import { BUILDING_BOUNDS, BUILDINGS, type BuildingKind } from './buildings.ts'
+import { BUILDING_BOUNDS, BUILDINGS, isCampKind, isFloorKind, type BuildingKind } from './buildings.ts'
 import { PLAYER_REACH, SUB } from './constants.ts'
 import { distanceToTileSquared, isInsideWorld, type Direction } from './geometry.ts'
 import { getItem, NO_ITEM, type ItemId } from './items.ts'
 import type { Inventory } from './inventory.ts'
-import { fenceBoxes, fenceMask } from './fences.ts'
+import { fenceBoxes, fenceMask, wallBoxes } from './fences.ts'
 import { playerOverlapsTile, type Box, type IsSlow, type IsSolid } from './movement.ts'
 import type { FactoryWorld } from './sim/factory-world.ts'
-import { groundBlocks, oreAt, waterAt } from './world-gen.ts'
+import { CAMP_BIOME, groundBlocks, oreAt, waterAt } from './world-gen.ts'
 import { isInDungeons } from './dungeon.ts'
-import { canGrowAt, isSandAt, type Terrain } from './terrain.ts'
+import { biomeAt, canGrowAt, isSandAt, type Terrain } from './terrain.ts'
 
 // What a player asks to happen to the factory. A client sends it stamped with the tick it should run on; the server
 // checks it on that tick and runs it, runs part of it ("take up to 50"), or turns it down, and logs what happened.
@@ -36,7 +36,7 @@ export type Command =
   // is enough, while the player stays at it (see `use`). At an altar: start ritual `recipe` (see altar.ts).
   | { k: 'work'; id: number; recipe: number }
   // Use what is in slot `slot` on a tile: fill a bucket at a pond (fresh water) or the sea (salt water) or from a barrel,
-  // pour one into a barrel, water a garden plot, or empty it on bare ground.
+  // pour one into a barrel, water farmland, or empty it on bare ground.
   | { k: 'apply'; x: number; y: number; slot: number }
   // Light a campfire (or put it out); seal a barrel (or open it).
   | { k: 'machine'; id: number; action: 'light' | 'douse' | 'seal' | 'unseal' }
@@ -51,7 +51,10 @@ export type Command =
   // Attack with what is in slot `slot` (-1: bare-handed), towards the point x, y (in units) (see weapons.ts). `seen` is
   // the server tick the page was drawing creatures at, so the attack is judged against where the player saw them.
   // `charged`: the attack button was held down (see `charge`) for the weapon's charged attack (see weapons.ts).
-  | { k: 'attack'; slot: number; x: number; y: number; seen?: number; charged?: 1 }
+  // `at`: the number of the page's last movement input when the attack was made: the server makes the attack just after
+  // it has played that input, before the next (so from where the player stood, before the step forward the attack takes
+  // them: see the room's `step`).
+  | { k: 'attack'; slot: number; x: number; y: number; seen?: number; charged?: 1; at?: number }
   // The attack button has gone down and is being held, to charge an attack: a charged attack is only let through
   // CHARGE_TICKS after this.
   | { k: 'charge'; slot: number }
@@ -64,8 +67,12 @@ export type Command =
   | { k: 'tie'; fence: number; animal?: number; raft?: number }
   // Untie what is tied to a fence, the rope back into the inventory.
   | { k: 'untie'; fence: number }
-  // The host turns players hurting each other on or off.
+  // The host turns players hurting each other on or off; and item spawning (for testing: while it is on, every player
+  // can take any item, as many as they like, out of nothing, from beside their inventory).
   | { k: 'pvp'; on: boolean }
+  | { k: 'items'; on: boolean }
+  // `count` of an item out of nothing, into the player's inventory (as much as fits), while item spawning is on.
+  | { k: 'give'; item: number; count: number }
   // Back to the world spawn, or to the sleeping bag last slept in (from the menu: for a player stuck somewhere, a raft
   // lost out at sea). They keep their health and their things.
   | { k: 'respawn'; at: 'spawn' | 'bed' }
@@ -82,8 +89,8 @@ export type Command =
   // Sleep in a sleeping bag: the player wakes up beside it when they are next knocked out.
   | { k: 'sleep'; id: number }
   // Put one of the item in slot `slot` of the player's inventory down on a tile, as what it places (an acorn is
-  // planted as a sapling).
-  | { k: 'place'; x: number; y: number; slot: number }
+  // planted as a sapling). A raft goes on the water with its middle at `at` (units, on tile x, y), wherever that is.
+  | { k: 'place'; x: number; y: number; slot: number; at?: { x: number; y: number } }
   // Travel from the waystone `id` (in reach) to the waystone `to` (see waystones.ts).
   | { k: 'warp'; id: number; to: number }
 
@@ -91,6 +98,7 @@ export type Command =
 export const REFUSALS = {
   outside: 'That is outside the world.',
   occupied: 'Something is already built there.',
+  floored: 'There is already a floor there.',
   standing: 'You are standing there.',
   noOre: 'A miner has to stand on ore.',
   reach: 'That is too far away.',
@@ -111,6 +119,7 @@ export const REFUSALS = {
   inventoryFull: 'Your inventory is full.',
   unripe: 'It is still growing: it takes a tool to dig it up.',
   notHost: 'Only the host can change that.',
+  noSpawning: 'The host has not turned item spawning on.',
   noBed: 'You have not slept in a sleeping bag that is still there.',
   barren: 'Nothing grows there.',
   cannotApply: 'There is nothing to use that on there.',
@@ -143,6 +152,7 @@ export const REFUSALS = {
   wouldKill: 'Eating that now would kill you: you need more health.',
   fogged: 'That is lost in the fog: eat a truesight flesh to see your way there.',
   onlySand: 'A cactus only grows on sand.',
+  campBiome: 'A camp only goes in its own land: a skeleton camp in the mountains, a goblin camp on the meadow, a mummy camp in the desert.',
   notBed: 'That is not a sleeping bag.',
   invalid: 'The server could not read that.',
   busy: 'It is making something else.',
@@ -158,18 +168,26 @@ export function isWithinReach(player: { x: number; y: number }, x: number, y: nu
 }
 
 // Whether a building of a kind can go on a tile, as the world is: in the world and in reach, the tile free (nothing on
-// it, not water, not in a dungeon), and not where the player stands if it is solid. The server's word on the tick a
-// command runs, or the page's guess (from the factory it has, which is a few ticks old).
+// it, not water, not in a dungeon), and not where the player stands if it is solid. A floor goes under what stands on
+// its tile, so only needs no floor there already, and nothing that grows or was found there but a tuft of grass (which
+// it covers: see the server's `place`). The server's word on the tick a command runs, or the page's guess (from the
+// factory it has, which is a few ticks old).
 function checkTile(world: FactoryWorld, terrain: Terrain | undefined, player: { x: number; y: number }, x: number, y: number, kind: BuildingKind): Refusal | undefined {
   if (!isInsideWorld(x, y)) return 'outside'
   if (!isWithinReach(player, x, y)) return 'reach'
-  if (world.entityAt(x, y)) return 'occupied'
+  if (isFloorKind(kind)) {
+    if (world.floorAt(x, y)) return 'floored'
+    const on = world.entityAt(x, y)
+    if (on && BUILDINGS[on.kind].natural && on.kind !== 'grass') return 'occupied'
+  } else if (world.entityAt(x, y)) return 'occupied'
   if (isInDungeons(x, y)) return 'dungeon'
   if (terrain !== undefined && waterAt(terrain, x, y)) return 'water'
   // A plant only on ground it grows in: not sand, not the mountains' rock and snow (a sunflower seed needs no garden
-  // plot, only soil); a cactus only on sand.
+  // plot, only soil); a cactus (planted young) only on sand.
   if (terrain !== undefined && (kind === 'grass' || kind === 'sprout' || kind === 'sapling' || kind === 'seedling') && !canGrowAt(terrain, x, y)) return 'barren'
-  if (terrain !== undefined && kind === 'cactus' && !isSandAt(terrain, x, y)) return 'onlySand'
+  if (terrain !== undefined && (kind === 'cactus' || kind === 'young-cactus') && !isSandAt(terrain, x, y)) return 'onlySand'
+  // A camp only in its own biome: a skeleton camp in the mountains, a goblin camp on the meadow, a mummy camp in the desert.
+  if (terrain !== undefined && isCampKind(kind) && biomeAt(terrain, x, y)?.key !== CAMP_BIOME[kind]) return 'campBiome'
   if (BUILDINGS[kind].solid && playerOverlapsTile(player, x, y)) return 'standing'
   return undefined
 }
@@ -211,7 +229,9 @@ export function solidIn(world: FactoryWorld, terrain: () => Terrain | undefined 
     if (land && groundBlocks(land, x, y)) return true
     const entity = world.entityAt(x, y)
     if (!entity || !BUILDINGS[entity.kind].solid) return false
-    return entity.kind === 'fence' ? fenceBoxes(fenceMask(kindAt, x, y)) : (boundsOf(entity.kind) ?? true)
+    if (entity.kind === 'fence') return fenceBoxes(fenceMask(kindAt, x, y))
+    if (entity.kind === 'wood-wall') return wallBoxes(fenceMask(kindAt, x, y))
+    return boundsOf(entity.kind) ?? true
   }
 }
 
@@ -224,7 +244,7 @@ export function slowIn(world: FactoryWorld): IsSlow {
 }
 
 // Whether the item in a slot of the player's inventory can be put down on a tile, and if so as what: a building (an
-// acorn is planted as a sapling, a fence item put up as a fence), or a seed sown in the garden plot there (`sow` is the
+// acorn is planted as a sapling, a fence item put up as a fence), or a seed sown in the farmland there (`sow` is the
 // plot's ID).
 export function checkPlace(
   world: FactoryWorld,

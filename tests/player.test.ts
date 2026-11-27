@@ -77,20 +77,25 @@ test('a solid building cannot be built where its builder stands; a belt can', ()
   assert.equal(checkBuild(world, terrainOf(1), PLAYER_SPAWN, 1, 0, 'chest'), undefined)
 })
 
+// Any two kinds of item, and a third.
+const STONE = itemId('stone')
+const LOG = itemId('log')
+const FLINT = itemId('flint')
+
 test('moving a stack swaps it with another kind and merges it with its own', () => {
   const inventory = createInventory(4)
   const moveSlot = (from: number, to: number): boolean =>
     moveBetween(inventory, from, plainLimit(inventory), inventory, to, plainLimit(inventory), Number.MAX_SAFE_INTEGER)
-  inventory.slots[0] = { item: 1, count: 30 }
-  inventory.slots[1] = { item: 2, count: 5 }
-  inventory.slots[2] = { item: 1, count: 40 }
+  inventory.slots[0] = { item: STONE, count: 30 }
+  inventory.slots[1] = { item: LOG, count: 5 }
+  inventory.slots[2] = { item: STONE, count: 40 }
   assert.ok(moveSlot(0, 1))
-  assert.deepEqual(inventory.slots.slice(0, 2), [{ item: 2, count: 5 }, { item: 1, count: 30 }])
+  assert.deepEqual(inventory.slots.slice(0, 2), [{ item: LOG, count: 5 }, { item: STONE, count: 30 }])
   assert.ok(moveSlot(1, 2))
-  assert.deepEqual(inventory.slots.slice(1, 3), [{ item: 1, count: 20 }, { item: 1, count: 50 }])
+  assert.deepEqual(inventory.slots.slice(1, 3), [{ item: STONE, count: 20 }, { item: STONE, count: 50 }])
   assert.ok(moveSlot(0, 3))
   assert.deepEqual(inventory.slots[0], { item: 0, count: 0 })
-  assert.deepEqual(inventory.slots[3], { item: 2, count: 5 })
+  assert.deepEqual(inventory.slots[3], { item: LOG, count: 5 })
   assert.equal(moveSlot(0, 1), false)
 })
 
@@ -112,11 +117,11 @@ test('the slot command rearranges the player inventory on the server', () => {
   const room = new GameRoom('TEST', 1)
   const client = new TestClient(room, 'Packer')
   run(room, [client], 2)
-  client.player.inventory.slots[0] = { item: 3, count: 12 }
+  client.player.inventory.slots[0] = { item: FLINT, count: 12 }
   client.command({ k: 'slot', from: { id: 0, i: 0 }, to: { id: 0, i: 5 }, count: 12 })
   run(room, [client], 5)
-  assert.deepEqual(client.player.inventory.slots[5], { item: 3, count: 12 })
-  assert.deepEqual(client.inventory?.slots[5], { item: 3, count: 12 })
+  assert.deepEqual(client.player.inventory.slots[5], { item: FLINT, count: 12 })
+  assert.deepEqual(client.inventory?.slots[5], { item: FLINT, count: 12 })
   assert.equal(client.results.at(-1)?.ok, true)
 })
 

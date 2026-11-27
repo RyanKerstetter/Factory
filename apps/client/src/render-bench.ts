@@ -101,7 +101,7 @@ function frameOf(scene: Scene, now: number): WorldFrame {
     monsters: [],
     traps: [],
     rafts: scene.fog ? [raft] : [],
-    attacks: { marks: [], swishes: [], shots: [], sparks: [], numbers: [] },
+    attacks: { marks: [], swishes: [], shots: [], sparks: [], numbers: [], puffs: [] },
     overlay: { pending: [], removing: [], bars: [] },
     rituals: [],
     warps: [],
